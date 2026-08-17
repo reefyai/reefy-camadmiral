@@ -17,6 +17,28 @@ def _stable_keys(device: dict[str, Any]) -> list[str]:
     return keys
 
 
+def annotate_identity_conflicts(devices: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    items = [dict(device) for device in devices]
+    owners: dict[str, list[int]] = defaultdict(list)
+    for index, device in enumerate(items):
+        for key in _stable_keys(device):
+            owners[key].append(index)
+    conflicts: dict[int, list[str]] = defaultdict(list)
+    for key, indices in owners.items():
+        if len(indices) > 1:
+            label = "MAC address" if key.startswith("mac:") else "ONVIF identity"
+            for index in indices:
+                conflicts[index].append(label)
+    for index, device in enumerate(items):
+        labels = sorted(set(conflicts.get(index, [])))
+        device["identity_conflict"] = bool(labels)
+        if labels:
+            device["identity_conflict_reason"] = "Duplicate " + " and ".join(labels)
+        else:
+            device.pop("identity_conflict_reason", None)
+    return items
+
+
 def _merge_online(
     previous: dict[str, Any] | None,
     current: dict[str, Any],
@@ -130,7 +152,7 @@ def reconcile_inventory(
         reconciled.append(offline)
 
     return sorted(
-        reconciled,
+        annotate_identity_conflicts(reconciled),
         key=lambda device: (
             device.get("status") != "online",
             str(device.get("display_name") or device.get("ip") or "").lower(),
@@ -151,4 +173,6 @@ def inventory_summary(devices: Iterable[dict[str, Any]]) -> dict[str, int]:
             and device.get("service_status") == "unavailable"
             for device in items
         ),
+        "ignored": sum(bool(device.get("ignored")) for device in items),
+        "conflicts": sum(bool(device.get("identity_conflict")) for device in items),
     }

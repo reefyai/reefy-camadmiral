@@ -32,6 +32,20 @@
     }
     #scan:hover { background: #5eead4; }
     #scan:disabled { cursor: wait; opacity: .6; }
+    .header-actions { display: flex; align-items: center; gap: 9px; }
+    .header-secondary {
+      border: 1px solid rgba(148, 163, 184, .22); border-radius: 11px; padding: 10px 14px;
+      background: rgba(12, 26, 42, .72); color: #b8c7d0; font-weight: 750; cursor: pointer;
+    }
+    .header-secondary:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
+    .address-panel {
+      display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: -12px 0 14px;
+    }
+    .address-panel input {
+      width: 190px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
+      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
+    }
+    .address-status { min-width: 180px; color: #fda4af; font-size: 12px; }
     .statusbar {
       min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
       border: 1px solid rgba(148, 163, 184, .16); background: rgba(12, 26, 42, .72);
@@ -96,6 +110,7 @@
     .sort-arrow { width: 10px; color: #2dd4bf; }
     .camera-name { color: #f0f7fa; font-size: 14px; font-weight: 750; }
     .camera-model { margin-top: 3px; color: #6e8496; font-size: 12px; }
+    .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
     .adopted-label { display: inline-block; margin-top: 5px; color: #75f4e2; font-size: 11px; font-weight: 750; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
     .device-status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; text-transform: capitalize; }
@@ -118,6 +133,7 @@
     }
     .row-action:hover { background: rgba(45, 212, 191, .14); }
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
+    .action-stack { display: flex; align-items: center; gap: 8px; }
     .detail-row td { padding: 0; background: rgba(5, 15, 27, .5); }
     .camera-details { padding: 17px 18px 19px; }
     .detail-title { margin-bottom: 10px; color: #dce8ee; font-size: 13px; font-weight: 800; }
@@ -262,9 +278,17 @@
   <div class="shell">
     <header>
       <h1>CamAdmiral</h1>
-      <button id="scan" type="button">Scan network</button>
+      <div class="header-actions">
+        <button class="header-secondary" id="show-add-address" type="button">Add by IP</button>
+        <button id="scan" type="button">Scan network</button>
+      </div>
     </header>
     <main>
+      <form class="address-panel" id="address-panel" hidden>
+        <label class="setup-field">Camera IP<input id="address-input" inputmode="decimal" autocomplete="off" placeholder="192.168.1.25"></label>
+        <button class="row-action" type="submit">Probe</button>
+        <span class="address-status" id="address-status"></span>
+      </form>
       <div class="statusbar">
         <div class="scan-state"><span class="dot" id="dot"></span><span id="state">Starting</span></div>
         <div class="status-meta">
@@ -287,6 +311,7 @@
           <div class="pill"><strong id="offline-count">0</strong> offline</div>
         </div>
         <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
+        <label class="camera-model"><input id="show-ignored" type="checkbox"> Show ignored</label>
       </div>
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
@@ -323,6 +348,11 @@
   </div>
   <script>
     const scanButton = document.querySelector("#scan");
+    const showAddAddress = document.querySelector("#show-add-address");
+    const addressPanel = document.querySelector("#address-panel");
+    const addressInput = document.querySelector("#address-input");
+    const addressStatus = document.querySelector("#address-status");
+    const showIgnored = document.querySelector("#show-ignored");
     const stateLabel = document.querySelector("#state");
     const stateDot = document.querySelector("#dot");
     const networkLabel = document.querySelector("#network");
@@ -1361,7 +1391,7 @@
 
     function renderRows() {
       const query = searchInput.value.trim().toLocaleLowerCase();
-      const visible = devices.filter(device => matchesSearch(device, query));
+      const visible = devices.filter(device => (showIgnored.checked || !device.ignored) && matchesSearch(device, query));
       visible.sort((left, right) => {
         const a = sortValue(left, sortKey);
         const b = sortValue(right, sortKey);
@@ -1378,6 +1408,7 @@
         if (device.onvif?.model && device.onvif.model !== device.display_name) {
           addText(identity, "div", "camera-model", device.onvif.model);
         }
+        if (device.identity_conflict) addText(identity, "div", "conflict-note", device.identity_conflict_reason || "Identity conflict");
         if (device.adoption) addText(identity, "div", "adopted-label", device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted");
         const statusCell = addCell(row);
         const statusLabel = addText(statusCell, "span", `device-status ${status.key}`, "");
@@ -1398,10 +1429,16 @@
         const actionLabel = expandedCandidate === device.candidate_uuid
           ? "Hide"
           : device.adoption ? "Details" : "Adopt";
-        const action = addText(actions, "button", "row-action", actionLabel);
+        const actionStack = addText(actions, "div", "action-stack", "");
+        const action = addText(actionStack, "button", "row-action", actionLabel);
         action.type = "button";
         action.disabled = !device.candidate_uuid || (!device.adoption && device.status !== "online");
         action.addEventListener("click", () => toggleInspection(device));
+        if (!device.adoption) {
+          const ignore = addText(actionStack, "button", "secondary-action", device.ignored ? "Unignore" : "Ignore");
+          ignore.type = "button";
+          ignore.addEventListener("click", () => setCandidateIgnored(device));
+        }
         cameraRows.append(row);
         if (expandedCandidate === device.candidate_uuid) {
           const detailRow = document.createElement("tr");
@@ -1500,7 +1537,49 @@
       }
     });
 
+    async function setCandidateIgnored(device) {
+      try {
+        const response = await fetch(`/internal/discovery/${encodeURIComponent(device.candidate_uuid)}/ignored`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-ignored"},
+          body: JSON.stringify({ignored: !device.ignored})
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || "Camera state could not be changed.");
+        devices = result.devices || devices;
+        lastResultId = null;
+        render(result);
+      } catch (error) {
+        lifecycleErrors.set(device.candidate_uuid, error.message);
+        renderRows();
+      }
+    }
+
+    showAddAddress.addEventListener("click", () => {
+      addressPanel.hidden = !addressPanel.hidden;
+      if (!addressPanel.hidden) addressInput.focus();
+    });
+    addressPanel.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (busy) return;
+      setText(addressStatus, "Probing...");
+      try {
+        const response = await fetch("/internal/discovery/address", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "scan-address"},
+          body: JSON.stringify({address: addressInput.value.trim()})
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
+        setText(addressStatus, "");
+        render(result);
+      } catch (error) {
+        setText(addressStatus, error.message);
+      }
+    });
+
     searchInput.addEventListener("input", renderRows);
+    showIgnored.addEventListener("change", renderRows);
     liveClose.addEventListener("click", closeLiveView);
     liveVideo.addEventListener("playing", () => {
       liveModal.dataset.transport = "mse-playing";

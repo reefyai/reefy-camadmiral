@@ -17,6 +17,8 @@ services:
       - ./faults.py:/e2e/faults.py:ro
       - ./start-camadmiral.sh:/e2e/start-camadmiral.sh:ro
       - ./fixtures/api-token:/run/secrets/camadmiral_api_token:ro
+      - ./fixtures/admin-password:/run/secrets/camadmiral_admin_password:ro
+      - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
     networks:
       lab:
         ipv4_address: 172.30.0.20
@@ -26,6 +28,38 @@ services:
     tmpfs:
       - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:0.17.1
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cp /e2e/frigate.yml /config/config.yml && exec /init"]
+    networks:
+      lab:
+        ipv4_address: 172.30.0.30
+    shm_size: 128mb
+    volumes:
+      - frigate-config:/config
+      - frigate-media:/media/frigate
+      - ./fixtures/frigate.yml:/e2e/frigate.yml:ro
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp/cache:size=128m
+    healthcheck:
+      disable: true
+
+  frigate-api-proxy:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/tcp_proxy.py"]
+    network_mode: service:camadmiral
+    depends_on: [camadmiral, frigate]
+    volumes:
+      - ./tcp_proxy.py:/e2e/tcp_proxy.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
 
   camera-open:
     image: camadmiral-e2e:local
@@ -73,6 +107,22 @@ services:
     healthcheck:
       disable: true
 
+  camera-onvif:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/fake_onvif.py"]
+    volumes:
+      - ./fake_onvif.py:/e2e/fake_onvif.py:ro
+      - ./fixtures/camera-onvif.yaml:/e2e/camera-onvif.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.13
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
   camera-auth-rotated:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth-rotated.yaml"]
@@ -97,6 +147,8 @@ services:
       - .:/e2e:ro
       - e2e-state:/state
     networks: [lab]
+    environment:
+      CAMADMIRAL_E2E_ADMIN_PASSWORD: synthetic-e2e-admin-password
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -111,3 +163,5 @@ networks:
 volumes:
   camadmiral-data:
   e2e-state:
+  frigate-config:
+  frigate-media:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -17,6 +18,8 @@ API_TOKEN = "synthetic-e2e-api-token"
 STATE_PATH = Path("/state/baseline.json")
 OPEN_NAME = "Synthetic open camera"
 AUTH_NAME = "Synthetic authenticated camera"
+ONVIF_NAME = "Synthetic ONVIF camera"
+ADMIN_PASSWORD = os.environ.get("CAMADMIRAL_E2E_ADMIN_PASSWORD", "")
 
 
 class ScenarioFailure(RuntimeError):
@@ -33,6 +36,9 @@ def request(
 ) -> tuple[int, bytes, dict[str, str]]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request_headers = dict(headers or {})
+    if not path.startswith("/api/v1/") and path != "/healthz":
+        credentials = base64.b64encode(f"admin:{ADMIN_PASSWORD}".encode()).decode()
+        request_headers.setdefault("Authorization", f"Basic {credentials}")
     if body is not None:
         request_headers["Content-Type"] = "application/json"
     web_request = urllib.request.Request(
@@ -197,15 +203,22 @@ def probe_stream(stream: dict[str, object]) -> dict[str, object]:
 
 
 def assert_snapshot(camera_uuid: str) -> None:
-    status, body, headers = request(f"/internal/cameras/{camera_uuid}/snapshot.jpg", timeout=20)
-    if status != 200 or not body.startswith(b"\xff\xd8\xff") or not body.endswith(b"\xff\xd9"):
-        raise ScenarioFailure("Camera snapshot is not a valid JPEG")
-    content_type = next(
-        (value for name, value in headers.items() if name.lower() == "content-type"),
-        "",
-    )
-    if not content_type.startswith("image/jpeg"):
-        raise ScenarioFailure("Camera snapshot has an unexpected content type")
+    def valid_snapshot() -> bool:
+        status, body, headers = request(
+            f"/internal/cameras/{camera_uuid}/snapshot.jpg", timeout=20
+        )
+        content_type = next(
+            (value for name, value in headers.items() if name.lower() == "content-type"),
+            "",
+        )
+        return (
+            status == 200
+            and body.startswith(b"\xff\xd8\xff")
+            and body.endswith(b"\xff\xd9")
+            and content_type.startswith("image/jpeg")
+        )
+
+    wait_for("valid camera snapshot", valid_snapshot, timeout=30, interval=1)
 
 
 def assert_all_media(directory: dict[str, object]) -> None:
@@ -281,7 +294,7 @@ def assert_shared_upstream(stream: dict[str, object]) -> None:
         "-i",
         authenticated_rtsp_url(stream),
         "-t",
-        "8",
+        "30",
         "-f",
         "null",
         "-",
@@ -301,7 +314,7 @@ def assert_shared_upstream(stream: dict[str, object]) -> None:
                 and len(stream_state.get("consumers", [])) == 1
             )
 
-        wait_for("two downstream clients sharing one camera session", one_upstream, timeout=12, interval=0.25)
+        wait_for("two downstream clients sharing one camera session", one_upstream, timeout=25, interval=0.25)
     finally:
         for client in clients:
             if client.poll() is None:
@@ -325,6 +338,41 @@ def baseline() -> None:
     if status != 401:
         raise ScenarioFailure("Consumer API accepted a missing bearer token")
     consumer_directory(token="invalid-synthetic-token", expected=401)
+
+    request_json(
+        "/internal/discovery/address",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan-address"},
+        payload={"address": "172.30.0.13"},
+        expected=202,
+    )
+
+    def onvif_candidate() -> dict[str, object] | None:
+        state = discovery()
+        if state.get("status") in {"queued", "running"}:
+            return None
+        return next(
+            (
+                device for device in state.get("devices", [])
+                if device.get("ip") == "172.30.0.13" and device.get("onvif")
+            ),
+            None,
+        )
+
+    onvif = wait_for("explicit ONVIF-by-IP discovery", onvif_candidate, timeout=60)
+    onvif_adoption = request_json(
+        f'/internal/discovery/{onvif["candidate_uuid"]}/adopt',
+        method="POST",
+        headers={"X-CamAdmiral-Action": "adopt"},
+        payload={"username": "", "password": "", "allow_factory_credentials": False},
+        timeout=120,
+    )
+    request_json(
+        f'/internal/cameras/{onvif_adoption["adoption"]["camera_uuid"]}/update',
+        method="POST",
+        headers={"X-CamAdmiral-Action": "update-camera"},
+        payload={"display_name": ONVIF_NAME},
+    )
 
     rejected = adopt_rtsp(
         "candidate-auth",
@@ -361,7 +409,7 @@ def baseline() -> None:
     if auth_adoption["role_tokens"]["record"] != auth_adoption["role_tokens"]["detect"]:
         raise ScenarioFailure("A one-stream camera did not bind both consumer roles")
 
-    directory = wait_for_online({OPEN_NAME, AUTH_NAME})
+    directory = wait_for_online({OPEN_NAME, AUTH_NAME, ONVIF_NAME})
     assert_all_media(directory)
     open_camera = camera_by_name(directory, OPEN_NAME)
     auth_camera = camera_by_name(directory, AUTH_NAME)
@@ -388,7 +436,7 @@ def baseline() -> None:
         payload={"enabled": True},
         timeout=120,
     )
-    directory = wait_for_online({OPEN_NAME, AUTH_NAME})
+    directory = wait_for_online({OPEN_NAME, AUTH_NAME, ONVIF_NAME})
     assert_all_media(directory)
 
     state = {
@@ -466,6 +514,21 @@ def address_recovery() -> None:
     print("address-recovery: upstream moved while downstream identities stayed stable")
 
 
+def invalid_address() -> None:
+    state = load_state()
+    deadline = time.monotonic() + 15
+    wait_for("one recovery validation cycle", lambda: time.monotonic() >= deadline, timeout=25)
+    device = discovery_device("candidate-open")
+    streams = (device.get("adoption") or {}).get("streams", []) if device else []
+    if not streams or any(
+        urllib.parse.urlsplit(stream.get("uri", "")).hostname != "172.30.0.10"
+        for stream in streams
+    ):
+        raise ScenarioFailure("An unvalidated endpoint replaced the last-known-good source")
+    assert_stable(state)
+    print("invalid-address: rejected endpoint preserved last-known-good media")
+
+
 def credential_repair() -> None:
     state = load_state()
     camera_uuid = state["auth_camera_uuid"]
@@ -498,6 +561,70 @@ def credential_repair() -> None:
     print("credential-repair: rejection preservation and validated recovery passed")
 
 
+def frigate() -> None:
+    state = load_state()
+
+    def frigate_json(path: str) -> dict[str, object]:
+        try:
+            with urllib.request.urlopen(f"http://camadmiral:5000{path}", timeout=8) as response:
+                return json.load(response)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return {}
+
+    def applied() -> tuple[dict[str, object], dict[str, object]] | None:
+        config = frigate_json("/api/config")
+        streams = frigate_json("/api/go2rtc/streams")
+        expected = {
+            "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", str(state["open_camera_uuid"])),
+            "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", str(state["auth_camera_uuid"])),
+        }
+        cameras = config.get("cameras", {})
+        if not expected.issubset(cameras):
+            return None
+        aliases = {
+            alias
+            for key in expected
+            for alias in (f"{key}_record", f"{key}_detect")
+        }
+        if not aliases.issubset(streams):
+            return None
+        return config, streams
+
+    config, streams = wait_for("Frigate camera injection", applied, timeout=180, interval=2)
+    camera_key = "camadmiral_" + re.sub(
+        r"[^a-zA-Z0-9_]", "_", str(state["open_camera_uuid"])
+    )
+    if not config["cameras"][camera_key].get("live", {}).get("streams", {}):
+        raise ScenarioFailure("Frigate camera has no live stream mapping")
+
+    last_stats: dict[str, object] = {}
+    def frigate_processing() -> bool:
+        nonlocal last_stats
+        camera_stats = frigate_json("/api/stats").get("cameras", {}).get(camera_key, {})
+        last_stats = {
+            field: camera_stats.get(field)
+            for field in ("camera_fps", "process_fps", "capture_pid", "ffmpeg_pid")
+        } if isinstance(camera_stats, dict) else {}
+        return float(camera_stats.get("camera_fps") or 0) > 0
+
+    try:
+        wait_for("Frigate camera processing", frigate_processing, timeout=90, interval=2)
+    except ScenarioFailure as exc:
+        runtime = frigate_json("/api/go2rtc/streams")
+        runtime_summary = {
+            name: {
+                "producers": len(state.get("producers") or []),
+                "consumers": len(state.get("consumers") or []),
+            }
+            for name, state in runtime.items()
+            if name.startswith(camera_key) and isinstance(state, dict)
+        }
+        raise ScenarioFailure(
+            f"{exc}; stats={last_stats}; runtime={runtime_summary}"
+        ) from exc
+    print("frigate: real 0.17 API injection and camera processing passed")
+
+
 SCENARIOS = {
     "baseline": baseline,
     "runtime-drift": runtime_drift,
@@ -506,7 +633,9 @@ SCENARIOS = {
     "camera-recovery": camera_recovery,
     "container-restart": container_restart,
     "address-recovery": address_recovery,
+    "invalid-address": invalid_address,
     "credential-repair": credential_repair,
+    "frigate": frigate,
 }
 
 

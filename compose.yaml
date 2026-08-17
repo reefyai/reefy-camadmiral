@@ -17,6 +17,7 @@ services:
       - ./camadmiral.compose.yaml:/etc/camadmiral/config.yaml:ro
     secrets:
       - camadmiral_api_token
+      - camadmiral_admin_password
     tmpfs:
       - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
@@ -24,6 +25,8 @@ services:
 secrets:
   camadmiral_api_token:
     file: ./secrets/api-token
+  camadmiral_admin_password:
+    file: ./secrets/admin-password
 
 volumes:
   camadmiral-data:

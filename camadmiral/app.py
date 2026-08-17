@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import hashlib
 import os
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
+from .auth import AdminAuthenticator
 from .config import SecretConfigurationError, database_path, read_secret_file, settings
 from .crypto import load_master_key
 from .diagnostics import snapshot
@@ -73,6 +75,27 @@ RECOVERY_SCAN_ATTEMPTS: dict[str, float] = {}
 FRIGATE_RECONCILE_INTERVAL = 30.0
 
 
+def _admin_password() -> bytes | None:
+    return read_secret_file(settings().secrets.admin_password_file)
+
+
+ADMIN_AUTH = AdminAuthenticator(_admin_password)
+
+
+@app.middleware("http")
+async def require_admin_authentication(request: Request, call_next):
+    if request.url.path == "/healthz" or request.url.path.startswith("/api/v1/"):
+        return await call_next(request)
+    client = request.client.host if request.client else "unknown"
+    decision = ADMIN_AUTH.authenticate(client, request.headers.get("Authorization"))
+    if decision.allowed:
+        return await call_next(request)
+    headers = {"WWW-Authenticate": 'Basic realm="CamAdmiral", charset="UTF-8"'}
+    if decision.retry_after is not None:
+        headers["Retry-After"] = str(decision.retry_after)
+    return Response(status_code=decision.status_code, headers=headers)
+
+
 class AdoptionRequest(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
@@ -102,6 +125,14 @@ class CameraEnabledRequest(BaseModel):
 class CameraCredentialRequest(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
+
+
+class ExplicitAddressRequest(BaseModel):
+    address: str = Field(min_length=7, max_length=45)
+
+
+class IgnoredRequest(BaseModel):
+    ignored: bool
 
 
 FACTORY_ONVIF_USERNAME = "admin"
@@ -794,6 +825,11 @@ def _live_control_message(message: str) -> str:
 
 @app.websocket("/internal/cameras/{camera_uuid}/live")
 async def camera_live(websocket: WebSocket, camera_uuid: str) -> None:
+    client = websocket.client.host if websocket.client else "unknown"
+    decision = ADMIN_AUTH.authenticate(client, websocket.headers.get("Authorization"))
+    if not decision.allowed:
+        await websocket.close(code=4429 if decision.status_code == 429 else 4401)
+        return
     if not _same_websocket_origin(websocket):
         await websocket.close(code=4403)
         return
@@ -1023,6 +1059,99 @@ def start_discovery(
             }
         )
     return _secured_json(_decorate_adoptions(queued), status_code=202)
+
+
+@app.post("/internal/discovery/address", include_in_schema=False)
+def add_discovery_address(
+    request: ExplicitAddressRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "scan-address":
+        raise HTTPException(status_code=400, detail="Missing address scan action header")
+    try:
+        address = ipaddress.IPv4Address(request.address.strip())
+    except ipaddress.AddressValueError:
+        return _secured_json(
+            {"status": "invalid_address", "message": "Enter a valid private IPv4 address."},
+            status_code=422,
+        )
+    if not address.is_private:
+        return _secured_json(
+            {"status": "invalid_address", "message": "Only private LAN addresses can be probed."},
+            status_code=422,
+        )
+    with SCAN_REQUEST_LOCK:
+        state = _read_scan_state()
+        if state.get("status") in {"queued", "running"} or SCAN_REQUEST.exists():
+            return _secured_json(_decorate_adoptions(state), status_code=409)
+        scan_id = str(uuid.uuid4())
+        payload = {
+            "scan_id": scan_id,
+            "mode": "address",
+            "address": str(address),
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "unix_time": time.time(),
+        }
+        temporary = SCAN_REQUEST.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        temporary.replace(SCAN_REQUEST)
+    queued = {"status": "queued", "phase": "queued", **payload}
+    if state.get("devices"):
+        queued.update(
+            {
+                "inventory_scan_id": state.get("inventory_scan_id") or state.get("scan_id"),
+                "devices": state.get("devices"),
+                "summary": state.get("summary"),
+                "network": state.get("network"),
+                "raw_log": state.get("raw_log", []),
+            }
+        )
+    return _secured_json(_decorate_adoptions(queued), status_code=202)
+
+
+@app.post("/internal/discovery/{candidate_uuid}/ignored", include_in_schema=False)
+def set_candidate_ignored(
+    candidate_uuid: str,
+    request: IgnoredRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-ignored":
+        raise HTTPException(status_code=400, detail="Missing ignore action header")
+    with SCAN_REQUEST_LOCK:
+        state = _read_scan_state()
+        if state.get("status") in {"queued", "running"} or SCAN_REQUEST.exists():
+            return _secured_json(
+                {"status": "scan_active", "message": "Wait for the current scan to finish."},
+                status_code=409,
+            )
+        try:
+            inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=404, detail="Camera candidate not found")
+        found = False
+        for candidate in inventory.get("devices", []):
+            if candidate.get("candidate_uuid") == candidate_uuid:
+                repository = _repository()
+                if repository is not None and repository.adoption_for_candidate(candidate_uuid):
+                    return _secured_json(
+                        {"status": "adopted", "message": "Adopted cameras cannot be ignored."},
+                        status_code=409,
+                    )
+                candidate["ignored"] = request.ignored
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="Camera candidate not found")
+        temporary = INVENTORY.with_suffix(".tmp")
+        temporary.write_text(json.dumps(inventory), encoding="utf-8")
+        temporary.replace(INVENTORY)
+        from .inventory import inventory_summary
+        inventory["summary"] = inventory_summary(inventory.get("devices", []))
+        inventory.update({"status": "complete", "phase": "complete"})
+        state_temporary = SCAN_STATE.with_suffix(".tmp")
+        state_temporary.write_text(json.dumps(inventory), encoding="utf-8")
+        state_temporary.replace(SCAN_STATE)
+    return _secured_json(_decorate_adoptions(inventory))
 
 
 @app.post("/internal/discovery/{candidate_uuid}/inspect", include_in_schema=False)

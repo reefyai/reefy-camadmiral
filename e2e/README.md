@@ -6,6 +6,7 @@ CamAdmiral application modules.
 
 The isolated Docker Compose lab covers:
 
+- explicit IP discovery and adoption through a synthetic ONVIF camera
 - unauthenticated and authenticated RTSP adoption
 - incorrect camera-credential rejection
 - empirical H.264 metadata and automatic recording/detection role selection
@@ -16,6 +17,8 @@ The isolated Docker Compose lab covers:
 - go2rtc child failure without a CamAdmiral container restart
 - synthetic camera outage and restart without user action
 - complete CamAdmiral container restart with stable IDs, paths, and secrets
+- real Frigate 0.17 camera injection, runtime creation, and frame processing
+- invalid recovered-address rejection with last-known-good media preservation
 - camera IP change with validated upstream replacement and stable downstream
   identities
 - camera credential rotation, failed repair preservation, and successful repair

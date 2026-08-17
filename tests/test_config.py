@@ -59,6 +59,7 @@ class ConfigurationTests(unittest.TestCase):
                 "secrets": {
                     "master_key_file": "/secrets/master",
                     "api_token_file": "/secrets/api",
+                    "admin_password_file": "/secrets/admin",
                 },
                 "integrations": {
                     "frigate": {
@@ -87,6 +88,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configured.storage.inventory, Path("/srv/camadmiral/inventory.json"))
         self.assertEqual(configured.secrets.master_key_file, Path("/secrets/master"))
         self.assertTrue(configured.secrets.master_key_file_explicit)
+        self.assertEqual(configured.secrets.admin_password_file, Path("/secrets/admin"))
         self.assertEqual(len(configured.integrations.frigate.targets), 2)
         self.assertTrue(configured.integrations.frigate.targets[0].sync_cameras)
         self.assertEqual(

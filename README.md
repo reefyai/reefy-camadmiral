@@ -10,17 +10,24 @@ Build the image and create one named volume for all persistent CamAdmiral state:
 ```console
 docker build -t camadmiral:latest .
 docker volume create camadmiral-data
+mkdir -p secrets
+openssl rand -hex 32 > secrets/api-token
+openssl rand -base64 24 > secrets/admin-password
+chmod 600 secrets/api-token secrets/admin-password
 docker run -d \
   --name camadmiral \
   --network host \
   --restart unless-stopped \
   --volume camadmiral-data:/var/lib/camadmiral \
+  --mount type=bind,source="$(pwd)/secrets/api-token",target=/run/secrets/camadmiral_api_token,readonly \
+  --mount type=bind,source="$(pwd)/secrets/admin-password",target=/run/secrets/camadmiral_admin_password,readonly \
   camadmiral:latest
 ```
 
 Open `http://<device-address>:18080`. No configuration file is required. On first boot,
 CamAdmiral generates its master key inside the data volume. Recreating the container with
-the same named volume preserves adopted cameras and credentials.
+the same named volume preserves adopted cameras and credentials. Sign in as `admin` with
+the password in `secrets/admin-password`.
 
 For Docker Compose, create the API token once and start the checked-in hardened
 configuration:
@@ -28,9 +35,16 @@ configuration:
 ```console
 mkdir -p secrets
 openssl rand -hex 32 > secrets/api-token
+openssl rand -base64 24 > secrets/admin-password
 chmod 600 secrets/api-token
+chmod 600 secrets/admin-password
 docker compose up -d
 ```
+
+The browser prompts for HTTP Basic credentials. Use username `admin` and the
+value stored in `secrets/admin-password`. Put CamAdmiral behind an HTTPS reverse
+proxy before accessing it across an untrusted network because HTTP Basic
+credentials are not encrypted by the application protocol.
 
 The complete persistent state boundary is `/var/lib/camadmiral`. Back up and restore that
 volume as a unit. Stop CamAdmiral before making a raw volume copy so the SQLite database and

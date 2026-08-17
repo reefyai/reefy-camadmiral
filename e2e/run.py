@@ -44,8 +44,13 @@ def main() -> int:
     try:
         run("down", "--volumes", "--remove-orphans")
         run("build", "camadmiral")
-        run("up", "--detach", "camadmiral", "camera-open", "camera-auth")
+        run(
+            "up", "--detach", "camadmiral", "camera-open", "camera-auth",
+            "camera-onvif",
+        )
         scenario("baseline")
+        run("up", "--detach", "frigate", "frigate-api-proxy")
+        scenario("frigate")
 
         run("exec", "-T", "camadmiral", "python", "/e2e/faults.py", "delete-managed-stream")
         scenario("runtime-drift")
@@ -64,6 +69,13 @@ def main() -> int:
 
         run("restart", "camadmiral")
         scenario("container-restart")
+
+        run(
+            "exec", "-T", "camadmiral", "cp",
+            "/e2e/fixtures/inventory-invalid-address.json",
+            "/var/lib/camadmiral/inventory.json",
+        )
+        scenario("invalid-address")
 
         run("stop", "camera-open")
         run("rm", "--force", "camera-open")

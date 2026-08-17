@@ -10,6 +10,7 @@ storage:
 secrets:
   master_key_file: /run/secrets/camadmiral_master_key
   api_token_file: /run/secrets/camadmiral_api_token
+  admin_password_file: /run/secrets/camadmiral_admin_password
 
 integrations:
   frigate:

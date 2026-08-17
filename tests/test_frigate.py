@@ -28,10 +28,12 @@ class FakeFrigateClient:
         self.current_config = {"cameras": {}}
         self.current_raw_paths = {"cameras": {}, "go2rtc": {"streams": {}}}
         self.current_runtime = {}
+        self.current_stats = {}
         self.capability_checks = 0
         self.config_writes = []
         self.runtime_writes = []
         self.runtime_enabled = {}
+        self.drop_add_events = 0
 
     def capabilities(self) -> None:
         self.capability_checks += 1
@@ -44,6 +46,9 @@ class FakeFrigateClient:
 
     def runtime_streams(self):
         return self.current_runtime
+
+    def stats(self):
+        return self.current_stats
 
     def set_config(self, config_data, *, update_topic=None):
         self.config_writes.append((config_data, update_topic))
@@ -60,7 +65,11 @@ class FakeFrigateClient:
                     }
                 }
             if update_topic == f"config/cameras/{key}/add":
-                self.runtime_enabled[key] = camera.get("enabled", True)
+                if self.drop_add_events:
+                    self.drop_add_events -= 1
+                else:
+                    self.runtime_enabled[key] = camera.get("enabled", True)
+                    self.current_stats[key] = {"camera_fps": 5.0}
             elif update_topic == f"config/cameras/{key}/enabled":
                 self.runtime_enabled[key] = bool(update["enabled"])
         self.current_raw_paths["go2rtc"]["streams"].update(
@@ -206,6 +215,22 @@ class FrigateReconciliationTests(unittest.TestCase):
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
+
+    def test_missed_hot_add_is_replayed_until_camera_process_exists(self) -> None:
+        self.client.drop_add_events = 1
+        factory = lambda _target: self.client
+
+        first = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
+        second = reconcile_frigate(self.repository, self.target, client_factory=factory)
+
+        self.assertEqual(first, {"applied": 0, "pending": 1})
+        self.assertEqual(binding["status"], "error")
+        self.assertEqual(binding["last_error_code"], "camera_start_pending")
+        self.assertEqual(second, {"applied": 1, "pending": 0})
+        key = frigate_camera_key(self.camera_uuid)
+        add_topics = [topic for _data, topic in self.client.config_writes if topic and topic.endswith("/add")]
+        self.assertEqual(add_topics, [f"config/cameras/{key}/add"] * 2)
 
     def test_unknown_existing_key_is_not_claimed_or_modified(self) -> None:
         key = frigate_camera_key(self.camera_uuid)

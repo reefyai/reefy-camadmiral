@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
-from .discovery import LanInterface, scan_lan, scan_targeted_lan
+from .discovery import LanInterface, scan_explicit_address, scan_lan, scan_targeted_lan
 from .inventory import inventory_summary, reconcile_inventory
 
 HEARTBEAT = Path("/run/camadmiral/scanner-heartbeat.json")
@@ -91,7 +91,40 @@ def handle_scan(request: dict[str, object]) -> None:
         },
     )
     try:
-        if request.get("mode") == "targeted":
+        if request.get("mode") == "address":
+            result = scan_explicit_address(str(request.get("address") or ""), progress=scan_progress)
+            observations = result["devices"]
+            address = str(request.get("address") or "")
+            observed_keys = {
+                str(observation.get("mac") or "").lower()
+                for observation in observations
+                if observation.get("mac")
+            } | {
+                str((observation.get("onvif") or {}).get("endpoint_reference") or "").lower()
+                for observation in observations
+                if (observation.get("onvif") or {}).get("endpoint_reference")
+            }
+            target_previous = [
+                device
+                for device in previous_devices
+                if str(device.get("ip") or "") == address
+                or str(device.get("mac") or "").lower() in observed_keys
+                or str((device.get("onvif") or {}).get("endpoint_reference") or "").lower()
+                in observed_keys
+            ]
+            target_ids = {str(device.get("candidate_uuid")) for device in target_previous}
+            untouched = [
+                device
+                for device in previous_devices
+                if str(device.get("candidate_uuid")) not in target_ids
+            ]
+            updated = reconcile_inventory(
+                target_previous,
+                observations,
+                str(result["completed_at"]),
+            )
+            result["devices"] = [*untouched, *updated]
+        elif request.get("mode") == "targeted":
             target_ids = {
                 str(target.get("candidate_uuid"))
                 for target in request.get("targets", [])

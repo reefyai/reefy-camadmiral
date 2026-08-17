@@ -44,6 +44,7 @@ class StorageSettings:
 class SecretSettings:
     master_key_file: Path = Path("/run/secrets/camadmiral_master_key")
     api_token_file: Path = Path("/run/secrets/camadmiral_api_token")
+    admin_password_file: Path = Path("/run/secrets/camadmiral_admin_password")
     master_key_file_explicit: bool = field(default=False, repr=False, compare=False)
 
 
@@ -137,7 +138,7 @@ def _parse_storage(root: dict[str, Any]) -> StorageSettings:
 
 def _parse_secrets(root: dict[str, Any]) -> SecretSettings:
     section = _mapping(root.get("secrets"), "secrets")
-    _only(section, {"master_key_file", "api_token_file"}, "secrets")
+    _only(section, {"master_key_file", "api_token_file", "admin_password_file"}, "secrets")
     defaults = SecretSettings()
     return SecretSettings(
         master_key_file=_absolute_path(
@@ -149,6 +150,11 @@ def _parse_secrets(root: dict[str, Any]) -> SecretSettings:
             section.get("api_token_file"),
             defaults.api_token_file,
             "secrets.api_token_file",
+        ),
+        admin_password_file=_absolute_path(
+            section.get("admin_password_file"),
+            defaults.admin_password_file,
+            "secrets.admin_password_file",
         ),
         master_key_file_explicit="master_key_file" in section,
     )

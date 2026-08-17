@@ -86,6 +86,25 @@ eth0 0028A8C0 00000000 0001 0 0 100 00FFFFFF 0 0 0
 
 
 class ResultTests(unittest.TestCase):
+    def test_explicit_address_scan_stays_inside_selected_lan(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.10.2"),
+            network=ipaddress.IPv4Network("192.168.10.0/24"),
+        )
+        with (
+            patch.object(discovery, "default_lan_interface", return_value=interface),
+            patch.object(discovery, "discover_onvif_address", return_value=[]),
+            patch.object(discovery, "discover_rtsp_address", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            result = discovery.scan_explicit_address("192.168.10.20")
+            with self.assertRaisesRegex(discovery.DiscoveryScanError, "inside"):
+                discovery.scan_explicit_address("10.0.0.20")
+
+        self.assertEqual(result["devices"], [])
+        self.assertEqual(result["scanners"], {"onvif": "complete", "rtsp": "complete"})
+
     def test_onvif_and_rtsp_scanners_run_in_parallel(self) -> None:
         interface = discovery.LanInterface(
             name="eth0",

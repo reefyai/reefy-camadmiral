@@ -4,38 +4,70 @@
   "rules": [
     {
       "id": "amcrest-realmonitor-v1",
-      "manufacturer_aliases": ["amcrest"],
+      "manufacturer_aliases": [
+        "amcrest"
+      ],
       "source_url": "https://support.amcrest.com/hc/en-us/articles/13512258834445-Accessing-Amcrest-Products-Using-RTSP-IP4M-1052W-AI",
       "paths": [
-        {"label": "Main stream", "path": "/cam/realmonitor?channel=1&subtype=0"},
-        {"label": "Sub stream", "path": "/cam/realmonitor?channel=1&subtype=1"}
+        {
+          "label": "Main stream",
+          "path": "/cam/realmonitor?channel=1&subtype=0"
+        },
+        {
+          "label": "Sub stream",
+          "path": "/cam/realmonitor?channel=1&subtype=1"
+        }
       ]
     },
     {
       "id": "dahua-realmonitor-v1",
-      "manufacturer_aliases": ["dahua"],
+      "manufacturer_aliases": [
+        "dahua"
+      ],
       "source_url": "https://www.dahuawiki.com/index.php?curid=732&title=Remote_Access%2FRTSP_via_VLC",
       "paths": [
-        {"label": "Main stream", "path": "/cam/realmonitor?channel=1&subtype=0"},
-        {"label": "Sub stream", "path": "/cam/realmonitor?channel=1&subtype=1"}
+        {
+          "label": "Main stream",
+          "path": "/cam/realmonitor?channel=1&subtype=0"
+        },
+        {
+          "label": "Sub stream",
+          "path": "/cam/realmonitor?channel=1&subtype=1"
+        }
       ]
     },
     {
       "id": "hikvision-streaming-channels-v1",
-      "manufacturer_aliases": ["hikvision"],
+      "manufacturer_aliases": [
+        "hikvision"
+      ],
       "source_url": "https://supportusa.hikvision.com/support/solutions/articles/17000129064-how-do-i-get-my-rtsp-stream-",
       "paths": [
-        {"label": "Main stream", "path": "/Streaming/Channels/101"},
-        {"label": "Sub stream", "path": "/Streaming/Channels/102"}
+        {
+          "label": "Main stream",
+          "path": "/Streaming/Channels/101"
+        },
+        {
+          "label": "Sub stream",
+          "path": "/Streaming/Channels/102"
+        }
       ]
     },
     {
       "id": "reolink-preview-v1",
-      "manufacturer_aliases": ["reolink"],
+      "manufacturer_aliases": [
+        "reolink"
+      ],
       "source_url": "https://support.reolink.com/articles/900000630706-Introduction-to-RTSP/",
       "paths": [
-        {"label": "Main stream", "path": "/Preview_01_main"},
-        {"label": "Sub stream", "path": "/Preview_01_sub"}
+        {
+          "label": "Main stream",
+          "path": "/Preview_01_main"
+        },
+        {
+          "label": "Sub stream",
+          "path": "/Preview_01_sub"
+        }
       ]
     }
   ]

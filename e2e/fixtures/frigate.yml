@@ -1,0 +1,8 @@
+mqtt:
+  enabled: false
+
+detectors:
+  synthetic_cpu:
+    type: cpu
+
+cameras: {}

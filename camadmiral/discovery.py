@@ -273,6 +273,45 @@ def discover_onvif(
     return result
 
 
+def discover_onvif_address(
+    interface: LanInterface,
+    address: str,
+    log: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Probe one explicitly requested LAN address without widening the scan."""
+    emit = log or (lambda _message: None)
+    target = ipaddress.IPv4Address(address)
+    if target not in interface.network or target == interface.address:
+        raise ValueError(f"Address must be inside {interface.network}")
+    discovered: dict[str, dict[str, Any]] = {}
+    messages = onvif_probe_messages()
+    emit(f"ONVIF: probing explicit address {target}:{ONVIF_MULTICAST[1]}")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+        sock.bind((str(interface.address), 0))
+        for message in messages:
+            sock.sendto(message, (str(target), ONVIF_MULTICAST[1]))
+        deadline = time.monotonic() + ONVIF_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sock.settimeout(remaining)
+            try:
+                payload, sender = sock.recvfrom(65535)
+            except socket.timeout:
+                break
+            if sender[0] != str(target):
+                continue
+            for match in parse_probe_matches(payload, sender[0]):
+                if not is_onvif_camera(match):
+                    continue
+                key = str(match.get("endpoint_reference") or match["ip"])
+                discovered[key] = match
+    result = list(discovered.values())
+    emit(f"ONVIF: explicit probe found {len(result)} camera service(s)")
+    return result
+
+
 def _probe_rtsp(address: str, port: int) -> dict[str, Any] | None:
     started = time.monotonic()
     try:
@@ -341,6 +380,81 @@ def discover_rtsp(
     ]
     emit(f"RTSP: complete; {len(result)} host(s) responded")
     return result
+
+
+def discover_rtsp_address(
+    interface: LanInterface,
+    address: str,
+    log: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    emit = log or (lambda _message: None)
+    target = ipaddress.IPv4Address(address)
+    if target not in interface.network or target == interface.address:
+        raise ValueError(f"Address must be inside {interface.network}")
+    endpoints = [
+        endpoint
+        for port in RTSP_PORTS
+        if (endpoint := _probe_rtsp(str(target), port)) is not None
+        and endpoint["verified"]
+    ]
+    emit(f"RTSP: explicit probe found {len(endpoints)} endpoint(s) at {target}")
+    return [{"ip": str(target), "endpoints": endpoints}] if endpoints else []
+
+
+def scan_explicit_address(
+    address: str,
+    progress: Callable[[str, str, LanInterface], None] | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat()
+    raw_log: list[str] = []
+
+    def log(message: str) -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+        raw_log.append(f"{timestamp} {' '.join(str(message).splitlines())}")
+
+    interface = default_lan_interface()
+    target = ipaddress.IPv4Address(address)
+    if not target.is_private or target not in interface.network or target == interface.address:
+        raise DiscoveryScanError(
+            f"Address must be a camera address inside {interface.network}", raw_log
+        )
+    scanners = {"onvif": "running", "rtsp": "running"}
+    if progress:
+        for scanner in scanners:
+            progress(scanner, "running", interface)
+    results: dict[str, Any] = {"onvif": [], "rtsp": []}
+    errors: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(discover_onvif_address, interface, str(target), log): "onvif",
+            pool.submit(discover_rtsp_address, interface, str(target), log): "rtsp",
+        }
+        for future in concurrent.futures.as_completed(futures):
+            scanner = futures[future]
+            try:
+                results[scanner] = future.result()
+            except Exception as exc:
+                scanners[scanner] = "error"
+                errors[scanner] = str(exc)[:200]
+            else:
+                scanners[scanner] = "complete"
+            if progress:
+                progress(scanner, scanners[scanner], interface)
+    arp_entries = read_arp_table()
+    devices = merge_discovery(results["onvif"], results["rtsp"], arp_entries)
+    duration_ms = round((time.monotonic() - started) * 1000)
+    log(f"EXPLICIT: complete in {duration_ms}ms; devices={len(devices)}")
+    return {
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": duration_ms,
+        "network": interface.as_dict(),
+        "scanners": scanners,
+        "scanner_errors": errors,
+        "devices": devices,
+        "raw_log": raw_log,
+    }
 
 
 def _ping_host(address: str) -> bool:

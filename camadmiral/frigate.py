@@ -24,6 +24,7 @@ REQUIRED_CAPABILITIES = {
     "/config/set": "put",
     "/go2rtc/streams": "get",
     "/go2rtc/streams/{stream_name}": "put",
+    "/stats": "get",
 }
 
 
@@ -112,6 +113,12 @@ class FrigateClient:
 
     def runtime_streams(self) -> dict[str, Any]:
         result = self._request("GET", "/api/go2rtc/streams")
+        if not isinstance(result, dict):
+            raise FrigateApiError("invalid_response")
+        return result
+
+    def stats(self) -> dict[str, Any]:
+        result = self._request("GET", "/api/stats")
         if not isinstance(result, dict):
             raise FrigateApiError("invalid_response")
         return result
@@ -292,6 +299,7 @@ def reconcile_frigate(
     config = client.config()
     raw_paths = client.raw_paths()
     runtime_streams = client.runtime_streams()
+    stats = client.stats()
     password = repository.rtsp_access_password()
     applied = 0
     pending = 0
@@ -354,18 +362,27 @@ def reconcile_frigate(
             pending += 1
             continue
         camera_exists = desired["key"] in config.get("cameras", {})
+        camera_running = desired["key"] in stats
         configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
         aliases_exist = any(alias in configured_streams for alias in desired["streams"])
         if binding is None and (camera_exists or aliases_exist):
             pending += 1
             continue
+        actual_matches = _actual_matches(desired, config, raw_paths, runtime_streams)
         if (
             binding is not None
             and bool(binding.get("camera_enabled_applied", 1))
-            and binding.get("status") == "applied"
             and binding.get("applied_hash") == desired["desired_hash"]
-            and _actual_matches(desired, config, raw_paths, runtime_streams)
+            and actual_matches
+            and camera_running
         ):
+            if binding.get("status") != "applied":
+                repository.complete_frigate_attempt(
+                    target.target_id,
+                    camera["camera_uuid"],
+                    status="applied",
+                    applied_hash=desired["desired_hash"],
+                )
             applied += 1
             continue
         repository.record_frigate_attempt(
@@ -391,7 +408,11 @@ def reconcile_frigate(
                 }
             client.set_config(
                 {"cameras": {desired["key"]: camera_update}},
-                update_topic=f"config/cameras/{desired['key']}/add" if not camera_exists else None,
+                update_topic=(
+                    f"config/cameras/{desired['key']}/add"
+                    if not camera_exists or not camera_running
+                    else None
+                ),
             )
             if restore_camadmiral_enabled:
                 client.set_config(
@@ -404,8 +425,11 @@ def reconcile_frigate(
             verified_config = client.config()
             verified_raw_paths = client.raw_paths()
             verified_runtime = client.runtime_streams()
+            verified_stats = client.stats()
             if not _actual_matches(desired, verified_config, verified_raw_paths, verified_runtime):
                 raise FrigateApiError("verification_failed")
+            if desired["key"] not in verified_stats:
+                raise FrigateApiError("camera_start_pending")
         except FrigateApiError as exc:
             repository.complete_frigate_attempt(
                 target.target_id,
@@ -426,6 +450,11 @@ def reconcile_frigate(
             camera["camera_uuid"],
             True,
         )
-        config, raw_paths, runtime_streams = verified_config, verified_raw_paths, verified_runtime
+        config, raw_paths, runtime_streams, stats = (
+            verified_config,
+            verified_raw_paths,
+            verified_runtime,
+            verified_stats,
+        )
         applied += 1
     return {"applied": applied, "pending": pending}

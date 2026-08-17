@@ -10,3 +10,12 @@ storage:
 secrets:
   api_token_file: /run/secrets/camadmiral_api_token
   admin_password_file: /run/secrets/camadmiral_admin_password
+
+integrations:
+  frigate:
+    targets:
+      - id: synthetic-frigate
+        name: Synthetic Frigate
+        api_url: http://127.0.0.1:5000
+        sync_cameras: true
+    default_target: synthetic-frigate

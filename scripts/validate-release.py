@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -23,6 +25,13 @@ def main() -> int:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     if f"image: {expected_image}" not in compose:
         raise SystemExit("compose.yaml image does not match VERSION")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "compile-rtsp-catalog.py"), "--check"],
+        cwd=ROOT,
+        check=False,
+    )
+    if result.returncode:
+        raise SystemExit("compiled RTSP catalog does not match its source")
     print(f"release metadata valid: {version}")
     return 0
 
