@@ -125,6 +125,49 @@ class DiscoveryDecorationTests(unittest.TestCase):
             ],
         )
 
+    def test_frigate_status_includes_safe_internal_error_code(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "display_name": "Operator name",
+                "streams": [],
+            }
+        }
+        repository.frigate_bindings.return_value = [
+            {
+                "camera_uuid": "camera-1",
+                "status": "error",
+                "last_error_code": "camera_start_pending",
+            }
+        ]
+        state = {
+            "devices": [
+                {
+                    "candidate_uuid": "candidate-1",
+                    "display_name": "Synthetic camera",
+                }
+            ]
+        }
+        targets = [FrigateTarget("one", "Frigate One", "http://127.0.0.1:20001")]
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=targets),
+        ):
+            decorated = app_module._decorate_adoptions(state)
+
+        self.assertEqual(
+            decorated["devices"][0]["adoption"]["frigate"],
+            [
+                {
+                    "target": "Frigate One",
+                    "status": "error",
+                    "error_code": "camera_start_pending",
+                }
+            ],
+        )
+
 
 class ConsumerApiTests(unittest.TestCase):
     @staticmethod

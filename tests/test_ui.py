@@ -55,6 +55,23 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="confirm-modal" role="alertdialog"', self.html)
         self.assertNotIn("window.confirm", self.html)
 
+    def test_live_view_is_a_fast_table_action(self) -> None:
+        self.assertIn('addText(actionStack, "button", "row-action", "Live")', self.html)
+        self.assertIn('showLiveView(device.adoption.camera_uuid, device.display_name)', self.html)
+        self.assertNotIn("function addLiveViewAction", self.html)
+
+    def test_camera_details_are_grouped_into_compact_sections(self) -> None:
+        self.assertIn('addDetailSection(wrapper, "Camera settings")', self.html)
+        self.assertIn('addDetailSection(wrapper, "Streams", streamCount)', self.html)
+        self.assertIn('addDetailSection(wrapper, "Integrations"', self.html)
+        self.assertIn("connection-details", self.html)
+        self.assertNotIn("camera-facts", self.html)
+
+    def test_frigate_status_explains_automatic_retry(self) -> None:
+        self.assertIn("Waiting for camera process", self.html)
+        self.assertIn("CamAdmiral will retry until its process appears.", self.html)
+        self.assertNotIn("Retry pending", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

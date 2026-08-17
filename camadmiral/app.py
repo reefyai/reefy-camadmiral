@@ -189,12 +189,13 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             adoption["frigate"] = []
             for target, bindings_by_camera in frigate_bindings:
                 binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
-                adoption["frigate"].append(
-                    {
-                        "target": target.name,
-                        "status": binding["status"] if binding is not None else "pending",
-                    }
-                )
+                target_status = {
+                    "target": target.name,
+                    "status": binding["status"] if binding is not None else "pending",
+                }
+                if binding is not None and binding.get("last_error_code"):
+                    target_status["error_code"] = binding["last_error_code"]
+                adoption["frigate"].append(target_status)
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
     return state

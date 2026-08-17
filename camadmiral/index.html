@@ -141,21 +141,41 @@
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
     .action-stack { display: flex; align-items: center; gap: 8px; }
     .camera-details { min-width: 0; }
-    .detail-title { margin-bottom: 10px; color: #dce8ee; font-size: 13px; font-weight: 800; }
+    .camera-summary {
+      display: grid; gap: 9px; margin-bottom: 12px; padding: 12px 13px;
+      border: 1px solid rgba(148, 163, 184, .12); border-radius: 11px; background: rgba(5, 15, 27, .45);
+    }
+    .camera-summary-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .camera-summary-meta { display: flex; align-items: center; gap: 7px 14px; flex-wrap: wrap; color: #91a5b5; font-size: 12px; }
+    .camera-summary-meta .mono { white-space: normal; }
+    .protocol-list { display: flex; gap: 6px; flex-wrap: wrap; }
+    .protocol-badge {
+      border: 1px solid rgba(45, 212, 191, .18); border-radius: 999px; padding: 3px 7px;
+      background: rgba(45, 212, 191, .06); color: #8ff8e8; font-size: 10px; font-weight: 800;
+    }
+    .connection-details { border-top: 1px solid rgba(148, 163, 184, .09); padding-top: 8px; }
+    .connection-details summary { color: #7890a4; cursor: pointer; font-size: 11px; font-weight: 700; }
+    .connection-details[open] summary, .connection-details summary:hover { color: #b9fff5; }
+    .connection-details-body { display: grid; gap: 5px; margin-top: 8px; }
+    .connection-details-body .endpoint { max-width: 100%; }
+    .detail-section {
+      padding: 13px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 11px;
+      background: rgba(8, 20, 34, .46);
+    }
+    .detail-section + .detail-section { margin-top: 11px; }
+    .detail-section-header {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px;
+    }
+    .detail-title { color: #dce8ee; font-size: 13px; font-weight: 800; }
+    .detail-section-note { color: #60798e; font-size: 11px; }
     .detail-message { color: #8ea2b3; font-size: 13px; }
-    .integration-status { margin-top: 8px; color: #91a5b5; font-size: 12px; }
-    .integration-status.applied { color: #75f4e2; }
-    .integration-status.error { color: #fcd34d; }
-    .live-view-action { margin: 12px 0 17px; }
     .camera-management {
-      display: flex; align-items: end; gap: 9px; flex-wrap: wrap; margin: 12px 0 17px;
-      padding: 11px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 9px;
-      background: rgba(8, 20, 34, .54);
+      display: flex; align-items: end; gap: 9px; flex-wrap: wrap; margin: 0;
     }
     .camera-management .setup-field { flex: 1 1 220px; }
     .camera-management .setup-field input { width: 100%; }
     .credential-repair {
-      margin: 12px 0 17px; padding: 11px; border: 1px solid rgba(251, 191, 36, .24);
+      margin: 12px 0 0; padding: 11px; border: 1px solid rgba(251, 191, 36, .24);
       border-radius: 9px; background: rgba(120, 53, 15, .08);
     }
     .credential-repair-title { margin-bottom: 3px; color: #fcd34d; font-size: 12px; font-weight: 800; }
@@ -166,6 +186,16 @@
     }
     .danger-action:hover { background: rgba(251, 191, 36, .13); }
     .management-note { flex-basis: 100%; color: #7890a4; font-size: 11px; }
+    .integration-list { display: grid; gap: 8px; }
+    .integration-row {
+      display: grid; grid-template-columns: minmax(150px, .65fr) minmax(150px, .55fr) minmax(260px, 1fr);
+      align-items: center; gap: 12px; padding: 9px 10px; border-radius: 9px; background: rgba(5, 15, 27, .42);
+    }
+    .integration-name { color: #dce8ee; font-size: 12px; font-weight: 750; }
+    .integration-state { color: #a9bac6; font-size: 11px; font-weight: 800; }
+    .integration-state.applied { color: #75f4e2; }
+    .integration-state.error { color: #fcd34d; }
+    .integration-help { color: #7890a4; font-size: 11px; line-height: 1.4; }
     .modal-backdrop {
       position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 22px;
       background: rgba(1, 7, 14, .82); backdrop-filter: blur(5px);
@@ -191,16 +221,6 @@
     .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
     .confirm-message { color: #a9bac6; font-size: 13px; line-height: 1.55; }
     .confirm-modal { z-index: 120; }
-    .camera-facts {
-      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px;
-      margin-bottom: 16px; padding: 11px; border: 1px solid rgba(148, 163, 184, .12);
-      border-radius: 10px; background: rgba(5, 15, 27, .45);
-    }
-    .camera-fact { min-width: 0; }
-    .camera-fact-label { margin-bottom: 4px; color: #60798e; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-    .camera-fact-value { color: #c8d6de; font-size: 12px; overflow-wrap: anywhere; }
-    .camera-service-list { grid-column: 1 / -1; padding-top: 2px; }
-    .camera-service-list .endpoint { max-width: 100%; }
     .live-dialog .modal-body { padding: 12px; }
     .live-frame {
       position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
@@ -256,12 +276,13 @@
     .media-state { margin-top: 4px; color: #7890a4; font: 11px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
     .media-state.ready { color: #75f4e2; }
     .media-state.unavailable { color: #fbbf24; }
-    .profile-list { display: grid; gap: 7px; }
+    .profile-list { display: grid; gap: 9px; }
     .profile {
-      display: grid; grid-template-columns: minmax(160px, .75fr) minmax(190px, .8fr) minmax(340px, 1.8fr);
-      gap: 18px; align-items: start; border-top: 1px solid rgba(148, 163, 184, .09); padding-top: 8px;
-      color: #91a5b5; font-size: 12px;
+      display: grid; grid-template-columns: minmax(140px, .65fr) minmax(170px, .75fr) minmax(320px, 1.7fr);
+      gap: 16px; align-items: start; padding: 11px; border: 1px solid rgba(148, 163, 184, .1);
+      border-radius: 9px; background: rgba(5, 15, 27, .38); color: #91a5b5; font-size: 12px;
     }
+    .stream-identity { min-width: 0; }
     .profile-name { color: #e0eaf0; font-weight: 700; }
     .profile-specs { color: #91a5b5; line-height: 1.45; }
     .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
@@ -327,14 +348,14 @@
       tbody tr.camera-row td:nth-child(7) { grid-area: action; align-self: center; }
       .cell-stack { max-height: 63px; }
       .camera-mobile-ip { display: block; }
-      .action-stack { justify-content: flex-end; }
+      .action-stack { align-items: stretch; flex-direction: column; justify-content: center; gap: 6px; }
       .action-stack .row-action { min-width: 66px; padding: 7px 9px; }
       .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
       .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }
       .camera-management {
         display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end;
-        gap: 8px; padding: 10px;
+        gap: 8px;
       }
       .camera-management .setup-field { grid-column: 1; flex: none; min-width: 0; width: 100%; }
       .camera-management > .row-action { grid-column: 2; width: auto; padding: 8px 10px; }
@@ -344,12 +365,13 @@
       .secondary-action { align-self: flex-start; padding: 5px 0; }
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
+      .integration-row { grid-template-columns: 1fr; gap: 4px; }
+      .camera-summary-top { align-items: flex-start; }
       .endpoint, .downstream-url { max-width: 100%; }
       .modal-backdrop { padding: 8px; }
       .modal-dialog { max-height: calc(100vh - 16px); border-radius: 13px; }
       .modal-header { min-height: 54px; padding: 10px 12px; }
       .modal-body { max-height: calc(100vh - 70px); padding: 12px; }
-      .camera-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .app-footer { padding-bottom: 18px; }
     }
   </style>
@@ -384,8 +406,8 @@
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
           <colgroup>
-            <col style="width: 22%"><col style="width: 14%"><col style="width: 13%"><col style="width: 17%">
-            <col style="width: 18%"><col style="width: 7%"><col style="width: 9%">
+            <col style="width: 20%"><col style="width: 13%"><col style="width: 12%"><col style="width: 16%">
+            <col style="width: 17%"><col style="width: 7%"><col style="width: 15%">
           </colgroup>
           <thead>
             <tr>
@@ -734,29 +756,36 @@
       return {key: "checking", label: "checking"};
     }
 
-    function addCameraFacts(parent, device) {
-      const facts = addText(parent, "section", "camera-facts", "");
-      const values = [
-        ["Status", cameraHealth(device).label],
-        ["IP address", device.ip || "Unavailable"],
-        ["MAC address", device.mac || "Unavailable"],
-        ["Protocols", [device.onvif?.service_urls?.length ? "ONVIF" : null, device.rtsp?.length ? "RTSP" : null].filter(Boolean).join(" + ") || "None found"]
-      ];
-      values.forEach(([label, value]) => {
-        const fact = addText(facts, "div", "camera-fact", "");
-        addText(fact, "div", "camera-fact-label", label);
-        addText(fact, "div", "camera-fact-value", value);
-      });
-      if (device.onvif?.model) {
-        const fact = addText(facts, "div", "camera-fact camera-service-list", "");
-        addText(fact, "div", "camera-fact-label", "Camera model");
-        addText(fact, "div", "camera-fact-value", device.onvif.model);
-      }
+    function addCameraSummary(parent, device) {
+      const summary = addText(parent, "section", "camera-summary", "");
+      const top = addText(summary, "div", "camera-summary-top", "");
+      const status = cameraHealth(device);
+      const statusLabel = addText(top, "span", `device-status ${status.key}`, "");
+      addText(statusLabel, "span", "status-dot", "");
+      addText(statusLabel, "span", "", status.label);
+      const protocols = addText(top, "div", "protocol-list", "");
+      if (device.onvif?.service_urls?.length) addText(protocols, "span", "protocol-badge", "ONVIF");
+      if (device.rtsp?.length) addText(protocols, "span", "protocol-badge", "RTSP");
+
+      const metadata = addText(summary, "div", "camera-summary-meta", "");
+      addText(metadata, "span", "mono", device.ip || "IP unavailable");
+      addText(metadata, "span", "mono", device.mac || "MAC unavailable");
+      if (device.onvif?.model) addText(metadata, "span", "", device.onvif.model);
+
       if (device.onvif?.service_urls?.length) {
-        const services = addText(facts, "div", "camera-fact camera-service-list", "");
-        addText(services, "div", "camera-fact-label", "ONVIF services");
-        device.onvif.service_urls.forEach(value => addText(services, "div", "endpoint", value));
+        const connection = addText(summary, "details", "connection-details", "");
+        addText(connection, "summary", "", "Connection details");
+        const body = addText(connection, "div", "connection-details-body", "");
+        device.onvif.service_urls.forEach(value => addText(body, "div", "endpoint", value));
       }
+    }
+
+    function addDetailSection(parent, title, note = "") {
+      const section = addText(parent, "section", "detail-section", "");
+      const header = addText(section, "div", "detail-section-header", "");
+      addText(header, "div", "detail-title", title);
+      if (note) addText(header, "div", "detail-section-note", note);
+      return section;
     }
 
     function matchesSearch(device, query) {
@@ -1055,35 +1084,42 @@
       startLiveTransport(cameraUuid, session);
     }
 
-    function addLiveViewAction(parent, adoption, displayName) {
-      if (!adoption?.camera_uuid || adoption.enabled === false) return;
-      const action = addText(parent, "div", "live-view-action", "");
-      const live = addText(action, "button", "row-action", "Live view");
-      live.type = "button";
-      live.addEventListener("click", () => showLiveView(adoption.camera_uuid, displayName));
-    }
-
     function addFrigateStatus(parent, adoption) {
       const statuses = Array.isArray(adoption?.frigate)
         ? adoption.frigate
         : (adoption?.frigate ? [adoption.frigate] : []);
-      const labels = {
-        applied: "Added",
-        pending: "Adding...",
-        error: "Retry pending"
-      };
+      const list = addText(parent, "div", "integration-list", "");
       statuses.forEach((status) => {
+        const row = addText(list, "div", "integration-row", "");
+        addText(row, "div", "integration-name", status.target || "Frigate");
         if (adoption.enabled === false) {
-          addText(parent, "div", "integration-status", `${status.target} · Disabled`);
+          addText(row, "div", "integration-state", "Paused");
+          addText(row, "div", "integration-help", "This camera is disabled in CamAdmiral.");
           return;
         }
         const state = status.status || "pending";
-        addText(
-          parent,
-          "div",
-          `integration-status ${state}`,
-          `${status.target} · ${labels[state] || "Waiting"}`
-        );
+        if (state === "applied") {
+          addText(row, "div", "integration-state applied", "Connected");
+          addText(row, "div", "integration-help", "Camera configuration is active in Frigate.");
+          return;
+        }
+        if (state === "pending") {
+          addText(row, "div", "integration-state", "Syncing");
+          addText(row, "div", "integration-help", "CamAdmiral is applying this camera.");
+          return;
+        }
+        const errors = {
+          camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
+          target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
+          authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
+          capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
+          configuration_rejected: ["Configuration rejected", "Frigate rejected the camera configuration. CamAdmiral will retry."],
+          runtime_stream_rejected: ["Stream rejected", "Frigate rejected the runtime stream. CamAdmiral will retry."],
+          verification_failed: ["Sync verification failed", "Frigate did not retain the expected configuration. CamAdmiral will retry."]
+        };
+        const [label, help] = errors[status.error_code] || ["Sync issue", "CamAdmiral will retry automatically."];
+        addText(row, "div", "integration-state error", label);
+        addText(row, "div", "integration-help", help);
       });
     }
 
@@ -1169,13 +1205,9 @@
       const enabled = adoption.enabled !== false;
       const toggle = addText(management, "button", enabled ? "danger-action" : "row-action", enabled ? "Disable" : "Enable");
       toggle.type = "button";
+      toggle.title = enabled ? "Stop live media and Frigate processing" : "Validate streams and restore processing";
       toggle.addEventListener("click", () => requestCameraEnabled(device, !enabled, toggle));
-      addText(
-        management,
-        "div",
-        "management-note",
-        enabled ? "Disabling stops live media and Frigate processing while preserving settings and history." : "Enabling checks saved streams before restoring media and Frigate processing."
-      );
+      if (!enabled) addText(management, "div", "management-note", "Enabling validates saved streams before restoring processing.");
       const error = lifecycleErrors.get(device.candidate_uuid);
       if (error) addText(management, "div", "setup-status error", error);
       management.addEventListener("submit", event => {
@@ -1279,15 +1311,17 @@
     function inspectionDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details";
-      addCameraFacts(wrapper, device);
+      addCameraSummary(wrapper, device);
       const progress = adoptionProgress.get(device.candidate_uuid);
       if (progress) {
-        addAdoptionProgress(wrapper, progress);
+        const activity = addDetailSection(wrapper, "Working");
+        addAdoptionProgress(activity, progress);
         return wrapper;
       }
       const result = inspections.get(device.candidate_uuid);
       if (!result || result.status === "loading" || result.status === "adopting") {
-        addText(wrapper, "div", "detail-message", result?.status === "adopting" ? "Validating and adopting camera..." : "Inspecting ONVIF profiles...");
+        const activity = addDetailSection(wrapper, "Working");
+        addText(activity, "div", "detail-message", result?.status === "adopting" ? "Validating and adopting camera..." : "Inspecting ONVIF profiles...");
         return wrapper;
       }
       if (result.status !== "ok" && result.status !== "adopted") {
@@ -1300,31 +1334,33 @@
         const message = device.service_status === "unavailable" && result.status !== "not_onvif"
           ? "Device is online, but no camera service responded during the latest scan."
           : messages[result.status] || result.message || "Inspection failed.";
-        addText(wrapper, "div", "detail-message", message);
-        if (result.status === "credentials_required") addAdoptionForm(wrapper, device, true);
-        if (result.status === "not_onvif" && device.rtsp?.length) addRtspAdoptionForm(wrapper, device);
+        const connect = addDetailSection(wrapper, device.adoption ? "Camera status" : "Connect camera");
+        addText(connect, "div", "detail-message", message);
+        if (result.status === "credentials_required") addAdoptionForm(connect, device, true);
+        if (result.status === "not_onvif" && device.rtsp?.length) addRtspAdoptionForm(connect, device);
         return wrapper;
       }
       const adoption = device.adoption || result.adoption;
       if (adoption) {
-        addText(wrapper, "div", "detail-message", adoption.enabled === false ? "Adopted and disabled." : "Adopted. Stream roles were selected automatically.");
-        addCameraManagement(wrapper, device, adoption);
-        addCredentialRepair(wrapper, device, adoption);
-        addFrigateStatus(wrapper, adoption);
-        addLiveViewAction(wrapper, adoption, device.display_name);
+        const settings = addDetailSection(wrapper, "Camera settings");
+        addCameraManagement(settings, device, adoption);
+        addCredentialRepair(settings, device, adoption);
         if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       }
       const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));
-      addText(wrapper, "div", "detail-title", `${result.profiles.length} ${rtspOnly ? "RTSP stream" : "ONVIF profile"}${result.profiles.length === 1 ? "" : "s"}`);
+      const streamCount = `${result.profiles.length} ${rtspOnly ? "RTSP stream" : "ONVIF profile"}${result.profiles.length === 1 ? "" : "s"}`;
+      const streams = addDetailSection(wrapper, "Streams", streamCount);
       if (result.rejected_sources?.length && !result.catalog_revision) {
-        addText(wrapper, "div", "setup-status warning", `${result.rejected_sources.length} additional stream could not be read and was not added.`);
+        addText(streams, "div", "setup-status warning", `${result.rejected_sources.length} additional stream could not be read and was not added.`);
       }
-      const list = addText(wrapper, "div", "profile-list", "");
+      const list = addText(streams, "div", "profile-list", "");
       result.profiles.forEach(profile => {
         const row = addText(list, "div", "profile", "");
-        addText(row, "div", "profile-name", profile.name || profile.token);
         const roleTokens = result.role_tokens || {};
         const roles = Object.entries(roleTokens).filter(([, token]) => token === profile.token).map(([role]) => role);
+        const identity = addText(row, "div", "stream-identity", "");
+        addText(identity, "div", "profile-name", profile.name || profile.token);
+        if (roles.length) addText(identity, "div", "role-label", roles.join(" · "));
         const managed = adoption?.streams?.find(stream => stream.profile_token === profile.token);
         const width = managed?.probed_width || profile.width;
         const height = managed?.probed_height || profile.height;
@@ -1337,7 +1373,7 @@
         ].filter(Boolean).join(" · ") || "Media details unavailable";
         addText(row, "div", "profile-specs", specifications);
         const endpoint = addText(row, "div", "stream-access", "");
-        addStreamAccess(endpoint, profile, managed, roles, adoption?.enabled !== false);
+        addStreamAccess(endpoint, profile, managed, [], adoption?.enabled !== false);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
@@ -1347,7 +1383,15 @@
           addText(endpoint, "div", `media-state ${health === "healthy" ? "ready" : health === "unknown" ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
-      if (!result.adoption && !device.adoption) addAdoptionForm(wrapper, device, false);
+      if (adoption?.frigate?.length) {
+        const count = adoption.frigate.length;
+        const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
+        addFrigateStatus(integrations, adoption);
+      }
+      if (!result.adoption && !device.adoption) {
+        const connect = addDetailSection(wrapper, "Adopt camera");
+        addAdoptionForm(connect, device, false);
+      }
       return wrapper;
     }
 
@@ -1718,6 +1762,14 @@
         const actions = addCell(row);
         const actionLabel = device.adoption ? "Details" : "Adopt";
         const actionStack = addText(actions, "div", "action-stack", "");
+        if (device.adoption?.camera_uuid && device.adoption.enabled !== false) {
+          const live = addText(actionStack, "button", "row-action", "Live");
+          live.type = "button";
+          live.setAttribute("aria-haspopup", "dialog");
+          live.setAttribute("aria-label", `Live view for ${device.display_name || "camera"}`);
+          live.title = "Open live view";
+          live.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
+        }
         const action = addText(actionStack, "button", "row-action", actionLabel);
         action.type = "button";
         action.setAttribute("aria-haspopup", "dialog");
@@ -1762,7 +1814,7 @@
           device.candidate_uuid,
           device.display_name,
           device.adoption?.enabled,
-          ...(device.adoption?.frigate || []).map(status => [status.target, status.status]),
+          ...(device.adoption?.frigate || []).map(status => [status.target, status.status, status.error_code]),
           ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
         ]));
         const resultId = `${data.inventory_scan_id || data.scan_id || data.completed_at}:${healthSignature}`;
