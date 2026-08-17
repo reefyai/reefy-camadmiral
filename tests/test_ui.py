@@ -27,7 +27,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("setCandidateIgnored", self.html)
 
     def test_phone_layout_replaces_wide_rows_with_compact_cards(self) -> None:
-        self.assertIn("tbody tr:not(.detail-row)", self.html)
+        self.assertIn("tbody tr.camera-row", self.html)
         self.assertIn('grid-template-areas: "identity action" "status action"', self.html)
         self.assertIn("camera-mobile-ip", self.html)
         self.assertIn("thead { display: none; }", self.html)
@@ -35,6 +35,25 @@ class DiscoveryUiTests(unittest.TestCase):
     def test_phone_camera_name_editor_does_not_use_vertical_flex_basis(self) -> None:
         self.assertIn(".camera-management .setup-field { grid-column: 1; flex: none;", self.html)
         self.assertIn("grid-template-columns: minmax(0, 1fr) auto", self.html)
+
+    def test_camera_rows_are_fixed_and_long_values_are_clipped(self) -> None:
+        self.assertIn(".camera-row { height: 68px; }", self.html)
+        self.assertIn("text-overflow: ellipsis", self.html)
+        self.assertIn("node.title = value", self.html)
+        self.assertIn('row.className = `camera-row ${status.key}`', self.html)
+
+    def test_camera_details_render_in_a_modal_not_in_table_rows(self) -> None:
+        self.assertIn('id="app-modal" role="dialog"', self.html)
+        self.assertIn('openAppModal("camera"', self.html)
+        self.assertNotIn("detail-row", self.html)
+        self.assertNotIn("detailCell.colSpan", self.html)
+
+    def test_popups_share_modal_shell_and_disable_uses_custom_confirmation(self) -> None:
+        self.assertGreaterEqual(self.html.count('class="modal-backdrop'), 3)
+        self.assertIn('openAppModal("manual"', self.html)
+        self.assertIn('openAppModal("scan"', self.html)
+        self.assertIn('id="confirm-modal" role="alertdialog"', self.html)
+        self.assertNotIn("window.confirm", self.html)
 
 
 if __name__ == "__main__":

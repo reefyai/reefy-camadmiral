@@ -39,7 +39,7 @@
     }
     .header-secondary:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
     .address-panel {
-      display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: -12px 0 14px;
+      display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
     }
     .address-panel .setup-field { flex: 1 1 420px; }
     .address-panel input {
@@ -62,20 +62,13 @@
     .scanner-state.complete .scanner-dot { background: #2dd4bf; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
-    .scan-details { position: relative; }
-    .scan-details summary {
-      display: inline-flex; align-items: center; gap: 8px; min-height: 38px; list-style: none;
+    .scan-details-trigger {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px;
       border: 1px solid rgba(148, 163, 184, .18); border-radius: 10px; padding: 8px 11px;
       background: rgba(12, 26, 42, .72); color: #91a5b5; font-size: 12px; font-weight: 750; cursor: pointer;
     }
-    .scan-details summary::-webkit-details-marker { display: none; }
-    .scan-details summary:hover { color: #b9fff5; }
-    .scan-details-content {
-      position: absolute; z-index: 30; top: calc(100% + 8px); right: 0;
-      width: min(720px, calc(100vw - 32px)); border: 1px solid rgba(148, 163, 184, .16);
-      border-radius: 11px; padding: 12px 13px 13px; background: #081421;
-      box-shadow: 0 20px 56px rgba(0, 0, 0, .45);
-    }
+    .scan-details-trigger:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
+    .scan-dialog-content { min-width: 0; }
     .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
     .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
     .scan-log {
@@ -102,11 +95,18 @@
       overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
     }
-    table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 13px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid rgba(148, 163, 184, .11); }
+    table { width: 100%; min-width: 980px; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 13px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid rgba(148, 163, 184, .11); }
     th { color: #7890a4; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     tbody tr:last-child td { border-bottom: 0; }
     tbody tr:hover { background: rgba(30, 56, 76, .3); }
+    .camera-row { height: 68px; }
+    .camera-row td { height: 68px; overflow: hidden; }
+    .cell-stack { min-width: 0; max-height: 43px; overflow: hidden; }
+    .clipped-text {
+      display: block; min-width: 0; max-width: 100%; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
     .sort {
       display: inline-flex; align-items: center; gap: 5px; border: 0; padding: 0; background: transparent;
       color: inherit; font: inherit; font-weight: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
@@ -116,9 +116,8 @@
     .camera-name { color: #f0f7fa; font-size: 14px; font-weight: 750; }
     .camera-model { margin-top: 3px; color: #6e8496; font-size: 12px; }
     .camera-mobile-ip { display: none; margin-top: 5px; color: #91a5b5; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .camera-mobile-meta { display: none; }
     .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
-    .adopted-label { display: inline-block; margin-top: 5px; color: #75f4e2; font-size: 11px; font-weight: 750; }
+    .adopted-label { color: #75f4e2; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
     .device-status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; text-transform: capitalize; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -141,8 +140,7 @@
     .row-action:hover { background: rgba(45, 212, 191, .14); }
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
     .action-stack { display: flex; align-items: center; gap: 8px; }
-    .detail-row td { padding: 0; background: rgba(5, 15, 27, .5); }
-    .camera-details { padding: 17px 18px 19px; }
+    .camera-details { min-width: 0; }
     .detail-title { margin-bottom: 10px; color: #dce8ee; font-size: 13px; font-weight: 800; }
     .detail-message { color: #8ea2b3; font-size: 13px; }
     .integration-status { margin-top: 8px; color: #91a5b5; font-size: 12px; }
@@ -168,21 +166,42 @@
     }
     .danger-action:hover { background: rgba(251, 191, 36, .13); }
     .management-note { flex-basis: 100%; color: #7890a4; font-size: 11px; }
-    .live-modal {
+    .modal-backdrop {
       position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 22px;
       background: rgba(1, 7, 14, .82); backdrop-filter: blur(5px);
     }
-    .live-dialog {
-      width: min(880px, 100%); border: 1px solid rgba(148, 163, 184, .2); border-radius: 14px;
-      background: #081421; box-shadow: 0 24px 80px rgba(0, 0, 0, .5); padding: 16px;
+    .modal-dialog {
+      width: min(760px, 100%); max-height: min(860px, calc(100vh - 44px)); overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, .2); border-radius: 16px;
+      background: #081421; box-shadow: 0 24px 80px rgba(0, 0, 0, .5);
     }
-    .live-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
-    .live-title { margin: 0; color: #e6f0f4; font-size: 16px; }
-    .live-close {
+    .modal-dialog.wide { width: min(920px, 100%); }
+    .modal-dialog.compact { width: min(500px, 100%); }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      min-height: 60px; padding: 13px 16px; border-bottom: 1px solid rgba(148, 163, 184, .13);
+    }
+    .modal-title { min-width: 0; margin: 0; color: #e6f0f4; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
+    .modal-close {
       width: 34px; height: 34px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px;
       background: rgba(148, 163, 184, .06); color: #a9bac6; cursor: pointer; font-size: 20px; line-height: 1;
     }
-    .live-close:hover { color: #eef5f8; background: rgba(148, 163, 184, .12); }
+    .modal-close:hover { color: #eef5f8; background: rgba(148, 163, 184, .12); }
+    .modal-body { max-height: calc(100vh - 105px); overflow: auto; padding: 16px; overscroll-behavior: contain; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+    .confirm-message { color: #a9bac6; font-size: 13px; line-height: 1.55; }
+    .confirm-modal { z-index: 120; }
+    .camera-facts {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px;
+      margin-bottom: 16px; padding: 11px; border: 1px solid rgba(148, 163, 184, .12);
+      border-radius: 10px; background: rgba(5, 15, 27, .45);
+    }
+    .camera-fact { min-width: 0; }
+    .camera-fact-label { margin-bottom: 4px; color: #60798e; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .camera-fact-value { color: #c8d6de; font-size: 12px; overflow-wrap: anywhere; }
+    .camera-service-list { grid-column: 1 / -1; padding-top: 2px; }
+    .camera-service-list .endpoint { max-width: 100%; }
+    .live-dialog .modal-body { padding: 12px; }
     .live-frame {
       position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
       border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px; background: #000;
@@ -276,9 +295,7 @@
       h1 { font-size: 32px; }
       .header-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); width: 100%; gap: 8px; }
       .header-actions > button { width: 100%; min-width: 0; padding: 10px 8px; font-size: 12px; }
-      .scan-details { grid-column: 1 / -1; }
-      .scan-details summary { justify-content: center; width: 100%; min-height: 34px; padding: 7px 10px; }
-      .scan-details-content { width: calc(100vw - 20px); }
+      .scan-details-trigger { grid-column: 1 / -1; width: 100%; min-height: 34px; padding: 7px 10px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
       .scanner-progress { flex-wrap: wrap; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
@@ -294,33 +311,24 @@
       table { display: block; min-width: 0; font-size: 13px; }
       thead { display: none; }
       tbody { display: grid; gap: 10px; }
-      tbody tr:not(.detail-row) {
+      tbody tr.camera-row {
         display: grid; grid-template-columns: minmax(0, 1fr) auto;
         grid-template-areas: "identity action" "status action";
-        column-gap: 12px; row-gap: 9px; border: 1px solid rgba(148, 163, 184, .15);
+        height: 112px; min-height: 112px; max-height: 112px; overflow: hidden;
+        column-gap: 12px; row-gap: 8px; border: 1px solid rgba(148, 163, 184, .15);
         border-radius: 12px; padding: 13px 14px; background: rgba(12, 26, 42, .76);
         box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
       }
-      tbody tr:not(.detail-row):hover { background: rgba(18, 38, 58, .82); }
-      tbody tr:not(.detail-row) td { border: 0; padding: 0; }
-      tbody tr:not(.detail-row) td:nth-child(1) { grid-area: identity; min-width: 0; }
-      tbody tr:not(.detail-row) td:nth-child(2) { grid-area: status; }
-      tbody tr:not(.detail-row) td:nth-child(n+3):nth-child(-n+6) { display: none; }
-      tbody tr:not(.detail-row) td:nth-child(7) { grid-area: action; align-self: center; }
+      tbody tr.camera-row:hover { background: rgba(18, 38, 58, .82); }
+      tbody tr.camera-row td { height: auto; border: 0; padding: 0; }
+      tbody tr.camera-row td:nth-child(1) { grid-area: identity; min-width: 0; }
+      tbody tr.camera-row td:nth-child(2) { grid-area: status; }
+      tbody tr.camera-row td:nth-child(n+3):nth-child(-n+6) { display: none; }
+      tbody tr.camera-row td:nth-child(7) { grid-area: action; align-self: center; }
+      .cell-stack { max-height: 63px; }
       .camera-mobile-ip { display: block; }
-      .camera-mobile-meta { display: block; margin-top: 7px; }
-      .camera-mobile-meta summary { color: #7890a4; cursor: pointer; font-size: 11px; font-weight: 700; }
-      .camera-mobile-meta[open] summary, .camera-mobile-meta summary:hover { color: #b9fff5; }
-      .camera-mobile-meta-content { display: grid; gap: 4px; margin-top: 6px; color: #91a5b5; font-size: 11px; }
-      .camera-mobile-meta-content .mono { white-space: normal; overflow-wrap: anywhere; }
       .action-stack { justify-content: flex-end; }
       .action-stack .row-action { min-width: 66px; padding: 7px 9px; }
-      .detail-row { display: block; margin-top: -10px; }
-      .detail-row td { display: block; width: 100%; border: 0; padding: 0; }
-      .camera-details {
-        width: 100%; padding: 14px 13px 16px; border: 1px solid rgba(148, 163, 184, .13);
-        border-top: 0; border-radius: 0 0 12px 12px; background: rgba(5, 15, 27, .62);
-      }
       .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
       .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }
@@ -337,8 +345,11 @@
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
       .endpoint, .downstream-url { max-width: 100%; }
-      .live-modal { padding: 8px; }
-      .live-dialog { padding: 10px; }
+      .modal-backdrop { padding: 8px; }
+      .modal-dialog { max-height: calc(100vh - 16px); border-radius: 13px; }
+      .modal-header { min-height: 54px; padding: 10px 12px; }
+      .modal-body { max-height: calc(100vh - 70px); padding: 12px; }
+      .camera-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .app-footer { padding-bottom: 18px; }
     }
   </style>
@@ -348,19 +359,9 @@
     <header>
       <h1>CamAdmiral</h1>
       <div class="header-actions">
-        <button class="header-secondary" id="show-add-address" type="button">Add camera manually</button>
+        <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera manually</button>
         <button id="scan" type="button">Scan network</button>
-        <details class="scan-details" id="scan-details">
-          <summary><span class="dot" id="dot"></span><span id="state">Starting</span></summary>
-          <div class="scan-details-content">
-            <div class="scan-overview">
-              <div class="scanner-progress" id="scanner-progress" hidden></div>
-              <div class="network" id="network"></div>
-            </div>
-            <div class="scan-metadata" id="scan-metadata"></div>
-            <pre class="scan-log" id="scan-log"></pre>
-          </div>
-        </details>
+        <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
       </div>
     </header>
     <main>
@@ -382,6 +383,10 @@
       </div>
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
+          <colgroup>
+            <col style="width: 22%"><col style="width: 14%"><col style="width: 13%"><col style="width: 17%">
+            <col style="width: 18%"><col style="width: 7%"><col style="width: 9%">
+          </colgroup>
           <thead>
             <tr>
               <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
@@ -400,18 +405,53 @@
     </main>
     <footer class="app-footer">CamAdmiral <span id="app-version" data-testid="app-version">0.0.0-dev</span></footer>
   </div>
-  <div class="live-modal" id="live-modal" role="dialog" aria-modal="true" aria-labelledby="live-title" hidden>
-    <div class="live-dialog">
-      <div class="live-header">
-        <h2 class="live-title" id="live-title">Live view</h2>
-        <button class="live-close" id="live-close" type="button" aria-label="Close live view">×</button>
+  <div class="modal-backdrop" id="app-modal" role="dialog" aria-modal="true" aria-labelledby="app-modal-title" hidden>
+    <section class="modal-dialog wide" id="app-modal-dialog" role="document">
+      <div class="modal-header">
+        <h2 class="modal-title" id="app-modal-title">Camera details</h2>
+        <button class="modal-close" id="app-modal-close" type="button" aria-label="Close dialog">×</button>
       </div>
-      <div class="live-frame">
+      <div class="modal-body" id="app-modal-body">
+        <div class="scan-dialog-content" id="scan-dialog-content" hidden>
+          <div class="scan-overview">
+            <div class="scanner-progress" id="scanner-progress" hidden></div>
+            <div class="network" id="network"></div>
+          </div>
+          <div class="scan-metadata" id="scan-metadata"></div>
+          <pre class="scan-log" id="scan-log"></pre>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop confirm-modal" id="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" hidden>
+    <section class="modal-dialog compact" role="document">
+      <div class="modal-header">
+        <h2 class="modal-title" id="confirm-title">Confirm action</h2>
+        <button class="modal-close" id="confirm-close" type="button" aria-label="Close confirmation">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="confirm-message" id="confirm-message"></div>
+        <div class="modal-actions">
+          <button class="row-action" id="confirm-cancel" type="button">Cancel</button>
+          <button class="danger-action" id="confirm-action" type="button">Continue</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop live-modal" id="live-modal" role="dialog" aria-modal="true" aria-labelledby="live-title" hidden>
+    <section class="modal-dialog wide live-dialog" role="document">
+      <div class="modal-header">
+        <h2 class="modal-title" id="live-title">Live view</h2>
+        <button class="modal-close" id="live-close" type="button" aria-label="Close live view">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="live-frame">
         <video id="live-video" aria-label="Live camera view" autoplay muted playsinline controls></video>
         <img id="live-fallback" alt="Live camera view" hidden>
         <div class="live-status" id="live-status">Connecting to camera...</div>
+        </div>
       </div>
-    </div>
+    </section>
   </div>
   <script>
     const scanButton = document.querySelector("#scan");
@@ -433,6 +473,18 @@
     const cameraRows = document.querySelector("#camera-rows");
     const empty = document.querySelector("#empty");
     const errorBox = document.querySelector("#error");
+    const appModal = document.querySelector("#app-modal");
+    const appModalDialog = document.querySelector("#app-modal-dialog");
+    const appModalTitle = document.querySelector("#app-modal-title");
+    const appModalBody = document.querySelector("#app-modal-body");
+    const appModalClose = document.querySelector("#app-modal-close");
+    const scanDialogContent = document.querySelector("#scan-dialog-content");
+    const confirmModal = document.querySelector("#confirm-modal");
+    const confirmTitle = document.querySelector("#confirm-title");
+    const confirmMessage = document.querySelector("#confirm-message");
+    const confirmClose = document.querySelector("#confirm-close");
+    const confirmCancel = document.querySelector("#confirm-cancel");
+    const confirmAction = document.querySelector("#confirm-action");
     const liveModal = document.querySelector("#live-modal");
     const liveTitle = document.querySelector("#live-title");
     const liveVideo = document.querySelector("#live-video");
@@ -448,6 +500,10 @@
     let scannerSignature = "";
     let scanDetailsSignature = "";
     let expandedCandidate = null;
+    let appModalKind = null;
+    let modalReturnFocus = null;
+    let confirmReturnFocus = null;
+    let confirmCallback = null;
     let mediaAccess = null;
     let mediaAccessPromise = null;
     let mediaAccessFailed = false;
@@ -473,6 +529,60 @@
 
     function setText(node, value) {
       if (node.textContent !== String(value)) node.textContent = value;
+    }
+
+    function syncModalOpen() {
+      document.body.classList.toggle("modal-open", !appModal.hidden || !confirmModal.hidden || !liveModal.hidden);
+    }
+
+    function openAppModal(kind, title, content, trigger = null, size = "wide") {
+      if (appModal.hidden) modalReturnFocus = trigger || document.activeElement;
+      appModalKind = kind;
+      appModalDialog.className = `modal-dialog ${size}`;
+      appModalTitle.textContent = title;
+      appModalTitle.title = title;
+      appModalBody.replaceChildren(content);
+      appModal.hidden = false;
+      syncModalOpen();
+      appModalClose.focus();
+    }
+
+    function closeAppModal(restoreFocus = true) {
+      if (appModal.hidden) return;
+      if (appModalKind === "manual") addressPanel.hidden = true;
+      if (appModalKind === "camera") expandedCandidate = null;
+      appModal.hidden = true;
+      appModalKind = null;
+      appModalBody.replaceChildren();
+      syncModalOpen();
+      if (restoreFocus && modalReturnFocus?.isConnected) modalReturnFocus.focus();
+      modalReturnFocus = null;
+    }
+
+    function closeConfirmation(restoreFocus = true) {
+      if (confirmModal.hidden) return;
+      confirmModal.hidden = true;
+      confirmCallback = null;
+      syncModalOpen();
+      if (restoreFocus && confirmReturnFocus?.isConnected) confirmReturnFocus.focus();
+      confirmReturnFocus = null;
+    }
+
+    function showConfirmation({title, message, actionLabel, onConfirm, trigger}) {
+      confirmTitle.textContent = title;
+      confirmMessage.textContent = message;
+      confirmAction.textContent = actionLabel;
+      confirmCallback = onConfirm;
+      confirmReturnFocus = trigger || document.activeElement;
+      confirmModal.hidden = false;
+      syncModalOpen();
+      confirmCancel.focus();
+    }
+
+    function addClippedText(parent, tag, className, value) {
+      const node = addText(parent, tag, `${className} clipped-text`, value);
+      node.title = value;
+      return node;
     }
 
     function renderScannerProgress(scanners = {}) {
@@ -565,12 +675,12 @@
         sources: [pendingManualRtsp.source]
       });
       inspections.set(device.candidate_uuid, {status: "not_onvif"});
-      expandedCandidate = device.candidate_uuid;
       pendingManualRtsp = null;
       addressPanel.hidden = true;
       addressInput.value = "";
       setText(addressStatus, "");
       renderRows();
+      openCameraDetails(device);
     }
 
     function addText(parent, tag, className, value) {
@@ -590,7 +700,7 @@
 
     function addEndpoints(cell, values) {
       values.forEach(value => {
-        addText(cell, "div", "endpoint", value);
+        addClippedText(cell, "div", "endpoint", value);
       });
     }
 
@@ -622,6 +732,31 @@
       if (states.every(state => state === "offline")) return {key: "offline", label: "offline"};
       if (states.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
       return {key: "checking", label: "checking"};
+    }
+
+    function addCameraFacts(parent, device) {
+      const facts = addText(parent, "section", "camera-facts", "");
+      const values = [
+        ["Status", cameraHealth(device).label],
+        ["IP address", device.ip || "Unavailable"],
+        ["MAC address", device.mac || "Unavailable"],
+        ["Protocols", [device.onvif?.service_urls?.length ? "ONVIF" : null, device.rtsp?.length ? "RTSP" : null].filter(Boolean).join(" + ") || "None found"]
+      ];
+      values.forEach(([label, value]) => {
+        const fact = addText(facts, "div", "camera-fact", "");
+        addText(fact, "div", "camera-fact-label", label);
+        addText(fact, "div", "camera-fact-value", value);
+      });
+      if (device.onvif?.model) {
+        const fact = addText(facts, "div", "camera-fact camera-service-list", "");
+        addText(fact, "div", "camera-fact-label", "Camera model");
+        addText(fact, "div", "camera-fact-value", device.onvif.model);
+      }
+      if (device.onvif?.service_urls?.length) {
+        const services = addText(facts, "div", "camera-fact camera-service-list", "");
+        addText(services, "div", "camera-fact-label", "ONVIF services");
+        device.onvif.service_urls.forEach(value => addText(services, "div", "endpoint", value));
+      }
     }
 
     function matchesSearch(device, query) {
@@ -755,7 +890,7 @@
       liveSession += 1;
       destroyLiveTransport();
       liveModal.hidden = true;
-      document.body.classList.remove("modal-open");
+      syncModalOpen();
     }
 
     function pumpLiveBuffer() {
@@ -915,7 +1050,7 @@
       liveStatus.classList.remove("error");
       liveStatus.hidden = false;
       liveModal.hidden = false;
-      document.body.classList.add("modal-open");
+      syncModalOpen();
       liveClose.focus();
       startLiveTransport(cameraUuid, session);
     }
@@ -982,7 +1117,6 @@
     }
 
     async function changeCameraEnabled(device, enabled) {
-      if (!enabled && !window.confirm("Disable this camera? Live media and Frigate processing will stop, but settings and history will remain.")) return;
       adoptionProgress.set(
         device.candidate_uuid,
         enabled ? "Checking streams and enabling camera..." : "Disabling camera..."
@@ -1008,6 +1142,20 @@
       renderRows();
     }
 
+    function requestCameraEnabled(device, enabled, trigger) {
+      if (enabled) {
+        changeCameraEnabled(device, true);
+        return;
+      }
+      showConfirmation({
+        title: "Disable camera",
+        message: "Live media and Frigate processing will stop. Camera settings, history, and adoption will remain.",
+        actionLabel: "Disable camera",
+        trigger,
+        onConfirm: () => changeCameraEnabled(device, false)
+      });
+    }
+
     function addCameraManagement(parent, device, adoption) {
       const management = addText(parent, "form", "camera-management", "");
       const name = addText(management, "label", "setup-field", "Camera name");
@@ -1021,7 +1169,7 @@
       const enabled = adoption.enabled !== false;
       const toggle = addText(management, "button", enabled ? "danger-action" : "row-action", enabled ? "Disable" : "Enable");
       toggle.type = "button";
-      toggle.addEventListener("click", () => changeCameraEnabled(device, !enabled));
+      toggle.addEventListener("click", () => requestCameraEnabled(device, !enabled, toggle));
       addText(
         management,
         "div",
@@ -1131,6 +1279,7 @@
     function inspectionDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details";
+      addCameraFacts(wrapper, device);
       const progress = adoptionProgress.get(device.candidate_uuid);
       if (progress) {
         addAdoptionProgress(wrapper, progress);
@@ -1492,18 +1641,29 @@
       renderRows();
     }
 
-    async function toggleInspection(device) {
-      const candidateId = device.candidate_uuid;
-      if (!candidateId) return;
-      if (expandedCandidate === candidateId) {
-        expandedCandidate = null;
-        renderRows();
+    function renderActiveCameraModal() {
+      if (appModalKind !== "camera" || !expandedCandidate) return;
+      const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
+      if (!device) {
+        closeAppModal(false);
         return;
       }
+      const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
+      appModalTitle.textContent = title;
+      appModalTitle.title = title;
+      appModalBody.replaceChildren(inspectionDetails(device));
+    }
+
+    async function openCameraDetails(device, trigger = null) {
+      const candidateId = device.candidate_uuid;
+      if (!candidateId) return;
       expandedCandidate = candidateId;
       if (!inspections.has(candidateId)) {
         inspections.set(candidateId, {status: "loading"});
-        renderRows();
+      }
+      const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
+      openAppModal("camera", title, inspectionDetails(device), trigger, "wide");
+      if (inspections.get(candidateId)?.status === "loading") {
         try {
           const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {
             method: "POST", headers: {"X-CamAdmiral-Action": "inspect"}
@@ -1513,7 +1673,7 @@
           inspections.set(candidateId, {status: "error", message: "CamAdmiral is unavailable."});
         }
       }
-      renderRows();
+      renderActiveCameraModal();
     }
 
     function renderRows() {
@@ -1529,27 +1689,23 @@
       visible.forEach(device => {
         const row = document.createElement("tr");
         const status = cameraHealth(device);
-        row.className = status.key;
+        row.className = `camera-row ${status.key}`;
         const identity = addCell(row);
-        addText(identity, "div", "camera-name", device.display_name || device.ip);
-        if (device.onvif?.model && device.onvif.model !== device.display_name) {
-          addText(identity, "div", "camera-model", device.onvif.model);
-        }
-        addText(identity, "div", "camera-mobile-ip", device.ip);
-        const mobileMeta = addText(identity, "details", "camera-mobile-meta", "");
-        addText(mobileMeta, "summary", "", "More");
-        const mobileMetaContent = addText(mobileMeta, "div", "camera-mobile-meta-content", "");
-        addText(mobileMetaContent, "div", "mono", `MAC ${device.mac || "unavailable"}`);
-        addText(mobileMetaContent, "div", "", `ONVIF ${device.onvif?.service_urls?.length ? "available" : "not found"}`);
-        addText(mobileMetaContent, "div", "", `RTSP ${device.rtsp?.length ? "available" : "not found"}`);
-        if (device.identity_conflict) addText(identity, "div", "conflict-note", device.identity_conflict_reason || "Identity conflict");
-        if (device.adoption) addText(identity, "div", "adopted-label", device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted");
+        const identityStack = addText(identity, "div", "cell-stack", "");
+        addClippedText(identityStack, "div", "camera-name", device.display_name || device.ip);
+        const identityMeta = [
+          device.onvif?.model && device.onvif.model !== device.display_name ? device.onvif.model : null,
+          device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null,
+          device.adoption ? (device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted") : null
+        ].filter(Boolean).join(" · ");
+        if (identityMeta) addClippedText(identityStack, "div", `camera-model${device.adoption ? " adopted-label" : ""}`, identityMeta);
+        addClippedText(identityStack, "div", "camera-mobile-ip", device.ip);
         const statusCell = addCell(row);
         const statusLabel = addText(statusCell, "span", `device-status ${status.key}`, "");
         addText(statusLabel, "span", "status-dot", "");
-        addText(statusLabel, "span", "", status.label);
-        addText(addCell(row, "mono"), "span", "", device.ip);
-        addText(addCell(row, "mono"), "span", "", device.mac || "-");
+        addClippedText(statusLabel, "span", "", status.label);
+        addClippedText(addCell(row, "mono"), "span", "", device.ip);
+        addClippedText(addCell(row, "mono"), "span", "", device.mac || "-");
         const onvif = addCell(row);
         addEndpoints(onvif, device.onvif?.service_urls || []);
         if (!device.onvif?.service_urls?.length) addText(onvif, "span", "camera-model", "-");
@@ -1560,24 +1716,14 @@
           addText(rtsp, "span", "camera-model", "-");
         }
         const actions = addCell(row);
-        const actionLabel = expandedCandidate === device.candidate_uuid
-          ? "Hide"
-          : device.adoption ? "Details" : "Adopt";
+        const actionLabel = device.adoption ? "Details" : "Adopt";
         const actionStack = addText(actions, "div", "action-stack", "");
         const action = addText(actionStack, "button", "row-action", actionLabel);
         action.type = "button";
+        action.setAttribute("aria-haspopup", "dialog");
         action.disabled = !device.candidate_uuid || (!device.adoption && device.status !== "online");
-        action.addEventListener("click", () => toggleInspection(device));
+        action.addEventListener("click", () => openCameraDetails(device, action));
         cameraRows.append(row);
-        if (expandedCandidate === device.candidate_uuid) {
-          const detailRow = document.createElement("tr");
-          detailRow.className = "detail-row";
-          const detailCell = document.createElement("td");
-          detailCell.colSpan = 7;
-          detailCell.append(inspectionDetails(device));
-          detailRow.append(detailCell);
-          cameraRows.append(detailRow);
-        }
       });
       tableWrap.hidden = visible.length === 0;
       empty.hidden = visible.length > 0;
@@ -1587,6 +1733,7 @@
         const arrow = button.querySelector(".sort-arrow");
         arrow.textContent = button.dataset.sort === sortKey ? (sortDirection > 0 ? "↑" : "↓") : "";
       });
+      renderActiveCameraModal();
     }
 
     function render(data) {
@@ -1668,8 +1815,13 @@
     });
 
     showAddAddress.addEventListener("click", () => {
-      addressPanel.hidden = !addressPanel.hidden;
-      if (!addressPanel.hidden) addressInput.focus();
+      addressPanel.hidden = false;
+      openAppModal("manual", "Add camera manually", addressPanel, showAddAddress, "compact");
+      addressInput.focus();
+    });
+    scanDetails.addEventListener("click", () => {
+      scanDialogContent.hidden = false;
+      openAppModal("scan", "Scan details", scanDialogContent, scanDetails, "wide");
     });
     addressPanel.addEventListener("submit", async event => {
       event.preventDefault();
@@ -1694,6 +1846,7 @@
         if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
         if (!target.draft) setText(addressStatus, "");
         render(result);
+        if (!target.draft && appModalKind === "manual") closeAppModal();
       } catch (error) {
         pendingManualRtsp = null;
         setText(addressStatus, error.message);
@@ -1701,6 +1854,20 @@
     });
 
     searchInput.addEventListener("input", renderRows);
+    appModalClose.addEventListener("click", () => closeAppModal());
+    appModal.addEventListener("click", event => {
+      if (event.target === appModal) closeAppModal();
+    });
+    confirmClose.addEventListener("click", () => closeConfirmation());
+    confirmCancel.addEventListener("click", () => closeConfirmation());
+    confirmAction.addEventListener("click", () => {
+      const callback = confirmCallback;
+      closeConfirmation(false);
+      if (callback) callback();
+    });
+    confirmModal.addEventListener("click", event => {
+      if (event.target === confirmModal) closeConfirmation();
+    });
     liveClose.addEventListener("click", closeLiveView);
     liveVideo.addEventListener("playing", () => {
       liveModal.dataset.transport = "mse-playing";
@@ -1713,7 +1880,10 @@
       if (event.target === liveModal) closeLiveView();
     });
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !liveModal.hidden) closeLiveView();
+      if (event.key !== "Escape") return;
+      if (!confirmModal.hidden) closeConfirmation();
+      else if (!liveModal.hidden) closeLiveView();
+      else if (!appModal.hidden) closeAppModal();
     });
     window.addEventListener("pagehide", closeLiveView);
     document.addEventListener("visibilitychange", () => {
