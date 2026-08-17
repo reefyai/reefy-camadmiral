@@ -321,10 +321,17 @@
         width: 100%; padding: 14px 13px 16px; border: 1px solid rgba(148, 163, 184, .13);
         border-top: 0; border-radius: 0 0 12px 12px; background: rgba(5, 15, 27, .62);
       }
-      .setup-form, .rtsp-credentials, .rtsp-actions, .camera-management { align-items: stretch; flex-direction: column; }
+      .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
-      .setup-form > .row-action, .rtsp-actions .row-action, .camera-management > .row-action,
-      .camera-management > .danger-action { width: 100%; padding: 8px 10px; }
+      .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }
+      .camera-management {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end;
+        gap: 8px; padding: 10px;
+      }
+      .camera-management .setup-field { grid-column: 1; flex: none; min-width: 0; width: 100%; }
+      .camera-management > .row-action { grid-column: 2; width: auto; padding: 8px 10px; }
+      .camera-management > .danger-action { grid-column: 1; justify-self: start; width: auto; padding: 8px 10px; }
+      .camera-management .management-note { grid-column: 1 / -1; }
       .rtsp-actions { gap: 7px; }
       .secondary-action { align-self: flex-start; padding: 5px 0; }
       .rtsp-setup { grid-template-columns: 1fr; }

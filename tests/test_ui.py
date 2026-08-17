@@ -32,6 +32,10 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("camera-mobile-ip", self.html)
         self.assertIn("thead { display: none; }", self.html)
 
+    def test_phone_camera_name_editor_does_not_use_vertical_flex_basis(self) -> None:
+        self.assertIn(".camera-management .setup-field { grid-column: 1; flex: none;", self.html)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
