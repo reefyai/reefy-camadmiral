@@ -26,6 +26,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('id="show-ignored"', self.html)
         self.assertNotIn("setCandidateIgnored", self.html)
 
+    def test_phone_layout_replaces_wide_rows_with_compact_cards(self) -> None:
+        self.assertIn("tbody tr:not(.detail-row)", self.html)
+        self.assertIn('grid-template-areas: "identity action" "status action"', self.html)
+        self.assertIn("camera-mobile-ip", self.html)
+        self.assertIn("thead { display: none; }", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

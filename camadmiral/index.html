@@ -115,6 +115,8 @@
     .sort-arrow { width: 10px; color: #2dd4bf; }
     .camera-name { color: #f0f7fa; font-size: 14px; font-weight: 750; }
     .camera-model { margin-top: 3px; color: #6e8496; font-size: 12px; }
+    .camera-mobile-ip { display: none; margin-top: 5px; color: #91a5b5; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .camera-mobile-meta { display: none; }
     .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
     .adopted-label { display: inline-block; margin-top: 5px; color: #75f4e2; font-size: 11px; font-weight: 750; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
@@ -268,16 +270,69 @@
     }
     [hidden] { display: none !important; }
     @media (max-width: 700px) {
-      header { align-items: flex-start; flex-direction: column; padding-top: 26px; }
-      .header-actions { justify-content: flex-start; width: 100%; }
+      .shell { width: min(100% - 20px, 560px); }
+      main { padding-bottom: 28px; }
+      header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 22px 0 16px; }
+      h1 { font-size: 32px; }
+      .header-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); width: 100%; gap: 8px; }
+      .header-actions > button { width: 100%; min-width: 0; padding: 10px 8px; font-size: 12px; }
+      .scan-details { grid-column: 1 / -1; }
+      .scan-details summary { justify-content: center; width: 100%; min-height: 34px; padding: 7px 10px; }
+      .scan-details-content { width: calc(100vw - 20px); }
+      .scan-overview { align-items: flex-start; flex-direction: column; }
+      .scanner-progress { flex-wrap: wrap; }
+      .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
+      .address-panel .setup-field { flex: none; width: 100%; }
+      .address-panel .row-action { width: 100%; padding: 9px 12px; }
+      .address-status { min-width: 0; }
       .toolbar { align-items: stretch; flex-direction: column; }
-      .toolbar-controls { justify-content: stretch; width: 100%; }
+      .toolbar-controls { display: block; width: 100%; }
       .summary { flex-wrap: wrap; }
+      .pill { padding: 6px 9px; }
       .search { width: 100%; }
-      .address-panel { align-items: stretch; flex-direction: column; }
-      .address-panel .setup-field { width: 100%; }
+      .table-wrap { overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+      table { display: block; min-width: 0; font-size: 13px; }
+      thead { display: none; }
+      tbody { display: grid; gap: 10px; }
+      tbody tr:not(.detail-row) {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas: "identity action" "status action";
+        column-gap: 12px; row-gap: 9px; border: 1px solid rgba(148, 163, 184, .15);
+        border-radius: 12px; padding: 13px 14px; background: rgba(12, 26, 42, .76);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
+      }
+      tbody tr:not(.detail-row):hover { background: rgba(18, 38, 58, .82); }
+      tbody tr:not(.detail-row) td { border: 0; padding: 0; }
+      tbody tr:not(.detail-row) td:nth-child(1) { grid-area: identity; min-width: 0; }
+      tbody tr:not(.detail-row) td:nth-child(2) { grid-area: status; }
+      tbody tr:not(.detail-row) td:nth-child(n+3):nth-child(-n+6) { display: none; }
+      tbody tr:not(.detail-row) td:nth-child(7) { grid-area: action; align-self: center; }
+      .camera-mobile-ip { display: block; }
+      .camera-mobile-meta { display: block; margin-top: 7px; }
+      .camera-mobile-meta summary { color: #7890a4; cursor: pointer; font-size: 11px; font-weight: 700; }
+      .camera-mobile-meta[open] summary, .camera-mobile-meta summary:hover { color: #b9fff5; }
+      .camera-mobile-meta-content { display: grid; gap: 4px; margin-top: 6px; color: #91a5b5; font-size: 11px; }
+      .camera-mobile-meta-content .mono { white-space: normal; overflow-wrap: anywhere; }
+      .action-stack { justify-content: flex-end; }
+      .action-stack .row-action { min-width: 66px; padding: 7px 9px; }
+      .detail-row { display: block; margin-top: -10px; }
+      .detail-row td { display: block; width: 100%; border: 0; padding: 0; }
+      .camera-details {
+        width: 100%; padding: 14px 13px 16px; border: 1px solid rgba(148, 163, 184, .13);
+        border-top: 0; border-radius: 0 0 12px 12px; background: rgba(5, 15, 27, .62);
+      }
+      .setup-form, .rtsp-credentials, .rtsp-actions, .camera-management { align-items: stretch; flex-direction: column; }
+      .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
+      .setup-form > .row-action, .rtsp-actions .row-action, .camera-management > .row-action,
+      .camera-management > .danger-action { width: 100%; padding: 8px 10px; }
+      .rtsp-actions { gap: 7px; }
+      .secondary-action { align-self: flex-start; padding: 5px 0; }
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
+      .endpoint, .downstream-url { max-width: 100%; }
+      .live-modal { padding: 8px; }
+      .live-dialog { padding: 10px; }
+      .app-footer { padding-bottom: 18px; }
     }
   </style>
 </head>
@@ -1473,6 +1528,13 @@
         if (device.onvif?.model && device.onvif.model !== device.display_name) {
           addText(identity, "div", "camera-model", device.onvif.model);
         }
+        addText(identity, "div", "camera-mobile-ip", device.ip);
+        const mobileMeta = addText(identity, "details", "camera-mobile-meta", "");
+        addText(mobileMeta, "summary", "", "More");
+        const mobileMetaContent = addText(mobileMeta, "div", "camera-mobile-meta-content", "");
+        addText(mobileMetaContent, "div", "mono", `MAC ${device.mac || "unavailable"}`);
+        addText(mobileMetaContent, "div", "", `ONVIF ${device.onvif?.service_urls?.length ? "available" : "not found"}`);
+        addText(mobileMetaContent, "div", "", `RTSP ${device.rtsp?.length ? "available" : "not found"}`);
         if (device.identity_conflict) addText(identity, "div", "conflict-note", device.identity_conflict_reason || "Identity conflict");
         if (device.adoption) addText(identity, "div", "adopted-label", device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted");
         const statusCell = addCell(row);
