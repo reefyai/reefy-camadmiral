@@ -32,7 +32,7 @@
     }
     #scan:hover { background: #5eead4; }
     #scan:disabled { cursor: wait; opacity: .6; }
-    .header-actions { display: flex; align-items: center; gap: 9px; }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .22); border-radius: 11px; padding: 10px 14px;
       background: rgba(12, 26, 42, .72); color: #b8c7d0; font-weight: 750; cursor: pointer;
@@ -41,16 +41,12 @@
     .address-panel {
       display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: -12px 0 14px;
     }
+    .address-panel .setup-field { flex: 1 1 420px; }
     .address-panel input {
-      width: 190px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
+      width: 100%; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
     }
-    .address-status { min-width: 180px; color: #fda4af; font-size: 12px; }
-    .statusbar {
-      min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
-      border: 1px solid rgba(148, 163, 184, .16); background: rgba(12, 26, 42, .72);
-      border-radius: 13px; padding: 11px 14px;
-    }
+    .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
     .scan-state { display: flex; align-items: center; gap: 10px; font-weight: 700; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
     .dot.ready { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45, 212, 191, .1); }
@@ -66,20 +62,28 @@
     .scanner-state.complete .scanner-dot { background: #2dd4bf; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
-    .scan-details {
-      margin-top: 10px; border: 1px solid rgba(148, 163, 184, .14); border-radius: 11px;
-      background: rgba(8, 20, 34, .72); overflow: hidden;
+    .scan-details { position: relative; }
+    .scan-details summary {
+      display: inline-flex; align-items: center; gap: 8px; min-height: 38px; list-style: none;
+      border: 1px solid rgba(148, 163, 184, .18); border-radius: 10px; padding: 8px 11px;
+      background: rgba(12, 26, 42, .72); color: #91a5b5; font-size: 12px; font-weight: 750; cursor: pointer;
     }
-    .scan-details summary { padding: 10px 13px; color: #91a5b5; font-size: 12px; font-weight: 750; cursor: pointer; }
+    .scan-details summary::-webkit-details-marker { display: none; }
     .scan-details summary:hover { color: #b9fff5; }
-    .scan-details-content { border-top: 1px solid rgba(148, 163, 184, .1); padding: 12px 13px 13px; }
+    .scan-details-content {
+      position: absolute; z-index: 30; top: calc(100% + 8px); right: 0;
+      width: min(720px, calc(100vw - 32px)); border: 1px solid rgba(148, 163, 184, .16);
+      border-radius: 11px; padding: 12px 13px 13px; background: #081421;
+      box-shadow: 0 20px 56px rgba(0, 0, 0, .45);
+    }
+    .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
     .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
     .scan-log {
       max-height: 360px; margin: 0; overflow: auto; border-radius: 8px; padding: 11px 12px;
       background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
     }
-    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 10px; }
     .summary { display: flex; gap: 9px; }
     .pill {
       border: 1px solid rgba(148, 163, 184, .15); background: rgba(12, 26, 42, .65);
@@ -93,6 +97,7 @@
       background: rgba(12, 26, 42, .75); color: #eef5f8; padding: 9px 12px; font: inherit;
     }
     .search input:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
+    .toolbar-controls { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex: 1; }
     .table-wrap {
       overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
@@ -263,12 +268,14 @@
     }
     [hidden] { display: none !important; }
     @media (max-width: 700px) {
-      header { padding-top: 26px; }
-      .statusbar { align-items: flex-start; flex-direction: column; }
-      .status-meta { align-items: flex-start; flex-direction: column-reverse; gap: 7px; }
+      header { align-items: flex-start; flex-direction: column; padding-top: 26px; }
+      .header-actions { justify-content: flex-start; width: 100%; }
       .toolbar { align-items: stretch; flex-direction: column; }
+      .toolbar-controls { justify-content: stretch; width: 100%; }
       .summary { flex-wrap: wrap; }
       .search { width: 100%; }
+      .address-panel { align-items: stretch; flex-direction: column; }
+      .address-panel .setup-field { width: 100%; }
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
     }
@@ -279,30 +286,27 @@
     <header>
       <h1>CamAdmiral</h1>
       <div class="header-actions">
-        <button class="header-secondary" id="show-add-address" type="button">Add by IP</button>
+        <button class="header-secondary" id="show-add-address" type="button">Add camera manually</button>
         <button id="scan" type="button">Scan network</button>
+        <details class="scan-details" id="scan-details">
+          <summary><span class="dot" id="dot"></span><span id="state">Starting</span></summary>
+          <div class="scan-details-content">
+            <div class="scan-overview">
+              <div class="scanner-progress" id="scanner-progress" hidden></div>
+              <div class="network" id="network"></div>
+            </div>
+            <div class="scan-metadata" id="scan-metadata"></div>
+            <pre class="scan-log" id="scan-log"></pre>
+          </div>
+        </details>
       </div>
     </header>
     <main>
       <form class="address-panel" id="address-panel" hidden>
-        <label class="setup-field">Camera IP<input id="address-input" inputmode="decimal" autocomplete="off" placeholder="192.168.1.25"></label>
-        <button class="row-action" type="submit">Probe</button>
+        <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
+        <button class="row-action" type="submit">Continue</button>
         <span class="address-status" id="address-status"></span>
       </form>
-      <div class="statusbar">
-        <div class="scan-state"><span class="dot" id="dot"></span><span id="state">Starting</span></div>
-        <div class="status-meta">
-          <div class="scanner-progress" id="scanner-progress" hidden></div>
-          <div class="network" id="network"></div>
-        </div>
-      </div>
-      <details class="scan-details" id="scan-details" hidden>
-        <summary>Scan details</summary>
-        <div class="scan-details-content">
-          <div class="scan-metadata" id="scan-metadata"></div>
-          <pre class="scan-log" id="scan-log"></pre>
-        </div>
-      </details>
       <div class="errorbox" id="error" hidden></div>
       <div class="toolbar" id="toolbar" hidden>
         <div class="summary">
@@ -310,8 +314,9 @@
           <div class="pill"><strong id="online-count">0</strong> online</div>
           <div class="pill"><strong id="offline-count">0</strong> offline</div>
         </div>
-        <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
-        <label class="camera-model"><input id="show-ignored" type="checkbox"> Show ignored</label>
+        <div class="toolbar-controls">
+          <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
+        </div>
       </div>
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
@@ -352,7 +357,6 @@
     const addressPanel = document.querySelector("#address-panel");
     const addressInput = document.querySelector("#address-input");
     const addressStatus = document.querySelector("#address-status");
-    const showIgnored = document.querySelector("#show-ignored");
     const stateLabel = document.querySelector("#state");
     const stateDot = document.querySelector("#dot");
     const networkLabel = document.querySelector("#network");
@@ -386,6 +390,7 @@
     let mediaAccessPromise = null;
     let mediaAccessFailed = false;
     let mediaHost = window.location.hostname;
+    let pendingManualRtsp = null;
     const inspections = new Map();
     const credentialDrafts = new Map();
     const credentialRepairDrafts = new Map();
@@ -428,8 +433,6 @@
       const log = Array.isArray(data.raw_log) ? data.raw_log : [];
       const network = data.network || {};
       const available = log.length || network.interface || data.duration_ms || data.completed_at;
-      scanDetails.hidden = !available;
-      if (!available) return;
       const metadata = [
         active && data.completed_at ? "Last completed scan" : null,
         network.interface,
@@ -442,8 +445,70 @@
       const signature = JSON.stringify([metadata, log]);
       if (signature === scanDetailsSignature) return;
       scanDetailsSignature = signature;
-      setText(scanMetadata, metadata);
-      setText(scanLog, log.length ? log.join("\n") : "No raw scan log is available for this earlier scan.");
+      setText(scanMetadata, metadata || "No scan has completed yet.");
+      setText(scanLog, log.length ? log.join("\n") : available ? "No raw scan log is available for this earlier scan." : "Scan diagnostics will appear here.");
+    }
+
+    function manualCameraTarget(value) {
+      const entered = value.trim();
+      if (!entered) throw new Error("Enter a private camera IP or complete RTSP URL.");
+      if (!/^rtsp:\/\//i.test(entered)) return {address: entered, draft: null};
+      let source;
+      try {
+        source = new URL(entered);
+      } catch (_) {
+        throw new Error("Enter a valid RTSP URL.");
+      }
+      if (source.protocol.toLowerCase() !== "rtsp:" || !source.hostname) {
+        throw new Error("The stream URL must start with rtsp:// and include a camera IP.");
+      }
+      if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(source.hostname)) {
+        throw new Error("Manual RTSP discovery currently requires a private IPv4 camera address.");
+      }
+      let username = "";
+      let password = "";
+      try {
+        username = decodeURIComponent(source.username);
+        password = decodeURIComponent(source.password);
+      } catch (_) {
+        throw new Error("The RTSP username or password contains invalid URL encoding.");
+      }
+      source.username = "";
+      source.password = "";
+      return {
+        address: source.hostname,
+        draft: {address: source.hostname, source: source.toString(), username, password}
+      };
+    }
+
+    function applyPendingManualRtsp(data) {
+      if (!pendingManualRtsp || data.status !== "complete") return;
+      const device = devices.find(candidate => candidate.ip === pendingManualRtsp.address);
+      if (!device) {
+        setText(addressStatus, "No RTSP camera responded at that address. Check the URL and try again.");
+        pendingManualRtsp = null;
+        return;
+      }
+      if (device.adoption) {
+        setText(addressStatus, "That camera is already adopted. Open its details to manage streams.");
+        pendingManualRtsp = null;
+        return;
+      }
+      credentialDrafts.set(device.candidate_uuid, {
+        displayName: device.display_name || device.ip,
+        username: pendingManualRtsp.username,
+        password: pendingManualRtsp.password,
+        visible: false,
+        manual: true,
+        sources: [pendingManualRtsp.source]
+      });
+      inspections.set(device.candidate_uuid, {status: "not_onvif"});
+      expandedCandidate = device.candidate_uuid;
+      pendingManualRtsp = null;
+      addressPanel.hidden = true;
+      addressInput.value = "";
+      setText(addressStatus, "");
+      renderRows();
     }
 
     function addText(parent, tag, className, value) {
@@ -1391,7 +1456,7 @@
 
     function renderRows() {
       const query = searchInput.value.trim().toLocaleLowerCase();
-      const visible = devices.filter(device => (showIgnored.checked || !device.ignored) && matchesSearch(device, query));
+      const visible = devices.filter(device => matchesSearch(device, query));
       visible.sort((left, right) => {
         const a = sortValue(left, sortKey);
         const b = sortValue(right, sortKey);
@@ -1434,11 +1499,6 @@
         action.type = "button";
         action.disabled = !device.candidate_uuid || (!device.adoption && device.status !== "online");
         action.addEventListener("click", () => toggleInspection(device));
-        if (!device.adoption) {
-          const ignore = addText(actionStack, "button", "secondary-action", device.ignored ? "Unignore" : "Ignore");
-          ignore.type = "button";
-          ignore.addEventListener("click", () => setCandidateIgnored(device));
-        }
         cameraRows.append(row);
         if (expandedCandidate === device.candidate_uuid) {
           const detailRow = document.createElement("tr");
@@ -1502,6 +1562,7 @@
           renderRows();
         }
       }
+      applyPendingManualRtsp(data);
     }
 
     async function refresh() {
@@ -1537,24 +1598,6 @@
       }
     });
 
-    async function setCandidateIgnored(device) {
-      try {
-        const response = await fetch(`/internal/discovery/${encodeURIComponent(device.candidate_uuid)}/ignored`, {
-          method: "POST",
-          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-ignored"},
-          body: JSON.stringify({ignored: !device.ignored})
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.message || "Camera state could not be changed.");
-        devices = result.devices || devices;
-        lastResultId = null;
-        render(result);
-      } catch (error) {
-        lifecycleErrors.set(device.candidate_uuid, error.message);
-        renderRows();
-      }
-    }
-
     showAddAddress.addEventListener("click", () => {
       addressPanel.hidden = !addressPanel.hidden;
       if (!addressPanel.hidden) addressInput.focus();
@@ -1562,24 +1605,33 @@
     addressPanel.addEventListener("submit", async event => {
       event.preventDefault();
       if (busy) return;
+      let target;
+      try {
+        target = manualCameraTarget(addressInput.value);
+      } catch (error) {
+        setText(addressStatus, error.message);
+        return;
+      }
+      pendingManualRtsp = target.draft;
+      if (target.draft) addressInput.value = target.draft.source;
       setText(addressStatus, "Probing...");
       try {
         const response = await fetch("/internal/discovery/address", {
           method: "POST",
           headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "scan-address"},
-          body: JSON.stringify({address: addressInput.value.trim()})
+          body: JSON.stringify({address: target.address})
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
-        setText(addressStatus, "");
+        if (!target.draft) setText(addressStatus, "");
         render(result);
       } catch (error) {
+        pendingManualRtsp = null;
         setText(addressStatus, error.message);
       }
     });
 
     searchInput.addEventListener("input", renderRows);
-    showIgnored.addEventListener("change", renderRows);
     liveClose.addEventListener("click", closeLiveView);
     liveVideo.addEventListener("playing", () => {
       liveModal.dataset.transport = "mse-playing";

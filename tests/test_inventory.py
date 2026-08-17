@@ -185,9 +185,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(summary["devices"], 2)
         self.assertEqual(summary["online"], 1)
         self.assertEqual(summary["offline"], 1)
-        self.assertEqual(summary["ignored"], 0)
 
-    def test_ignored_state_survives_rediscovery(self) -> None:
+    def test_legacy_ignored_state_is_discarded_on_rediscovery(self) -> None:
         previous = inventory.reconcile_inventory(
             [], [camera("192.168.1.20", "aa:bb:cc:dd:ee:ff")], "t1"
         )
@@ -197,7 +196,7 @@ class InventoryTests(unittest.TestCase):
             previous, [camera("192.168.1.20", "aa:bb:cc:dd:ee:ff")], "t2"
         )
 
-        self.assertTrue(devices[0]["ignored"])
+        self.assertNotIn("ignored", devices[0])
 
     def test_inventory_file_is_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

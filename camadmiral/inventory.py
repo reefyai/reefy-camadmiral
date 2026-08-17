@@ -45,6 +45,7 @@ def _merge_online(
     seen_at: str,
 ) -> dict[str, Any]:
     merged = {**(previous or {}), **current}
+    merged.pop("ignored", None)
     same_address = bool(previous) and previous.get("ip") == current.get("ip")
     if same_address:
         for field in ("onvif", "rtsp"):
@@ -125,6 +126,7 @@ def reconcile_inventory(
             continue
         if str(old.get("ip") or "") in reachable:
             network_only = dict(old)
+            network_only.pop("ignored", None)
             network_only.update(
                 {
                     "candidate_uuid": old.get("candidate_uuid") or str(uuid.uuid4()),
@@ -140,6 +142,7 @@ def reconcile_inventory(
             reconciled.append(network_only)
             continue
         offline = dict(old)
+        offline.pop("ignored", None)
         offline.update(
             {
                 "candidate_uuid": old.get("candidate_uuid") or str(uuid.uuid4()),
@@ -173,6 +176,5 @@ def inventory_summary(devices: Iterable[dict[str, Any]]) -> dict[str, int]:
             and device.get("service_status") == "unavailable"
             for device in items
         ),
-        "ignored": sum(bool(device.get("ignored")) for device in items),
         "conflicts": sum(bool(device.get("identity_conflict")) for device in items),
     }

@@ -561,6 +561,33 @@ def credential_repair() -> None:
     print("credential-repair: rejection preservation and validated recovery passed")
 
 
+def rotated_camera_ready() -> None:
+    source = "rtsp://operator:synthetic-rotated-secret@172.30.0.11:8554/live"
+
+    def readable() -> bool:
+        try:
+            completed = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-rtsp_transport", "tcp",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_name",
+                    "-of", "json",
+                    source,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        return completed.returncode == 0
+
+    wait_for("rotated camera media readiness", readable, timeout=90, interval=2)
+    print("camera-ready: rotated synthetic source is readable")
+
+
 def frigate() -> None:
     state = load_state()
 
@@ -634,6 +661,7 @@ SCENARIOS = {
     "container-restart": container_restart,
     "address-recovery": address_recovery,
     "invalid-address": invalid_address,
+    "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
     "frigate": frigate,
 }

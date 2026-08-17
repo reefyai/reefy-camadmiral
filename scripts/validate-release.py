@@ -16,7 +16,7 @@ def main() -> int:
     if not VERSION_PATTERN.fullmatch(version):
         raise SystemExit("VERSION must use vYYYY.MM.DD-NN")
     manifest = json.loads((ROOT / "reefy" / "app.json").read_text(encoding="utf-8"))
-    expected_image = f"ghcr.io/reefyai/camadmiral:{version}"
+    expected_image = f"ghcr.io/reefyai/reefy-camadmiral:{version}"
     if manifest.get("version") != version or manifest.get("image") != expected_image:
         raise SystemExit("VERSION and reefy/app.json release metadata differ")
     releases = manifest.get("releases") or []

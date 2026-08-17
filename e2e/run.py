@@ -93,6 +93,7 @@ def main() -> int:
         run("stop", "camera-auth")
         run("rm", "--force", "camera-auth")
         run("up", "--detach", "camera-auth-rotated")
+        scenario("rotated-camera-ready")
         scenario("credential-repair")
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"CamAdmiral E2E failed: {exc}", file=sys.stderr)

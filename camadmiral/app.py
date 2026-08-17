@@ -131,10 +131,6 @@ class ExplicitAddressRequest(BaseModel):
     address: str = Field(min_length=7, max_length=45)
 
 
-class IgnoredRequest(BaseModel):
-    ignored: bool
-
-
 FACTORY_ONVIF_USERNAME = "admin"
 FACTORY_ONVIF_PASSWORD = "admin"
 
@@ -1107,51 +1103,6 @@ def add_discovery_address(
             }
         )
     return _secured_json(_decorate_adoptions(queued), status_code=202)
-
-
-@app.post("/internal/discovery/{candidate_uuid}/ignored", include_in_schema=False)
-def set_candidate_ignored(
-    candidate_uuid: str,
-    request: IgnoredRequest,
-    x_camadmiral_action: str | None = Header(default=None),
-) -> JSONResponse:
-    if x_camadmiral_action != "set-ignored":
-        raise HTTPException(status_code=400, detail="Missing ignore action header")
-    with SCAN_REQUEST_LOCK:
-        state = _read_scan_state()
-        if state.get("status") in {"queued", "running"} or SCAN_REQUEST.exists():
-            return _secured_json(
-                {"status": "scan_active", "message": "Wait for the current scan to finish."},
-                status_code=409,
-            )
-        try:
-            inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            raise HTTPException(status_code=404, detail="Camera candidate not found")
-        found = False
-        for candidate in inventory.get("devices", []):
-            if candidate.get("candidate_uuid") == candidate_uuid:
-                repository = _repository()
-                if repository is not None and repository.adoption_for_candidate(candidate_uuid):
-                    return _secured_json(
-                        {"status": "adopted", "message": "Adopted cameras cannot be ignored."},
-                        status_code=409,
-                    )
-                candidate["ignored"] = request.ignored
-                found = True
-                break
-        if not found:
-            raise HTTPException(status_code=404, detail="Camera candidate not found")
-        temporary = INVENTORY.with_suffix(".tmp")
-        temporary.write_text(json.dumps(inventory), encoding="utf-8")
-        temporary.replace(INVENTORY)
-        from .inventory import inventory_summary
-        inventory["summary"] = inventory_summary(inventory.get("devices", []))
-        inventory.update({"status": "complete", "phase": "complete"})
-        state_temporary = SCAN_STATE.with_suffix(".tmp")
-        state_temporary.write_text(json.dumps(inventory), encoding="utf-8")
-        state_temporary.replace(SCAN_STATE)
-    return _secured_json(_decorate_adoptions(inventory))
 
 
 @app.post("/internal/discovery/{candidate_uuid}/inspect", include_in_schema=False)
