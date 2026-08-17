@@ -170,9 +170,10 @@
     .detail-section-note { color: #60798e; font-size: 11px; }
     .detail-message { color: #8ea2b3; font-size: 13px; }
     .camera-management {
-      display: flex; align-items: end; gap: 9px; flex-wrap: wrap; margin: 0;
+      display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; align-items: end; gap: 8px;
+      margin-top: 1px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, .09);
     }
-    .camera-management .setup-field { flex: 1 1 220px; }
+    .camera-management .setup-field { min-width: 0; }
     .camera-management .setup-field input { width: 100%; }
     .credential-repair {
       margin: 12px 0 0; padding: 11px; border: 1px solid rgba(251, 191, 36, .24);
@@ -185,7 +186,7 @@
       background: rgba(251, 191, 36, .07); color: #fcd34d; cursor: pointer; font-size: 12px; font-weight: 750;
     }
     .danger-action:hover { background: rgba(251, 191, 36, .13); }
-    .management-note { flex-basis: 100%; color: #7890a4; font-size: 11px; }
+    .management-note { grid-column: 1 / -1; color: #7890a4; font-size: 11px; }
     .integration-list { display: grid; gap: 8px; }
     .integration-row {
       display: grid; grid-template-columns: minmax(150px, .65fr) minmax(150px, .55fr) minmax(260px, 1fr);
@@ -354,12 +355,11 @@
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
       .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }
       .camera-management {
-        display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end;
+        display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end;
         gap: 8px;
       }
-      .camera-management .setup-field { grid-column: 1; flex: none; min-width: 0; width: 100%; }
-      .camera-management > .row-action { grid-column: 2; width: auto; padding: 8px 10px; }
-      .camera-management > .danger-action { grid-column: 1; justify-self: start; width: auto; padding: 8px 10px; }
+      .camera-management .setup-field { flex: none; min-width: 0; width: 100%; }
+      .camera-management > .row-action, .camera-management > .danger-action { width: auto; padding: 8px 10px; }
       .camera-management .management-note { grid-column: 1 / -1; }
       .rtsp-actions { gap: 7px; }
       .secondary-action { align-self: flex-start; padding: 5px 0; }
@@ -778,6 +778,7 @@
         const body = addText(connection, "div", "connection-details-body", "");
         device.onvif.service_urls.forEach(value => addText(body, "div", "endpoint", value));
       }
+      return summary;
     }
 
     function addDetailSection(parent, title, note = "") {
@@ -1200,7 +1201,7 @@
       input.maxLength = 160;
       input.required = true;
       name.append(input);
-      const save = addText(management, "button", "row-action", "Save name");
+      const save = addText(management, "button", "row-action", "Save");
       save.type = "submit";
       const enabled = adoption.enabled !== false;
       const toggle = addText(management, "button", enabled ? "danger-action" : "row-action", enabled ? "Disable" : "Enable");
@@ -1311,7 +1312,7 @@
     function inspectionDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details";
-      addCameraSummary(wrapper, device);
+      const summary = addCameraSummary(wrapper, device);
       const progress = adoptionProgress.get(device.candidate_uuid);
       if (progress) {
         const activity = addDetailSection(wrapper, "Working");
@@ -1342,9 +1343,11 @@
       }
       const adoption = device.adoption || result.adoption;
       if (adoption) {
-        const settings = addDetailSection(wrapper, "Camera settings");
-        addCameraManagement(settings, device, adoption);
-        addCredentialRepair(settings, device, adoption);
+        addCameraManagement(summary, device, adoption);
+        if (cameraHealth(device).key === "auth_failed") {
+          const credentials = addDetailSection(wrapper, "Camera credentials");
+          addCredentialRepair(credentials, device, adoption);
+        }
         if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       }
       const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));

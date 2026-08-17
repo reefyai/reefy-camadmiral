@@ -33,8 +33,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("thead { display: none; }", self.html)
 
     def test_phone_camera_name_editor_does_not_use_vertical_flex_basis(self) -> None:
-        self.assertIn(".camera-management .setup-field { grid-column: 1; flex: none;", self.html)
-        self.assertIn("grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn(".camera-management .setup-field { flex: none;", self.html)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto auto", self.html)
 
     def test_camera_rows_are_fixed_and_long_values_are_clipped(self) -> None:
         self.assertIn(".camera-row { height: 68px; }", self.html)
@@ -61,7 +61,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("function addLiveViewAction", self.html)
 
     def test_camera_details_are_grouped_into_compact_sections(self) -> None:
-        self.assertIn('addDetailSection(wrapper, "Camera settings")', self.html)
+        self.assertIn("addCameraManagement(summary, device, adoption)", self.html)
+        self.assertNotIn('addDetailSection(wrapper, "Camera settings")', self.html)
         self.assertIn('addDetailSection(wrapper, "Streams", streamCount)', self.html)
         self.assertIn('addDetailSection(wrapper, "Integrations"', self.html)
         self.assertIn("connection-details", self.html)
