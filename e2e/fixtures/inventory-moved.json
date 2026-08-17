@@ -1,0 +1,29 @@
+{
+  "scan_id": "synthetic-e2e-moved",
+  "completed_at": "2026-01-01T00:01:00+00:00",
+  "network": {
+    "interface": "e2e0",
+    "address": "172.30.0.20",
+    "cidr": "172.30.0.0/24"
+  },
+  "devices": [
+    {
+      "candidate_uuid": "candidate-open",
+      "display_name": "Synthetic open camera",
+      "ip": "172.30.0.12",
+      "mac": "02:00:00:00:00:10",
+      "status": "online",
+      "rtsp": [{"url": "rtsp://172.30.0.12:8554", "status": "available"}]
+    },
+    {
+      "candidate_uuid": "candidate-auth",
+      "display_name": "Synthetic authenticated camera",
+      "ip": "172.30.0.11",
+      "mac": "02:00:00:00:00:11",
+      "status": "online",
+      "rtsp": [{"url": "rtsp://172.30.0.11:8554", "status": "available"}]
+    }
+  ],
+  "summary": {"total": 2, "online": 2, "offline": 0},
+  "raw_log": ["Synthetic E2E moved-address fixture"]
+}

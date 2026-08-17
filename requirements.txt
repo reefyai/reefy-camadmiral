@@ -1,0 +1,5 @@
+fastapi==0.140.0
+uvicorn==0.51.0
+cryptography==46.0.7
+websockets==17.0.1
+PyYAML==6.0.3

@@ -1,0 +1,29 @@
+name: camadmiral
+
+services:
+  camadmiral:
+    build: .
+    image: ghcr.io/reefyai/camadmiral:v2026.08.17-00
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    memswap_limit: 512m
+    pids_limit: 192
+    volumes:
+      - camadmiral-data:/var/lib/camadmiral
+      - ./camadmiral.compose.yaml:/etc/camadmiral/config.yaml:ro
+    secrets:
+      - camadmiral_api_token
+    tmpfs:
+      - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+
+secrets:
+  camadmiral_api_token:
+    file: ./secrets/api-token
+
+volumes:
+  camadmiral-data:

@@ -1,0 +1,12 @@
+api:
+  listen: "127.0.0.1:1984"
+
+rtsp:
+  listen: "__CAMADMIRAL_RTSP_LISTEN__"
+  username: "camadmiral"
+  password: "__CAMADMIRAL_RTSP_PASSWORD__"
+
+webrtc:
+  listen: ""
+
+streams:

@@ -1,0 +1,11 @@
+version: 1
+
+server:
+  listen: 0.0.0.0
+  port: 18080
+
+storage:
+  database: /var/lib/camadmiral/camadmiral.db
+
+secrets:
+  api_token_file: /run/secrets/camadmiral_api_token

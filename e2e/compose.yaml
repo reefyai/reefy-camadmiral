@@ -1,0 +1,113 @@
+name: camadmiral-e2e
+
+services:
+  camadmiral:
+    build:
+      context: ..
+      args:
+        CHECKPOINT_REVISION: e2e
+    image: camadmiral-e2e:local
+    entrypoint: ["/bin/sh", "/e2e/start-camadmiral.sh"]
+    environment:
+      CAMADMIRAL_HEALTH_INTERVAL: "10"
+      CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
+    volumes:
+      - camadmiral-data:/var/lib/camadmiral
+      - ./fixtures:/e2e/fixtures:ro
+      - ./faults.py:/e2e/faults.py:ro
+      - ./start-camadmiral.sh:/e2e/start-camadmiral.sh:ro
+      - ./fixtures/api-token:/run/secrets/camadmiral_api_token:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.20
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+
+  camera-open:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]
+    volumes:
+      - ./fixtures/camera-open.yaml:/e2e/camera-open.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.10
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
+  camera-open-moved:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]
+    volumes:
+      - ./fixtures/camera-open.yaml:/e2e/camera-open.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.12
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [moved]
+
+  camera-auth:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth.yaml"]
+    volumes:
+      - ./fixtures/camera-auth.yaml:/e2e/camera-auth.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.11
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
+  camera-auth-rotated:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth-rotated.yaml"]
+    volumes:
+      - ./fixtures/camera-auth-rotated.yaml:/e2e/camera-auth-rotated.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.11
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [rotated]
+
+  test-driver:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/scenarios.py"]
+    user: "0:0"
+    volumes:
+      - .:/e2e:ro
+      - e2e-state:/state
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+
+networks:
+  lab:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  camadmiral-data:
+  e2e-state:

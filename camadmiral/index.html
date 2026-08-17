@@ -1,0 +1,1539 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CamAdmiral</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: #07111d;
+      color: #eef5f8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 15% -10%, rgba(20, 184, 166, .14), transparent 30rem), #07111d;
+    }
+    .shell { width: min(1000px, calc(100% - 32px)); min-height: 100vh; margin: 0 auto; display: flex; flex-direction: column; }
+    main { flex: 1; padding-bottom: 40px; }
+    .app-footer {
+      padding: 17px 0 24px; border-top: 1px solid rgba(148, 163, 184, .1);
+      color: #60798e; font-size: 12px; text-align: center;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 34px 0 24px; }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.045em; }
+    button { font: inherit; }
+    #scan {
+      border: 0; border-radius: 11px; padding: 11px 17px; background: #2dd4bf; color: #06201e;
+      font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(45, 212, 191, .16);
+    }
+    #scan:hover { background: #5eead4; }
+    #scan:disabled { cursor: wait; opacity: .6; }
+    .statusbar {
+      min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      border: 1px solid rgba(148, 163, 184, .16); background: rgba(12, 26, 42, .72);
+      border-radius: 13px; padding: 11px 14px;
+    }
+    .scan-state { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
+    .dot.ready { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45, 212, 191, .1); }
+    .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
+    .dot.error { background: #fb7185; box-shadow: 0 0 0 4px rgba(251, 113, 133, .1); }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .network { color: #7890a4; font-size: 13px; }
+    .status-meta { display: flex; align-items: center; gap: 12px; }
+    .scanner-progress { display: flex; align-items: center; gap: 8px; }
+    .scanner-state { display: inline-flex; align-items: center; gap: 6px; color: #8ea2b3; font-size: 12px; }
+    .scanner-dot { width: 6px; height: 6px; border-radius: 50%; background: #64748b; }
+    .scanner-state.running .scanner-dot { background: #fbbf24; }
+    .scanner-state.complete .scanner-dot { background: #2dd4bf; }
+    .scanner-state.error { color: #fda4af; }
+    .scanner-state.error .scanner-dot { background: #fb7185; }
+    .scan-details {
+      margin-top: 10px; border: 1px solid rgba(148, 163, 184, .14); border-radius: 11px;
+      background: rgba(8, 20, 34, .72); overflow: hidden;
+    }
+    .scan-details summary { padding: 10px 13px; color: #91a5b5; font-size: 12px; font-weight: 750; cursor: pointer; }
+    .scan-details summary:hover { color: #b9fff5; }
+    .scan-details-content { border-top: 1px solid rgba(148, 163, 184, .1); padding: 12px 13px 13px; }
+    .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
+    .scan-log {
+      max-height: 360px; margin: 0; overflow: auto; border-radius: 8px; padding: 11px 12px;
+      background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+    }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0; }
+    .summary { display: flex; gap: 9px; }
+    .pill {
+      border: 1px solid rgba(148, 163, 184, .15); background: rgba(12, 26, 42, .65);
+      border-radius: 999px; padding: 7px 11px; color: #9db0c0; font-size: 13px;
+    }
+    .pill strong { color: #f0f7fa; }
+    .search { position: relative; width: min(280px, 100%); }
+    .search span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+    .search input {
+      width: 100%; border: 1px solid rgba(148, 163, 184, .2); border-radius: 10px;
+      background: rgba(12, 26, 42, .75); color: #eef5f8; padding: 9px 12px; font: inherit;
+    }
+    .search input:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
+    .table-wrap {
+      overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
+      background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
+    }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 13px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid rgba(148, 163, 184, .11); }
+    th { color: #7890a4; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: rgba(30, 56, 76, .3); }
+    .sort {
+      display: inline-flex; align-items: center; gap: 5px; border: 0; padding: 0; background: transparent;
+      color: inherit; font: inherit; font-weight: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
+    }
+    .sort:hover { color: #b9fff5; }
+    .sort-arrow { width: 10px; color: #2dd4bf; }
+    .camera-name { color: #f0f7fa; font-size: 14px; font-weight: 750; }
+    .camera-model { margin-top: 3px; color: #6e8496; font-size: 12px; }
+    .adopted-label { display: inline-block; margin-top: 5px; color: #75f4e2; font-size: 11px; font-weight: 750; }
+    .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
+    .device-status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; text-transform: capitalize; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .device-status.online, .device-status.healthy { color: #75f4e2; }
+    .device-status.online .status-dot, .device-status.healthy .status-dot { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45, 212, 191, .09); }
+    .device-status.degraded { color: #fcd34d; }
+    .device-status.degraded .status-dot { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .09); }
+    .device-status.checking { color: #a9bac6; }
+    .device-status.checking .status-dot { background: #94a3b8; }
+    .device-status.disabled { color: #94a3b8; }
+    .device-status.disabled .status-dot { background: #64748b; box-shadow: 0 0 0 4px rgba(100, 116, 139, .1); }
+    .device-status.offline, .device-status.auth_failed { color: #fda4af; }
+    .device-status.offline .status-dot, .device-status.auth_failed .status-dot { background: #fb7185; box-shadow: 0 0 0 4px rgba(251, 113, 133, .09); }
+    .service-note { margin-top: 5px; color: #fbbf24; font-size: 10px; line-height: 1.25; }
+    tr.offline .camera-name { color: #a7b4bf; }
+    .row-action {
+      border: 1px solid rgba(45, 212, 191, .3); border-radius: 7px; padding: 5px 9px;
+      background: rgba(45, 212, 191, .08); color: #8ff8e8; cursor: pointer; font-size: 12px; font-weight: 750;
+    }
+    .row-action:hover { background: rgba(45, 212, 191, .14); }
+    .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
+    .detail-row td { padding: 0; background: rgba(5, 15, 27, .5); }
+    .camera-details { padding: 17px 18px 19px; }
+    .detail-title { margin-bottom: 10px; color: #dce8ee; font-size: 13px; font-weight: 800; }
+    .detail-message { color: #8ea2b3; font-size: 13px; }
+    .integration-status { margin-top: 8px; color: #91a5b5; font-size: 12px; }
+    .integration-status.applied { color: #75f4e2; }
+    .integration-status.error { color: #fcd34d; }
+    .live-view-action { margin: 12px 0 17px; }
+    .camera-management {
+      display: flex; align-items: end; gap: 9px; flex-wrap: wrap; margin: 12px 0 17px;
+      padding: 11px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 9px;
+      background: rgba(8, 20, 34, .54);
+    }
+    .camera-management .setup-field { flex: 1 1 220px; }
+    .camera-management .setup-field input { width: 100%; }
+    .credential-repair {
+      margin: 12px 0 17px; padding: 11px; border: 1px solid rgba(251, 191, 36, .24);
+      border-radius: 9px; background: rgba(120, 53, 15, .08);
+    }
+    .credential-repair-title { margin-bottom: 3px; color: #fcd34d; font-size: 12px; font-weight: 800; }
+    .credential-repair .setup-form { margin-top: 10px; }
+    .danger-action {
+      border: 1px solid rgba(251, 191, 36, .28); border-radius: 7px; padding: 5px 9px;
+      background: rgba(251, 191, 36, .07); color: #fcd34d; cursor: pointer; font-size: 12px; font-weight: 750;
+    }
+    .danger-action:hover { background: rgba(251, 191, 36, .13); }
+    .management-note { flex-basis: 100%; color: #7890a4; font-size: 11px; }
+    .live-modal {
+      position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 22px;
+      background: rgba(1, 7, 14, .82); backdrop-filter: blur(5px);
+    }
+    .live-dialog {
+      width: min(880px, 100%); border: 1px solid rgba(148, 163, 184, .2); border-radius: 14px;
+      background: #081421; box-shadow: 0 24px 80px rgba(0, 0, 0, .5); padding: 16px;
+    }
+    .live-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    .live-title { margin: 0; color: #e6f0f4; font-size: 16px; }
+    .live-close {
+      width: 34px; height: 34px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px;
+      background: rgba(148, 163, 184, .06); color: #a9bac6; cursor: pointer; font-size: 20px; line-height: 1;
+    }
+    .live-close:hover { color: #eef5f8; background: rgba(148, 163, 184, .12); }
+    .live-frame {
+      position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px; background: #000;
+    }
+    .live-frame video, .live-frame img { width: 100%; height: 100%; display: block; object-fit: contain; }
+    .live-status {
+      position: absolute; inset: 0; display: grid; place-items: center; padding: 18px;
+      background: rgba(0, 0, 0, .34); color: #a9bac6; font-size: 13px; text-align: center;
+    }
+    .live-status.error { color: #fcd34d; }
+    body.modal-open { overflow: hidden; }
+    .setup-form { display: flex; align-items: end; gap: 9px; margin-top: 14px; flex-wrap: wrap; }
+    .setup-field { display: grid; gap: 5px; color: #7890a4; font-size: 11px; font-weight: 750; }
+    .setup-field input {
+      width: 180px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px;
+      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 8px 9px; font: inherit;
+    }
+    .setup-field input:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
+    .password-control { position: relative; }
+    .password-control input { padding-right: 38px; }
+    .password-toggle {
+      position: absolute; top: 50%; right: 5px; transform: translateY(-50%); width: 30px; height: 30px;
+      border: 0; border-radius: 6px; background: transparent; color: #7890a4; cursor: pointer;
+      font-size: 16px; line-height: 1;
+    }
+    .password-toggle:hover, .password-toggle.visible { color: #b9fff5; background: rgba(45, 212, 191, .08); }
+    .setup-status { width: 100%; min-height: 16px; color: #8ea2b3; font-size: 12px; }
+    .setup-status.trying { color: #fbbf24; }
+    .setup-status.error { color: #fda4af; }
+    .setup-status.warning { color: #fcd34d; }
+    .setup-choice { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+    .setup-choice .cancel { border-color: rgba(148, 163, 184, .24); background: transparent; color: #a9bac6; }
+    .rtsp-setup { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(340px, 1.5fr); align-items: end; }
+    .rtsp-setup .setup-field input { width: 100%; }
+    .rtsp-credentials { display: flex; align-items: end; gap: 9px; flex-wrap: wrap; grid-column: 1 / -1; }
+    .rtsp-credentials .setup-field input { width: 180px; }
+    .rtsp-actions { display: flex; align-items: center; gap: 9px; grid-column: 1 / -1; }
+    .secondary-action {
+      border: 0; padding: 5px 0; background: transparent; color: #8ea2b3; cursor: pointer;
+      font-size: 12px; font-weight: 700;
+    }
+    .secondary-action:hover { color: #b9fff5; }
+    .rtsp-setup .setup-status { grid-column: 1 / -1; }
+    .rtsp-setup.manual .rtsp-credentials { margin-top: 2px; }
+    .role-label { color: #75f4e2; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .adoption-progress { display: flex; align-items: center; gap: 9px; color: #fbbf24; font-size: 12px; }
+    .inline-spinner {
+      width: 14px; height: 14px; flex: none; border: 2px solid rgba(251, 191, 36, .28);
+      border-top-color: #fbbf24; border-radius: 50%; animation: spin .75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .media-state { margin-top: 4px; color: #7890a4; font: 11px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .media-state.ready { color: #75f4e2; }
+    .media-state.unavailable { color: #fbbf24; }
+    .profile-list { display: grid; gap: 7px; }
+    .profile {
+      display: grid; grid-template-columns: minmax(160px, .75fr) minmax(190px, .8fr) minmax(340px, 1.8fr);
+      gap: 18px; align-items: start; border-top: 1px solid rgba(148, 163, 184, .09); padding-top: 8px;
+      color: #91a5b5; font-size: 12px;
+    }
+    .profile-name { color: #e0eaf0; font-weight: 700; }
+    .profile-specs { color: #91a5b5; line-height: 1.45; }
+    .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
+    .endpoint + .endpoint { margin-top: 5px; }
+    .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .downstream-row { display: flex; align-items: flex-start; gap: 7px; }
+    .downstream-url { color: #b9fff5; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .copy-button {
+      flex: none; width: 28px; height: 28px; border: 1px solid rgba(45, 212, 191, .25); border-radius: 6px;
+      background: rgba(45, 212, 191, .07); color: #8ff8e8; cursor: pointer; font-size: 15px; line-height: 1;
+    }
+    .copy-button:hover { background: rgba(45, 212, 191, .14); }
+    .camera-source { margin-top: 7px; }
+    .camera-source summary { color: #7890a4; cursor: pointer; font-size: 11px; }
+    .camera-source summary:hover { color: #b9fff5; }
+    .camera-source .endpoint { margin-top: 5px; color: #91a5b5; }
+    .rtsp-available { color: #75f4e2; font-weight: 700; }
+    .empty {
+      padding: 76px 24px; border: 1px dashed rgba(148, 163, 184, .2); border-radius: 15px;
+      color: #8298aa; text-align: center;
+    }
+    .errorbox {
+      margin-top: 14px; border: 1px solid rgba(251, 113, 133, .3); background: rgba(159, 18, 57, .12);
+      border-radius: 12px; padding: 12px 14px; color: #fecdd3;
+    }
+    [hidden] { display: none !important; }
+    @media (max-width: 700px) {
+      header { padding-top: 26px; }
+      .statusbar { align-items: flex-start; flex-direction: column; }
+      .status-meta { align-items: flex-start; flex-direction: column-reverse; gap: 7px; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .summary { flex-wrap: wrap; }
+      .search { width: 100%; }
+      .rtsp-setup { grid-template-columns: 1fr; }
+      .profile { grid-template-columns: 1fr; gap: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>CamAdmiral</h1>
+      <button id="scan" type="button">Scan network</button>
+    </header>
+    <main>
+      <div class="statusbar">
+        <div class="scan-state"><span class="dot" id="dot"></span><span id="state">Starting</span></div>
+        <div class="status-meta">
+          <div class="scanner-progress" id="scanner-progress" hidden></div>
+          <div class="network" id="network"></div>
+        </div>
+      </div>
+      <details class="scan-details" id="scan-details" hidden>
+        <summary>Scan details</summary>
+        <div class="scan-details-content">
+          <div class="scan-metadata" id="scan-metadata"></div>
+          <pre class="scan-log" id="scan-log"></pre>
+        </div>
+      </details>
+      <div class="errorbox" id="error" hidden></div>
+      <div class="toolbar" id="toolbar" hidden>
+        <div class="summary">
+          <div class="pill"><strong id="device-count">0</strong> devices</div>
+          <div class="pill"><strong id="online-count">0</strong> online</div>
+          <div class="pill"><strong id="offline-count">0</strong> offline</div>
+        </div>
+        <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
+      </div>
+      <div class="table-wrap" id="table-wrap" hidden>
+        <table id="camera-table">
+          <thead>
+            <tr>
+              <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
+              <th><button class="sort" type="button" data-sort="status">Status <span class="sort-arrow"></span></button></th>
+              <th><button class="sort" type="button" data-sort="ip">IP address <span class="sort-arrow"></span></button></th>
+              <th><button class="sort" type="button" data-sort="mac">MAC <span class="sort-arrow"></span></button></th>
+              <th><button class="sort" type="button" data-sort="onvif">ONVIF <span class="sort-arrow"></span></button></th>
+              <th><button class="sort" type="button" data-sort="rtsp">RTSP <span class="sort-arrow"></span></button></th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="camera-rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty">Scan the network to find cameras.</div>
+    </main>
+    <footer class="app-footer">CamAdmiral <span id="app-version" data-testid="app-version">0.0.0-dev</span></footer>
+  </div>
+  <div class="live-modal" id="live-modal" role="dialog" aria-modal="true" aria-labelledby="live-title" hidden>
+    <div class="live-dialog">
+      <div class="live-header">
+        <h2 class="live-title" id="live-title">Live view</h2>
+        <button class="live-close" id="live-close" type="button" aria-label="Close live view">×</button>
+      </div>
+      <div class="live-frame">
+        <video id="live-video" aria-label="Live camera view" autoplay muted playsinline controls></video>
+        <img id="live-fallback" alt="Live camera view" hidden>
+        <div class="live-status" id="live-status">Connecting to camera...</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const scanButton = document.querySelector("#scan");
+    const stateLabel = document.querySelector("#state");
+    const stateDot = document.querySelector("#dot");
+    const networkLabel = document.querySelector("#network");
+    const scannerProgress = document.querySelector("#scanner-progress");
+    const scanDetails = document.querySelector("#scan-details");
+    const scanMetadata = document.querySelector("#scan-metadata");
+    const scanLog = document.querySelector("#scan-log");
+    const toolbar = document.querySelector("#toolbar");
+    const searchInput = document.querySelector("#search");
+    const tableWrap = document.querySelector("#table-wrap");
+    const cameraTable = document.querySelector("#camera-table");
+    const cameraRows = document.querySelector("#camera-rows");
+    const empty = document.querySelector("#empty");
+    const errorBox = document.querySelector("#error");
+    const liveModal = document.querySelector("#live-modal");
+    const liveTitle = document.querySelector("#live-title");
+    const liveVideo = document.querySelector("#live-video");
+    const liveFallback = document.querySelector("#live-fallback");
+    const liveStatus = document.querySelector("#live-status");
+    const liveClose = document.querySelector("#live-close");
+    const appVersion = document.querySelector("#app-version");
+    let busy = false;
+    let devices = [];
+    let lastResultId = null;
+    let sortKey = "name";
+    let sortDirection = 1;
+    let scannerSignature = "";
+    let scanDetailsSignature = "";
+    let expandedCandidate = null;
+    let mediaAccess = null;
+    let mediaAccessPromise = null;
+    let mediaAccessFailed = false;
+    let mediaHost = window.location.hostname;
+    const inspections = new Map();
+    const credentialDrafts = new Map();
+    const credentialRepairDrafts = new Map();
+    const adoptionProgress = new Map();
+    const lifecycleErrors = new Map();
+    let liveSocket = null;
+    let liveReconnectTimer = null;
+    let liveMediaSource = null;
+    let liveSourceBuffer = null;
+    let liveMediaUrl = null;
+    let liveFallbackUrl = null;
+    let liveMode = null;
+    let liveAppendQueue = [];
+    let liveAppendBytes = 0;
+    let liveSession = 0;
+    const liveCodecs = ["avc1.640029", "avc1.64002A", "avc1.640033", "hvc1.1.6.L153.B0"];
+    const liveQueueLimit = 16 * 1024 * 1024;
+
+    function setText(node, value) {
+      if (node.textContent !== String(value)) node.textContent = value;
+    }
+
+    function renderScannerProgress(scanners = {}) {
+      const signature = JSON.stringify(scanners);
+      if (signature === scannerSignature) return;
+      scannerSignature = signature;
+      scannerProgress.replaceChildren();
+      ["onvif", "rtsp"].forEach(name => {
+        const state = scanners[name];
+        if (!state) return;
+        const item = addText(scannerProgress, "span", `scanner-state ${state}`, "");
+        addText(item, "span", "scanner-dot", "");
+        const stateLabel = state === "complete" ? "done" : state;
+        addText(item, "span", "", `${name.toUpperCase()} ${stateLabel}`);
+      });
+      scannerProgress.hidden = scannerProgress.childElementCount === 0;
+    }
+
+    function renderScanDetails(data, active) {
+      const log = Array.isArray(data.raw_log) ? data.raw_log : [];
+      const network = data.network || {};
+      const available = log.length || network.interface || data.duration_ms || data.completed_at;
+      scanDetails.hidden = !available;
+      if (!available) return;
+      const metadata = [
+        active && data.completed_at ? "Last completed scan" : null,
+        network.interface,
+        network.address,
+        network.subnet,
+        Number.isFinite(network.hosts) ? `${network.hosts} hosts` : null,
+        data.duration_ms ? `${(data.duration_ms / 1000).toFixed(1)}s` : null,
+        data.completed_at
+      ].filter(Boolean).join(" · ");
+      const signature = JSON.stringify([metadata, log]);
+      if (signature === scanDetailsSignature) return;
+      scanDetailsSignature = signature;
+      setText(scanMetadata, metadata);
+      setText(scanLog, log.length ? log.join("\n") : "No raw scan log is available for this earlier scan.");
+    }
+
+    function addText(parent, tag, className, value) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = value;
+      parent.append(node);
+      return node;
+    }
+
+    function addCell(row, className = "") {
+      const cell = document.createElement("td");
+      if (className) cell.className = className;
+      row.append(cell);
+      return cell;
+    }
+
+    function addEndpoints(cell, values) {
+      values.forEach(value => {
+        addText(cell, "div", "endpoint", value);
+      });
+    }
+
+    function ipNumber(value) {
+      return value.split(".").reduce((result, part) => result * 256 + Number(part), 0);
+    }
+
+    function sortValue(device, key) {
+      if (key === "ip") return ipNumber(device.ip);
+      if (key === "mac") return device.mac || "";
+      if (key === "status") return ({healthy: 0, online: 1, checking: 2, degraded: 3, auth_failed: 4, offline: 5})[cameraHealth(device).key] ?? 6;
+      if (key === "onvif") return device.onvif ? 1 : 0;
+      if (key === "rtsp") return device.rtsp?.length || 0;
+      return (device.display_name || device.ip).toLocaleLowerCase();
+    }
+
+    function cameraHealth(device) {
+      if (device.adoption && device.adoption.enabled === false) {
+        return {key: "disabled", label: "disabled"};
+      }
+      const streams = device.adoption?.streams || [];
+      if (!streams.length) {
+        const key = device.status === "online" ? "online" : "offline";
+        return {key, label: key};
+      }
+      const states = streams.map(stream => stream.health_status || "unknown");
+      if (states.includes("auth_failed")) return {key: "auth_failed", label: "authentication failed"};
+      if (states.every(state => state === "healthy")) return {key: "healthy", label: "healthy"};
+      if (states.every(state => state === "offline")) return {key: "offline", label: "offline"};
+      if (states.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
+      return {key: "checking", label: "checking"};
+    }
+
+    function matchesSearch(device, query) {
+      const values = [
+        device.display_name, device.status, device.ip, device.mac, device.onvif?.model,
+        ...(device.onvif?.service_urls || []), ...(device.rtsp || []).map(endpoint => endpoint.url)
+      ];
+      return values.filter(Boolean).join(" ").toLocaleLowerCase().includes(query);
+    }
+
+    async function loadMediaAccess() {
+      if (mediaAccess) return mediaAccess;
+      if (mediaAccessPromise) return mediaAccessPromise;
+      mediaAccessFailed = false;
+      mediaAccessPromise = fetch("/internal/media/access", {
+        method: "POST",
+        headers: {"X-CamAdmiral-Action": "reveal-media-access"}
+      }).then(response => response.json()).then(result => {
+        if (result.status === "ok") mediaAccess = result;
+        else mediaAccessFailed = true;
+        return mediaAccess;
+      }).catch(() => {
+        mediaAccessFailed = true;
+        return null;
+      }).finally(() => {
+        mediaAccessPromise = null;
+        if (expandedCandidate) renderRows();
+      });
+      return mediaAccessPromise;
+    }
+
+    function downstreamUrl(streamKey) {
+      if (!mediaAccess) return null;
+      const host = mediaHost.includes(":") ? `[${mediaHost}]` : mediaHost;
+      const username = encodeURIComponent(mediaAccess.username);
+      const password = encodeURIComponent(mediaAccess.password);
+      return `rtsp://${username}:${password}@${host}:${mediaAccess.port}/${encodeURIComponent(streamKey)}`;
+    }
+
+    async function copyText(value, button) {
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+        else throw new Error("Clipboard API unavailable");
+      } catch (_) {
+        const temporary = document.createElement("textarea");
+        temporary.value = value;
+        temporary.setAttribute("readonly", "");
+        temporary.style.position = "fixed";
+        temporary.style.left = "-9999px";
+        document.body.append(temporary);
+        temporary.select();
+        document.execCommand("copy");
+        temporary.remove();
+      }
+      button.textContent = "✓";
+      window.setTimeout(() => { button.textContent = "⧉"; }, 1200);
+    }
+
+    function addStreamAccess(parent, profile, managed, roles, enabled = true) {
+      const url = managed && enabled ? downstreamUrl(managed.stream_key) : null;
+      addText(parent, "div", "downstream-label", "Downstream URL");
+      const row = addText(parent, "div", "downstream-row", "");
+      const value = !enabled
+        ? "Disabled"
+        : url || (managed ? mediaAccessFailed ? "Media access unavailable" : "Loading secure media access..." : "Available after adoption");
+      addText(row, "div", "downstream-url", value);
+      if (url) {
+        const copy = addText(row, "button", "copy-button", "⧉");
+        copy.type = "button";
+        copy.title = "Copy downstream URL";
+        copy.setAttribute("aria-label", "Copy downstream URL");
+        copy.addEventListener("click", () => copyText(url, copy));
+      }
+      if (roles.length) addText(parent, "div", "role-label", roles.join(" · "));
+      const source = document.createElement("details");
+      source.className = "camera-source";
+      addText(source, "summary", "", "Show camera source");
+      addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
+      parent.append(source);
+    }
+
+    function addAdoptionProgress(parent, message) {
+      const progress = addText(parent, "div", "adoption-progress", "");
+      const spinner = addText(progress, "span", "inline-spinner", "");
+      spinner.setAttribute("aria-hidden", "true");
+      addText(progress, "span", "", message);
+    }
+
+    function setLiveStatus(message, error = false) {
+      liveStatus.textContent = message;
+      liveStatus.classList.toggle("error", error);
+      liveStatus.hidden = false;
+    }
+
+    function liveWebSocketUrl(cameraUuid) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      return `${protocol}//${window.location.host}/internal/cameras/${encodeURIComponent(cameraUuid)}/live`;
+    }
+
+    function resetLiveMedia() {
+      liveMode = null;
+      liveAppendQueue = [];
+      liveAppendBytes = 0;
+      liveSourceBuffer = null;
+      liveMediaSource = null;
+      liveVideo.pause();
+      liveVideo.removeAttribute("src");
+      liveVideo.srcObject = null;
+      liveVideo.load();
+      if (liveMediaUrl) URL.revokeObjectURL(liveMediaUrl);
+      liveMediaUrl = null;
+      if (liveFallbackUrl) URL.revokeObjectURL(liveFallbackUrl);
+      liveFallbackUrl = null;
+      liveFallback.removeAttribute("src");
+      liveFallback.hidden = true;
+      liveVideo.hidden = false;
+    }
+
+    function destroyLiveTransport() {
+      if (liveReconnectTimer) window.clearTimeout(liveReconnectTimer);
+      liveReconnectTimer = null;
+      if (liveSocket) {
+        liveSocket.onclose = null;
+        liveSocket.close();
+      }
+      liveSocket = null;
+      resetLiveMedia();
+    }
+
+    function closeLiveView() {
+      liveSession += 1;
+      destroyLiveTransport();
+      liveModal.hidden = true;
+      document.body.classList.remove("modal-open");
+    }
+
+    function pumpLiveBuffer() {
+      const buffer = liveSourceBuffer;
+      if (!buffer || buffer.updating) return;
+      if (liveAppendQueue.length) {
+        const data = liveAppendQueue.shift();
+        liveAppendBytes -= data.byteLength;
+        try {
+          buffer.appendBuffer(data);
+        } catch (_) {
+          if (liveSocket) liveSocket.close();
+        }
+        return;
+      }
+      if (!buffer.buffered.length) return;
+      const start = buffer.buffered.start(0);
+      const end = buffer.buffered.end(buffer.buffered.length - 1);
+      liveModal.dataset.transport = "mse-playing";
+      if (liveVideo.currentTime < end - 2) liveVideo.currentTime = Math.max(start, end - 0.1);
+      if (liveVideo.paused) liveVideo.play().catch(() => {});
+      if (end - start > 10) {
+        try { buffer.remove(start, end - 5); } catch (_) {}
+      }
+    }
+
+    function appendLiveData(data) {
+      if (!liveSourceBuffer) return;
+      if (liveAppendBytes + data.byteLength > liveQueueLimit) {
+        if (liveSocket) liveSocket.close();
+        return;
+      }
+      liveAppendQueue.push(data);
+      liveAppendBytes += data.byteLength;
+      liveModal.dataset.transport = `${liveMode}-data`;
+      pumpLiveBuffer();
+    }
+
+    function showMjpegFallback(socket, message = "Starting compatible video...") {
+      liveMode = "mjpeg";
+      liveModal.dataset.transport = "mjpeg";
+      liveVideo.pause();
+      liveVideo.hidden = true;
+      liveFallback.hidden = false;
+      setLiveStatus(message);
+      socket.send(JSON.stringify({type: "mjpeg"}));
+    }
+
+    function configureLiveMse(mimeType) {
+      const MediaSourceClass = window.ManagedMediaSource || window.MediaSource;
+      if (!liveMediaSource || !MediaSourceClass?.isTypeSupported(mimeType)) {
+        showMjpegFallback(liveSocket);
+        return;
+      }
+      try {
+        liveSourceBuffer = liveMediaSource.addSourceBuffer(mimeType);
+        liveSourceBuffer.mode = "segments";
+        liveSourceBuffer.addEventListener("updateend", pumpLiveBuffer);
+        liveSourceBuffer.addEventListener("error", () => {
+          if (liveSocket) liveSocket.close();
+        });
+        liveModal.dataset.transport = "mse-configured";
+        setLiveStatus("Starting video...");
+      } catch (_) {
+        showMjpegFallback(liveSocket);
+      }
+    }
+
+    function startLiveMse(socket) {
+      const MediaSourceClass = window.ManagedMediaSource || window.MediaSource;
+      if (!MediaSourceClass) {
+        showMjpegFallback(socket);
+        return;
+      }
+      liveMode = "mse";
+      liveModal.dataset.transport = "mse-opening";
+      liveMediaSource = new MediaSourceClass();
+      liveVideo.hidden = false;
+      liveFallback.hidden = true;
+      liveMediaSource.addEventListener("sourceopen", () => {
+        const codecs = liveCodecs
+          .filter(codec => MediaSourceClass.isTypeSupported(`video/mp4; codecs=\"${codec}\"`))
+          .join();
+        if (!codecs) {
+          showMjpegFallback(socket);
+          return;
+        }
+        socket.send(JSON.stringify({type: "mse", value: codecs}));
+      }, {once: true});
+      if ("ManagedMediaSource" in window) {
+        liveVideo.disableRemotePlayback = true;
+        liveVideo.srcObject = liveMediaSource;
+      } else {
+        liveMediaUrl = URL.createObjectURL(liveMediaSource);
+        liveVideo.src = liveMediaUrl;
+      }
+      liveVideo.play().catch(() => {});
+    }
+
+    function scheduleLiveReconnect(cameraUuid, session) {
+      if (session !== liveSession || liveModal.hidden) return;
+      setLiveStatus("Reconnecting...", true);
+      liveReconnectTimer = window.setTimeout(() => startLiveTransport(cameraUuid, session), 1500);
+    }
+
+    function startLiveTransport(cameraUuid, session) {
+      if (session !== liveSession || liveModal.hidden || document.hidden) return;
+      const socket = new WebSocket(liveWebSocketUrl(cameraUuid));
+      liveSocket = socket;
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => {
+        if (session !== liveSession) return;
+        setLiveStatus("Starting video...");
+        startLiveMse(socket);
+      };
+      socket.onmessage = event => {
+        if (session !== liveSession) return;
+        if (typeof event.data !== "string") {
+          if (liveMode === "mse") {
+            appendLiveData(event.data);
+          } else if (liveMode === "mjpeg") {
+            const nextUrl = URL.createObjectURL(new Blob([event.data], {type: "image/jpeg"}));
+            const previousUrl = liveFallbackUrl;
+            liveFallbackUrl = nextUrl;
+            liveFallback.onload = () => {
+              liveStatus.hidden = true;
+              if (previousUrl) URL.revokeObjectURL(previousUrl);
+            };
+            liveFallback.src = nextUrl;
+          }
+          return;
+        }
+        let message;
+        try { message = JSON.parse(event.data); } catch (_) { return; }
+        if (message.type === "mse" && liveMode === "mse") {
+          configureLiveMse(message.value);
+        } else if (message.type === "error") {
+          if (liveMode === "mse") showMjpegFallback(socket);
+          else setLiveStatus("Waiting for camera...", true);
+        }
+      };
+      socket.onerror = () => setLiveStatus("Connection error", true);
+      socket.onclose = () => {
+        if (liveSocket === socket) {
+          liveSocket = null;
+          resetLiveMedia();
+        }
+        scheduleLiveReconnect(cameraUuid, session);
+      };
+    }
+
+    function showLiveView(cameraUuid, displayName) {
+      closeLiveView();
+      const session = liveSession;
+      liveTitle.textContent = `Live view: ${displayName || "Camera"}`;
+      liveStatus.textContent = "Connecting to camera...";
+      liveStatus.classList.remove("error");
+      liveStatus.hidden = false;
+      liveModal.hidden = false;
+      document.body.classList.add("modal-open");
+      liveClose.focus();
+      startLiveTransport(cameraUuid, session);
+    }
+
+    function addLiveViewAction(parent, adoption, displayName) {
+      if (!adoption?.camera_uuid || adoption.enabled === false) return;
+      const action = addText(parent, "div", "live-view-action", "");
+      const live = addText(action, "button", "row-action", "Live view");
+      live.type = "button";
+      live.addEventListener("click", () => showLiveView(adoption.camera_uuid, displayName));
+    }
+
+    function addFrigateStatus(parent, adoption) {
+      const statuses = Array.isArray(adoption?.frigate)
+        ? adoption.frigate
+        : (adoption?.frigate ? [adoption.frigate] : []);
+      const labels = {
+        applied: "Added",
+        pending: "Adding...",
+        error: "Retry pending"
+      };
+      statuses.forEach((status) => {
+        if (adoption.enabled === false) {
+          addText(parent, "div", "integration-status", `${status.target} · Disabled`);
+          return;
+        }
+        const state = status.status || "pending";
+        addText(
+          parent,
+          "div",
+          `integration-status ${state}`,
+          `${status.target} · ${labels[state] || "Waiting"}`
+        );
+      });
+    }
+
+    async function updateCameraName(device, input) {
+      const name = input.value.trim();
+      if (!name) {
+        lifecycleErrors.set(device.candidate_uuid, "Enter a camera name.");
+        renderRows();
+        return;
+      }
+      adoptionProgress.set(device.candidate_uuid, "Saving camera name...");
+      lifecycleErrors.delete(device.candidate_uuid);
+      renderRows();
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/update`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "update-camera"},
+          body: JSON.stringify({display_name: name})
+        });
+        const result = await response.json();
+        if (!response.ok || !result.camera) throw new Error(result.message || "Camera name could not be saved.");
+        device.adoption = {...device.adoption, ...result.camera};
+        device.display_name = result.camera.display_name;
+        const inspection = inspections.get(device.candidate_uuid);
+        if (inspection?.adoption) inspection.adoption = device.adoption;
+      } catch (error) {
+        lifecycleErrors.set(device.candidate_uuid, error.message || "Camera name could not be saved.");
+      }
+      adoptionProgress.delete(device.candidate_uuid);
+      renderRows();
+    }
+
+    async function changeCameraEnabled(device, enabled) {
+      if (!enabled && !window.confirm("Disable this camera? Live media and Frigate processing will stop, but settings and history will remain.")) return;
+      adoptionProgress.set(
+        device.candidate_uuid,
+        enabled ? "Checking streams and enabling camera..." : "Disabling camera..."
+      );
+      lifecycleErrors.delete(device.candidate_uuid);
+      renderRows();
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/enabled`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-camera-enabled"},
+          body: JSON.stringify({enabled})
+        });
+        const result = await response.json();
+        if (!response.ok || !result.camera) throw new Error(result.message || "Camera state could not be changed.");
+        device.adoption = {...device.adoption, ...result.camera};
+        const inspection = inspections.get(device.candidate_uuid);
+        if (inspection?.adoption) inspection.adoption = device.adoption;
+        if (!enabled) closeLiveView();
+      } catch (error) {
+        lifecycleErrors.set(device.candidate_uuid, error.message || "Camera state could not be changed.");
+      }
+      adoptionProgress.delete(device.candidate_uuid);
+      renderRows();
+    }
+
+    function addCameraManagement(parent, device, adoption) {
+      const management = addText(parent, "form", "camera-management", "");
+      const name = addText(management, "label", "setup-field", "Camera name");
+      const input = document.createElement("input");
+      input.value = adoption.display_name || device.display_name || "";
+      input.maxLength = 160;
+      input.required = true;
+      name.append(input);
+      const save = addText(management, "button", "row-action", "Save name");
+      save.type = "submit";
+      const enabled = adoption.enabled !== false;
+      const toggle = addText(management, "button", enabled ? "danger-action" : "row-action", enabled ? "Disable" : "Enable");
+      toggle.type = "button";
+      toggle.addEventListener("click", () => changeCameraEnabled(device, !enabled));
+      addText(
+        management,
+        "div",
+        "management-note",
+        enabled ? "Disabling stops live media and Frigate processing while preserving settings and history." : "Enabling checks saved streams before restoring media and Frigate processing."
+      );
+      const error = lifecycleErrors.get(device.candidate_uuid);
+      if (error) addText(management, "div", "setup-status error", error);
+      management.addEventListener("submit", event => {
+        event.preventDefault();
+        updateCameraName(device, input);
+      });
+      parent.append(management);
+    }
+
+    function addCredentialRepair(parent, device, adoption) {
+      if (cameraHealth(device).key !== "auth_failed") return;
+      const section = addText(parent, "div", "credential-repair", "");
+      addText(section, "div", "credential-repair-title", "Camera credentials changed?");
+      addText(section, "div", "detail-message", "Enter the current camera username and password to reconnect existing streams.");
+      const form = addText(section, "form", "setup-form", "");
+      form.setAttribute("autocomplete", "off");
+      const draft = credentialRepairDrafts.get(device.candidate_uuid) || {
+        username: "",
+        password: "",
+        visible: false,
+        error: null
+      };
+      credentialRepairDrafts.set(device.candidate_uuid, draft);
+      const username = addText(form, "label", "setup-field", "Username");
+      const usernameInput = document.createElement("input");
+      disableCredentialAutocomplete(usernameInput);
+      usernameInput.value = draft.username;
+      username.append(usernameInput);
+      const password = addText(form, "label", "setup-field", "Password");
+      const passwordControl = addText(password, "span", "password-control", "");
+      const passwordInput = document.createElement("input");
+      passwordInput.type = draft.visible ? "text" : "password";
+      disableCredentialAutocomplete(passwordInput);
+      passwordInput.value = draft.password;
+      passwordControl.append(passwordInput);
+      const visibility = addText(passwordControl, "button", "password-toggle", "👁");
+      visibility.type = "button";
+      visibility.classList.toggle("visible", draft.visible);
+      visibility.setAttribute("aria-label", draft.visible ? "Hide password" : "Show password");
+      visibility.title = draft.visible ? "Hide password" : "Show password";
+      visibility.addEventListener("click", () => {
+        const show = passwordInput.type === "password";
+        passwordInput.type = show ? "text" : "password";
+        draft.visible = show;
+        visibility.classList.toggle("visible", show);
+        visibility.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        visibility.title = show ? "Hide password" : "Show password";
+      });
+      const submit = addText(form, "button", "row-action", "Update credentials");
+      submit.type = "submit";
+      const status = addText(form, "div", "setup-status", "");
+      status.setAttribute("aria-live", "polite");
+      if (draft.error) {
+        status.className = "setup-status error";
+        setText(status, draft.error);
+      }
+      [usernameInput, passwordInput].forEach(input => {
+        input.addEventListener("input", () => {
+          draft.username = usernameInput.value;
+          draft.password = passwordInput.value;
+          draft.error = null;
+          status.textContent = "";
+          status.className = "setup-status";
+        });
+      });
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        draft.username = usernameInput.value;
+        draft.password = passwordInput.value;
+        draft.error = null;
+        adoptionProgress.set(device.candidate_uuid, "Validating credentials and reconnecting streams...");
+        renderRows();
+        try {
+          const response = await fetch(`/internal/cameras/${encodeURIComponent(adoption.camera_uuid)}/credentials`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "update-camera-credentials"},
+            body: JSON.stringify({username: draft.username, password: draft.password})
+          });
+          const result = await response.json();
+          if (!response.ok || !result.camera) throw new Error(result.message || "Credentials could not be updated.");
+          device.adoption = {...device.adoption, ...result.camera};
+          const inspection = inspections.get(device.candidate_uuid);
+          if (inspection?.adoption) inspection.adoption = device.adoption;
+          credentialRepairDrafts.delete(device.candidate_uuid);
+        } catch (error) {
+          draft.error = error.message || "Credentials could not be updated.";
+        }
+        adoptionProgress.delete(device.candidate_uuid);
+        renderRows();
+      });
+      parent.append(section);
+    }
+
+    function disableCredentialAutocomplete(element) {
+      element.setAttribute("autocomplete", "off");
+      element.setAttribute("autocapitalize", "none");
+      element.setAttribute("autocorrect", "off");
+      element.setAttribute("spellcheck", "false");
+    }
+
+    function inspectionDetails(device) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "camera-details";
+      const progress = adoptionProgress.get(device.candidate_uuid);
+      if (progress) {
+        addAdoptionProgress(wrapper, progress);
+        return wrapper;
+      }
+      const result = inspections.get(device.candidate_uuid);
+      if (!result || result.status === "loading" || result.status === "adopting") {
+        addText(wrapper, "div", "detail-message", result?.status === "adopting" ? "Validating and adopting camera..." : "Inspecting ONVIF profiles...");
+        return wrapper;
+      }
+      if (result.status !== "ok" && result.status !== "adopted") {
+        const messages = {
+          credentials_required: "Credentials required to inspect ONVIF profiles.",
+          not_onvif: "Find compatible streams automatically or enter an exact RTSP URL.",
+          offline: "Camera is offline.",
+          no_profiles: "No ONVIF media profiles were reported."
+        };
+        const message = device.service_status === "unavailable" && result.status !== "not_onvif"
+          ? "Device is online, but no camera service responded during the latest scan."
+          : messages[result.status] || result.message || "Inspection failed.";
+        addText(wrapper, "div", "detail-message", message);
+        if (result.status === "credentials_required") addAdoptionForm(wrapper, device, true);
+        if (result.status === "not_onvif" && device.rtsp?.length) addRtspAdoptionForm(wrapper, device);
+        return wrapper;
+      }
+      const adoption = device.adoption || result.adoption;
+      if (adoption) {
+        addText(wrapper, "div", "detail-message", adoption.enabled === false ? "Adopted and disabled." : "Adopted. Stream roles were selected automatically.");
+        addCameraManagement(wrapper, device, adoption);
+        addCredentialRepair(wrapper, device, adoption);
+        addFrigateStatus(wrapper, adoption);
+        addLiveViewAction(wrapper, adoption, device.display_name);
+        if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
+      }
+      const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));
+      addText(wrapper, "div", "detail-title", `${result.profiles.length} ${rtspOnly ? "RTSP stream" : "ONVIF profile"}${result.profiles.length === 1 ? "" : "s"}`);
+      if (result.rejected_sources?.length && !result.catalog_revision) {
+        addText(wrapper, "div", "setup-status warning", `${result.rejected_sources.length} additional stream could not be read and was not added.`);
+      }
+      const list = addText(wrapper, "div", "profile-list", "");
+      result.profiles.forEach(profile => {
+        const row = addText(list, "div", "profile", "");
+        addText(row, "div", "profile-name", profile.name || profile.token);
+        const roleTokens = result.role_tokens || {};
+        const roles = Object.entries(roleTokens).filter(([, token]) => token === profile.token).map(([role]) => role);
+        const managed = adoption?.streams?.find(stream => stream.profile_token === profile.token);
+        const width = managed?.probed_width || profile.width;
+        const height = managed?.probed_height || profile.height;
+        const codec = managed?.video_codec || profile.encoding;
+        const fps = managed?.probed_fps || profile.fps;
+        const specifications = [
+          width && height ? `${width} × ${height}` : null,
+          codec ? String(codec).toUpperCase() : null,
+          fps ? `${Number(fps).toFixed(Number(fps) % 1 ? 1 : 0)} fps` : null
+        ].filter(Boolean).join(" · ") || "Media details unavailable";
+        addText(row, "div", "profile-specs", specifications);
+        const endpoint = addText(row, "div", "stream-access", "");
+        addStreamAccess(endpoint, profile, managed, roles, adoption?.enabled !== false);
+        if (managed) {
+          const facts = [];
+          if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
+          const labels = {healthy: "Healthy", degraded: "Degraded", offline: "Offline", auth_failed: "Authentication failed", unknown: "Media check pending"};
+          const health = managed.health_status || "unknown";
+          if (managed.consecutive_failures) facts.push(`${managed.consecutive_failures} consecutive failure${managed.consecutive_failures === 1 ? "" : "s"}`);
+          addText(endpoint, "div", `media-state ${health === "healthy" ? "ready" : health === "unknown" ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
+        }
+      });
+      if (!result.adoption && !device.adoption) addAdoptionForm(wrapper, device, false);
+      return wrapper;
+    }
+
+    function addAdoptionForm(wrapper, device, credentialsRequired) {
+      const form = document.createElement("form");
+      form.className = "setup-form";
+      form.setAttribute("autocomplete", "off");
+      const draft = credentialDrafts.get(device.candidate_uuid) || {username: "", password: "", visible: false};
+      credentialDrafts.set(device.candidate_uuid, draft);
+      let usernameInput = null;
+      let passwordInput = null;
+      if (credentialsRequired) {
+        const username = addText(form, "label", "setup-field", "Username");
+        usernameInput = document.createElement("input");
+        disableCredentialAutocomplete(usernameInput);
+        usernameInput.required = true;
+        usernameInput.value = draft.username;
+        username.append(usernameInput);
+        const password = addText(form, "label", "setup-field", "Password");
+        const passwordControl = addText(password, "span", "password-control", "");
+        passwordInput = document.createElement("input");
+        passwordInput.type = draft.visible ? "text" : "password";
+        disableCredentialAutocomplete(passwordInput);
+        passwordInput.value = draft.password;
+        passwordControl.append(passwordInput);
+        const visibility = addText(passwordControl, "button", "password-toggle", "👁");
+        visibility.type = "button";
+        visibility.classList.toggle("visible", draft.visible);
+        visibility.setAttribute("aria-label", draft.visible ? "Hide password" : "Show password");
+        visibility.title = draft.visible ? "Hide password" : "Show password";
+        visibility.addEventListener("click", () => {
+          const show = passwordInput.type === "password";
+          passwordInput.type = show ? "text" : "password";
+          draft.visible = show;
+          visibility.classList.toggle("visible", show);
+          visibility.setAttribute("aria-label", show ? "Hide password" : "Show password");
+          visibility.title = show ? "Hide password" : "Show password";
+        });
+      }
+      const submit = addText(form, "button", "row-action", "Adopt camera");
+      submit.type = "submit";
+      const status = addText(form, "div", "setup-status", "");
+      status.setAttribute("aria-live", "polite");
+      if (draft.error) {
+        status.className = "setup-status error";
+        setText(status, draft.error);
+      }
+      if (draft.factoryPrompt) {
+        submit.disabled = true;
+        status.replaceChildren();
+        status.className = "setup-status warning";
+        addText(status, "div", "", `${draft.factoryPrompt.message} Adopt with factory credentials anyway?`);
+        const choices = addText(status, "div", "setup-choice", "");
+        const confirm = addText(choices, "button", "row-action", "Adopt anyway");
+        confirm.type = "button";
+        confirm.addEventListener("click", () => {
+          draft.factoryPrompt = null;
+          adoptCamera(device, draft.username, draft.password, true);
+        });
+        const cancel = addText(choices, "button", "row-action cancel", "Cancel");
+        cancel.type = "button";
+        cancel.addEventListener("click", () => {
+          draft.factoryPrompt = null;
+          renderRows();
+        });
+      }
+      [usernameInput, passwordInput].filter(Boolean).forEach(input => {
+        input.addEventListener("input", () => {
+          draft.username = usernameInput?.value || "";
+          draft.password = passwordInput?.value || "";
+          draft.error = null;
+          draft.factoryPrompt = null;
+          submit.disabled = false;
+          status.textContent = "";
+          status.className = "setup-status";
+        });
+      });
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        adoptCamera(device, usernameInput?.value || "", passwordInput?.value || "");
+      });
+      wrapper.append(form);
+    }
+
+    function addRtspAdoptionForm(wrapper, device) {
+      const form = document.createElement("form");
+      const draft = credentialDrafts.get(device.candidate_uuid) || {
+        displayName: device.display_name || device.ip,
+        username: "",
+        password: "",
+        visible: false,
+        manual: false,
+        sources: []
+      };
+      if (!draft.sources) draft.sources = [];
+      if (draft.manual === undefined) draft.manual = false;
+      if (draft.displayName === undefined) draft.displayName = device.display_name || device.ip;
+      form.className = `setup-form rtsp-setup${draft.manual ? " manual" : ""}`;
+      form.setAttribute("autocomplete", "off");
+      credentialDrafts.set(device.candidate_uuid, draft);
+
+      const name = addText(form, "label", "setup-field", "Camera name");
+      const nameInput = document.createElement("input");
+      nameInput.value = draft.displayName;
+      nameInput.required = true;
+      name.append(nameInput);
+
+      const sourceFields = [];
+      function addSourceField(position) {
+        const source = addText(form, "label", "setup-field", `Stream URL${position ? ` ${position + 1}` : ""}`);
+        const input = document.createElement("input");
+        input.type = "url";
+        input.placeholder = `rtsp://${device.ip}:554/path`;
+        input.value = draft.sources[position] || "";
+        input.required = true;
+        source.append(input);
+        sourceFields.push(input);
+      }
+      if (draft.manual) {
+        if (!draft.sources.length) draft.sources = [`rtsp://${device.ip}:554/`];
+        addSourceField(0);
+        if (draft.sources.length > 1) addSourceField(1);
+      }
+
+      const credentials = addText(form, "div", "rtsp-credentials", "");
+      const username = addText(credentials, "label", "setup-field", "Username (optional)");
+      const usernameInput = document.createElement("input");
+      disableCredentialAutocomplete(usernameInput);
+      usernameInput.value = draft.username;
+      username.append(usernameInput);
+      const password = addText(credentials, "label", "setup-field", "Password (optional)");
+      const passwordControl = addText(password, "span", "password-control", "");
+      const passwordInput = document.createElement("input");
+      passwordInput.type = draft.visible ? "text" : "password";
+      disableCredentialAutocomplete(passwordInput);
+      passwordInput.value = draft.password;
+      passwordControl.append(passwordInput);
+      const visibility = addText(passwordControl, "button", "password-toggle", "👁");
+      visibility.type = "button";
+      visibility.classList.toggle("visible", draft.visible);
+      visibility.setAttribute("aria-label", draft.visible ? "Hide password" : "Show password");
+      visibility.title = draft.visible ? "Hide password" : "Show password";
+      visibility.addEventListener("click", () => {
+        const show = passwordInput.type === "password";
+        passwordInput.type = show ? "text" : "password";
+        draft.visible = show;
+        visibility.classList.toggle("visible", show);
+        visibility.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        visibility.title = show ? "Hide password" : "Show password";
+      });
+
+      const actions = addText(form, "div", "rtsp-actions", "");
+      const submit = addText(actions, "button", "row-action", draft.manual ? "Validate and adopt" : "Find streams and adopt");
+      submit.type = "submit";
+      if (!draft.manual) {
+        const manual = addText(actions, "button", "secondary-action", "Enter exact RTSP URL");
+        manual.type = "button";
+        manual.addEventListener("click", () => {
+          draft.displayName = nameInput.value;
+          draft.username = usernameInput.value;
+          draft.password = passwordInput.value;
+          draft.manual = true;
+          draft.sources = [`rtsp://${device.ip}:554/`];
+          renderRows();
+        });
+      } else {
+        const automatic = addText(actions, "button", "secondary-action", "Find automatically");
+        automatic.type = "button";
+        automatic.addEventListener("click", () => {
+          draft.displayName = nameInput.value;
+          draft.username = usernameInput.value;
+          draft.password = passwordInput.value;
+          draft.manual = false;
+          renderRows();
+        });
+      }
+      if (draft.manual && sourceFields.length === 1) {
+        const addSource = addText(actions, "button", "secondary-action", "+ Add second stream");
+        addSource.type = "button";
+        addSource.addEventListener("click", () => {
+          draft.displayName = nameInput.value;
+          draft.username = usernameInput.value;
+          draft.password = passwordInput.value;
+          draft.sources = [sourceFields[0].value, `rtsp://${device.ip}:554/`];
+          renderRows();
+        });
+      }
+      const status = addText(form, "div", "setup-status", "");
+      status.setAttribute("aria-live", "polite");
+      if (draft.error) {
+        status.className = "setup-status error";
+        setText(status, draft.error);
+      }
+      [nameInput, usernameInput, passwordInput, ...sourceFields].forEach(input => {
+        input.addEventListener("input", () => {
+          draft.displayName = nameInput.value;
+          draft.username = usernameInput.value;
+          draft.password = passwordInput.value;
+          if (draft.manual) draft.sources = sourceFields.map(field => field.value);
+          draft.error = null;
+          status.textContent = "";
+          status.className = "setup-status";
+        });
+      });
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        draft.displayName = nameInput.value;
+        draft.username = usernameInput.value;
+        draft.password = passwordInput.value;
+        if (draft.manual) draft.sources = sourceFields.map(field => field.value);
+        adoptionProgress.set(
+          device.candidate_uuid,
+          draft.manual ? "Testing media and adopting camera..." : "Finding streams and adopting camera..."
+        );
+        renderRows();
+        try {
+          const response = await fetch(`/internal/discovery/${encodeURIComponent(device.candidate_uuid)}/adopt-rtsp`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "adopt-rtsp"},
+            body: JSON.stringify({
+              display_name: draft.displayName,
+              username: draft.username,
+              password: draft.password,
+              sources: draft.manual ? draft.sources.map((url, index) => ({label: `Stream ${index + 1}`, url})) : []
+            })
+          });
+          const result = await response.json();
+          if (result.adoption) {
+            adoptionProgress.delete(device.candidate_uuid);
+            device.adoption = result.adoption;
+            device.display_name = draft.displayName;
+            credentialDrafts.delete(device.candidate_uuid);
+            inspections.set(device.candidate_uuid, result);
+            renderRows();
+            return;
+          }
+          draft.error = result.message || "The RTSP stream could not be validated.";
+        } catch (_) {
+          draft.error = "CamAdmiral is unavailable. Try again.";
+        }
+        adoptionProgress.delete(device.candidate_uuid);
+        renderRows();
+      });
+      wrapper.append(form);
+    }
+
+    async function adoptCamera(device, username, password, allowFactoryCredentials = false) {
+      const candidateId = device.candidate_uuid;
+      const draft = credentialDrafts.get(candidateId);
+      if (draft) {
+        draft.username = username;
+        draft.password = password;
+        draft.error = null;
+        draft.factoryPrompt = null;
+      }
+      adoptionProgress.set(candidateId, "Authenticating and adopting camera...");
+      renderRows();
+      try {
+        const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/adopt`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "adopt"},
+          body: JSON.stringify({username, password, allow_factory_credentials: allowFactoryCredentials})
+        });
+        const result = await response.json();
+        if (result.adoption) {
+          adoptionProgress.delete(candidateId);
+          device.adoption = result.adoption;
+          credentialDrafts.delete(candidateId);
+          inspections.set(candidateId, result);
+          renderRows();
+          return;
+        }
+        if (result.status === "factory_credentials_available") {
+          adoptionProgress.delete(candidateId);
+          if (draft) draft.factoryPrompt = result;
+          renderRows();
+          return;
+        }
+        adoptionProgress.delete(candidateId);
+        inspections.set(candidateId, result);
+        if (draft) {
+          draft.error = result.status === "credentials_required"
+            ? "Incorrect username or password. Check both fields and try again."
+            : result.message || "Camera authentication failed.";
+        }
+      } catch (error) {
+        adoptionProgress.delete(candidateId);
+        inspections.set(candidateId, {status: "credentials_required"});
+        if (draft) draft.error = "CamAdmiral is unavailable. Try again.";
+      }
+      renderRows();
+    }
+
+    async function toggleInspection(device) {
+      const candidateId = device.candidate_uuid;
+      if (!candidateId) return;
+      if (expandedCandidate === candidateId) {
+        expandedCandidate = null;
+        renderRows();
+        return;
+      }
+      expandedCandidate = candidateId;
+      if (!inspections.has(candidateId)) {
+        inspections.set(candidateId, {status: "loading"});
+        renderRows();
+        try {
+          const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {
+            method: "POST", headers: {"X-CamAdmiral-Action": "inspect"}
+          });
+          inspections.set(candidateId, await response.json());
+        } catch (error) {
+          inspections.set(candidateId, {status: "error", message: "CamAdmiral is unavailable."});
+        }
+      }
+      renderRows();
+    }
+
+    function renderRows() {
+      const query = searchInput.value.trim().toLocaleLowerCase();
+      const visible = devices.filter(device => matchesSearch(device, query));
+      visible.sort((left, right) => {
+        const a = sortValue(left, sortKey);
+        const b = sortValue(right, sortKey);
+        return (a < b ? -1 : a > b ? 1 : 0) * sortDirection;
+      });
+
+      cameraRows.replaceChildren();
+      visible.forEach(device => {
+        const row = document.createElement("tr");
+        const status = cameraHealth(device);
+        row.className = status.key;
+        const identity = addCell(row);
+        addText(identity, "div", "camera-name", device.display_name || device.ip);
+        if (device.onvif?.model && device.onvif.model !== device.display_name) {
+          addText(identity, "div", "camera-model", device.onvif.model);
+        }
+        if (device.adoption) addText(identity, "div", "adopted-label", device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted");
+        const statusCell = addCell(row);
+        const statusLabel = addText(statusCell, "span", `device-status ${status.key}`, "");
+        addText(statusLabel, "span", "status-dot", "");
+        addText(statusLabel, "span", "", status.label);
+        addText(addCell(row, "mono"), "span", "", device.ip);
+        addText(addCell(row, "mono"), "span", "", device.mac || "-");
+        const onvif = addCell(row);
+        addEndpoints(onvif, device.onvif?.service_urls || []);
+        if (!device.onvif?.service_urls?.length) addText(onvif, "span", "camera-model", "-");
+        const rtsp = addCell(row);
+        if (device.rtsp?.length) {
+          addText(rtsp, "span", "rtsp-available", "Available");
+        } else {
+          addText(rtsp, "span", "camera-model", "-");
+        }
+        const actions = addCell(row);
+        const actionLabel = expandedCandidate === device.candidate_uuid
+          ? "Hide"
+          : device.adoption ? "Details" : "Adopt";
+        const action = addText(actions, "button", "row-action", actionLabel);
+        action.type = "button";
+        action.disabled = !device.candidate_uuid || (!device.adoption && device.status !== "online");
+        action.addEventListener("click", () => toggleInspection(device));
+        cameraRows.append(row);
+        if (expandedCandidate === device.candidate_uuid) {
+          const detailRow = document.createElement("tr");
+          detailRow.className = "detail-row";
+          const detailCell = document.createElement("td");
+          detailCell.colSpan = 7;
+          detailCell.append(inspectionDetails(device));
+          detailRow.append(detailCell);
+          cameraRows.append(detailRow);
+        }
+      });
+      tableWrap.hidden = visible.length === 0;
+      empty.hidden = visible.length > 0;
+      setText(empty, devices.length ? "No matching cameras." : "No ONVIF or RTSP cameras found.");
+
+      document.querySelectorAll(".sort").forEach(button => {
+        const arrow = button.querySelector(".sort-arrow");
+        arrow.textContent = button.dataset.sort === sortKey ? (sortDirection > 0 ? "↑" : "↓") : "";
+      });
+    }
+
+    function render(data) {
+      const active = data.status === "queued" || data.status === "running";
+      busy = active;
+      scanButton.disabled = active;
+      setText(scanButton, active ? "Scanning..." : "Scan network");
+      stateDot.className = `dot ${active ? "busy" : data.status === "error" ? "error" : "ready"}`;
+      const labels = {
+        idle: "Ready", queued: "Starting scan", starting: "Starting", scanning: "Scanning network",
+        onvif: "Finding ONVIF cameras", rtsp: "Checking RTSP ports",
+        complete: "Scan complete", error: "Scan failed"
+      };
+      setText(stateLabel, labels[data.phase] || labels[data.status] || "Ready");
+      if (data.network?.address) mediaHost = data.network.address;
+      setText(networkLabel, data.network?.subnet || "");
+      renderScannerProgress(data.scanners);
+      renderScanDetails(data, active);
+      errorBox.hidden = data.status !== "error";
+      setText(errorBox, data.error || "");
+
+      const hasResults = Array.isArray(data.devices) && data.devices.length > 0;
+      if (hasResults) {
+        toolbar.hidden = false;
+        const healthSignature = JSON.stringify((data.devices || []).map(device => [
+          device.candidate_uuid,
+          device.display_name,
+          device.adoption?.enabled,
+          ...(device.adoption?.frigate || []).map(status => [status.target, status.status]),
+          ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
+        ]));
+        const resultId = `${data.inventory_scan_id || data.scan_id || data.completed_at}:${healthSignature}`;
+        if (resultId !== lastResultId) {
+          devices = data.devices || [];
+          lastResultId = resultId;
+          for (const candidateId of inspections.keys()) {
+            if (candidateId !== expandedCandidate) inspections.delete(candidateId);
+          }
+          setText(document.querySelector("#device-count"), data.summary?.devices ?? devices.length);
+          setText(document.querySelector("#online-count"), data.summary?.online ?? 0);
+          setText(document.querySelector("#offline-count"), data.summary?.offline ?? 0);
+          renderRows();
+        }
+      }
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/internal/discovery", {cache: "no-store"});
+        render(await response.json());
+      } catch (error) {
+        busy = false;
+        render({status: "error", phase: "error", error: "CamAdmiral is unavailable."});
+      }
+    }
+
+    async function loadVersion() {
+      try {
+        const response = await fetch("/healthz", {cache: "no-store"});
+        const health = await response.json();
+        if (health.version) setText(appVersion, health.version);
+      } catch (error) {
+        setText(appVersion, "0.0.0-dev");
+      }
+    }
+
+    scanButton.addEventListener("click", async () => {
+      if (busy) return;
+      render({status: "queued", phase: "queued"});
+      try {
+        const response = await fetch("/internal/discovery/scan", {
+          method: "POST", headers: {"X-CamAdmiral-Action": "scan"}
+        });
+        render(await response.json());
+      } catch (error) {
+        render({status: "error", phase: "error", error: "Could not start discovery."});
+      }
+    });
+
+    searchInput.addEventListener("input", renderRows);
+    liveClose.addEventListener("click", closeLiveView);
+    liveVideo.addEventListener("playing", () => {
+      liveModal.dataset.transport = "mse-playing";
+      liveStatus.hidden = true;
+    });
+    liveVideo.addEventListener("error", () => {
+      if (!liveModal.hidden && liveSocket) liveSocket.close();
+    });
+    liveModal.addEventListener("click", event => {
+      if (event.target === liveModal) closeLiveView();
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !liveModal.hidden) closeLiveView();
+    });
+    window.addEventListener("pagehide", closeLiveView);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden && !liveModal.hidden) closeLiveView();
+    });
+    document.querySelectorAll(".sort").forEach(button => {
+      button.addEventListener("click", () => {
+        const requested = button.dataset.sort;
+        if (sortKey === requested) sortDirection *= -1;
+        else {
+          sortKey = requested;
+          sortDirection = 1;
+        }
+        renderRows();
+      });
+    });
+
+    loadVersion();
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

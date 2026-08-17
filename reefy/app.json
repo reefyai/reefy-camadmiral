@@ -1,0 +1,29 @@
+{
+  "slug": "camadmiral",
+  "version": "v2026.08.17-00",
+  "name": "CamAdmiral",
+  "description": "Discover, adopt, monitor, and restream ONVIF and RTSP cameras",
+  "image": "ghcr.io/reefyai/camadmiral:v2026.08.17-00",
+  "releases": [
+    {
+      "version": "v2026.08.17-00",
+      "image": "ghcr.io/reefyai/camadmiral:v2026.08.17-00"
+    }
+  ],
+  "default_port": 18080,
+  "network_mode": "host",
+  "read_only": true,
+  "cap_drop": ["ALL"],
+  "tmpfs": ["/run/camadmiral", "/tmp"],
+  "volumes": {
+    "data": {
+      "mount": "/var/lib/camadmiral",
+      "uid": 10001,
+      "backup": ["borgbase"]
+    }
+  },
+  "mem_limit": "256m",
+  "pids_limit": 192,
+  "needs_llm": false,
+  "tags": ["camera", "onvif", "rtsp", "security"]
+}

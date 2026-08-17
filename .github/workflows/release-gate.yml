@@ -1,0 +1,47 @@
+name: CamAdmiral release gate
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: camadmiral-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    name: Unit, component, and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Validate Reefy app version
+        run: python3 scripts/validate-release.py
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run unit and component tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run isolated E2E lab
+        run: python3 e2e/run.py
+
+      - name: Remove E2E resources
+        if: always()
+        run: >-
+          docker compose --project-name camadmiral-e2e --file e2e/compose.yaml
+          --profile moved --profile rotated down --volumes --remove-orphans

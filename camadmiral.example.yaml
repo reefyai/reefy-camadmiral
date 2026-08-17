@@ -1,0 +1,25 @@
+version: 1
+
+server:
+  listen: 0.0.0.0
+  port: 18080
+
+storage:
+  database: /var/lib/camadmiral/camadmiral.db
+
+secrets:
+  master_key_file: /run/secrets/camadmiral_master_key
+  api_token_file: /run/secrets/camadmiral_api_token
+
+integrations:
+  frigate:
+    targets:
+      - id: frigate-primary
+        name: Primary Frigate
+        api_url: http://127.0.0.1:20001
+        sync_cameras: true
+      - id: frigate-secondary
+        name: Secondary Frigate
+        api_url: http://127.0.0.1:20007
+        sync_cameras: false
+    default_target: frigate-primary
