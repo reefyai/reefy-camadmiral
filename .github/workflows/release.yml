@@ -19,8 +19,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -56,9 +54,3 @@ jobs:
             ghcr.io/reefyai/reefy-camadmiral:latest
           sbom: true
           provenance: mode=max
-
-      - uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/reefyai/reefy-camadmiral
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
