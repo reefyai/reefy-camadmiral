@@ -25,6 +25,16 @@ def main() -> int:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     if f"image: {expected_image}" not in compose:
         raise SystemExit("compose.yaml image does not match VERSION")
+    e2e_compose = (ROOT / "e2e" / "compose.yaml").read_text(encoding="utf-8")
+    tmpfs = manifest.get("tmpfs") or []
+    if not tmpfs:
+        raise SystemExit("Reefy manifest must declare writable tmpfs mounts")
+    for mount in tmpfs:
+        rendered_mount = f"      - {mount}"
+        if rendered_mount not in compose:
+            raise SystemExit(f"compose.yaml is missing Reefy tmpfs mount: {mount}")
+        if rendered_mount not in e2e_compose:
+            raise SystemExit(f"e2e/compose.yaml is missing Reefy tmpfs mount: {mount}")
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "compile-rtsp-catalog.py"), "--check"],
         cwd=ROOT,
