@@ -63,6 +63,7 @@ def main() -> int:
             raise RuntimeError("CamAdmiral container restarted during the go2rtc child fault")
 
         run("stop", "camera-open")
+        run("restart", "camadmiral")
         scenario("camera-outage")
         run("start", "camera-open")
         scenario("camera-recovery")

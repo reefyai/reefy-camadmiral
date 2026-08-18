@@ -1,6 +1,7 @@
 import json
 import subprocess
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 from camadmiral.media import (
@@ -13,6 +14,7 @@ from camadmiral.media import (
     probe_stream,
     probe_upstreams,
     reconcile_and_probe,
+    reconcile_preloads,
     reconcile_runtime_drift,
     snapshot_frame,
 )
@@ -122,6 +124,33 @@ class MediaTests(unittest.TestCase):
         repository.record_camera_auth_failure.assert_called_once_with(
             "camera-1",
             ProbeResult("auth_failed", 20),
+        )
+
+    @patch("camadmiral.media._request")
+    def test_failed_camera_preload_does_not_block_other_cameras(self, request) -> None:
+        def response(method, path, query=None):
+            if method == "GET" and path == "/api/preload":
+                return b"{}"
+            if query and query.get("src") == "stream_offline":
+                raise urllib.error.HTTPError(
+                    "http://127.0.0.1/api/preload",
+                    500,
+                    "synthetic camera unavailable",
+                    {},
+                    None,
+                )
+            return b""
+
+        request.side_effect = response
+
+        reconcile_preloads([
+            {"stream_key": "stream_offline"},
+            {"stream_key": "stream_online"},
+        ])
+
+        self.assertIn(
+            ("PUT", "/api/preload", {"src": "stream_online", "video": "all"}),
+            [call.args for call in request.call_args_list],
         )
 
     @patch("camadmiral.media.GO2RTC_URL", "http://127.0.0.1:1984")
@@ -348,12 +377,10 @@ class MediaTests(unittest.TestCase):
         )
 
     @patch("camadmiral.media.reconcile_and_probe")
-    @patch("camadmiral.media.preload_stream_keys", return_value={"stream_one"})
     @patch("camadmiral.media.runtime_stream_keys", return_value={"stream_one", "other_app"})
     def test_runtime_streams_are_left_unchanged_without_drift(
         self,
         _runtime_keys,
-        _preload_keys,
         reconcile,
     ) -> None:
         repository = Mock()
@@ -365,12 +392,10 @@ class MediaTests(unittest.TestCase):
         reconcile.assert_not_called()
 
     @patch("camadmiral.media.reconcile_and_probe")
-    @patch("camadmiral.media.preload_stream_keys", return_value=set())
     @patch("camadmiral.media.runtime_stream_keys", return_value=set())
     def test_missing_runtime_streams_are_reapplied(
         self,
         _runtime_keys,
-        _preload_keys,
         reconcile,
     ) -> None:
         repository = Mock()

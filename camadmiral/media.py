@@ -177,13 +177,21 @@ def preload_stream_keys() -> set[str]:
     return {str(name) for name in preloads}
 
 
-def restart_preload(stream_key: str) -> None:
+def _start_preload(stream_key: str) -> bool:
+    try:
+        _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
+        return True
+    except urllib.error.HTTPError:
+        return False
+
+
+def restart_preload(stream_key: str) -> bool:
     try:
         _request("DELETE", "/api/preload", {"src": stream_key})
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
-    _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
+    return _start_preload(stream_key)
 
 
 def reconcile_preloads(sources: list[dict[str, str]]) -> None:
@@ -193,7 +201,7 @@ def reconcile_preloads(sources: list[dict[str, str]]) -> None:
         if stream_key.startswith("stream_"):
             _request("DELETE", "/api/preload", {"src": stream_key})
     for stream_key in sorted(desired - current):
-        _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
+        _start_preload(stream_key)
 
 
 def wait_for_go2rtc(attempts: int = 20, delay: float = 0.1) -> None:
@@ -234,23 +242,13 @@ def runtime_stream_keys() -> set[str]:
 
 def reconcile_runtime_drift(repository: Any) -> bool:
     sources = repository.managed_stream_sources()
-    health_sources = repository.managed_stream_sources(
-        include_auth_failed=False,
-        bound_role="detect",
-    )
     desired = {source["stream_key"] for source in sources}
-    desired_preloads = {source["stream_key"] for source in health_sources}
     current = {
         stream_key
         for stream_key in runtime_stream_keys()
         if stream_key.startswith("stream_")
     }
-    current_preloads = {
-        stream_key
-        for stream_key in preload_stream_keys()
-        if stream_key.startswith("stream_")
-    }
-    if current == desired and current_preloads == desired_preloads:
+    if current == desired:
         return False
     reconcile_and_probe(repository)
     return True
