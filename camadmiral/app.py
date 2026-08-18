@@ -412,7 +412,8 @@ def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
             continue
         if any(stream.get("health_status") == "auth_failed" for stream in streams):
             continue
-        if now - RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid, 0.0) < RECOVERY_SCAN_INTERVAL:
+        previous_attempt = RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid)
+        if previous_attempt is not None and now - previous_attempt < RECOVERY_SCAN_INTERVAL:
             continue
         candidate = candidates.get(candidate_uuid) or {}
         onvif = candidate.get("onvif") or {}

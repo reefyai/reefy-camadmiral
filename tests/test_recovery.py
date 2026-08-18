@@ -66,7 +66,8 @@ class RecoveryTests(unittest.TestCase):
             }
         )
 
-        result = recover_inventory_addresses(self.repository, inventory)
+        with patch("camadmiral.recovery.time.monotonic", return_value=10.0):
+            result = recover_inventory_addresses(self.repository, inventory)
         after = self.repository.adoption_for_candidate("candidate-1")
 
         self.assertEqual(result[0].status, "recovered")

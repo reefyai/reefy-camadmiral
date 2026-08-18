@@ -814,6 +814,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
                 patch.object(app_module, "INVENTORY", inventory),
                 patch.object(app_module, "SCAN_REQUEST", request),
                 patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(app_module.time, "monotonic", return_value=10.0),
             ):
                 queued = app_module._queue_targeted_recovery_scan(repository)
                 payload = json.loads(request.read_text(encoding="utf-8"))

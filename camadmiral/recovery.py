@@ -131,7 +131,8 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
         previous_address = next(iter(previous_hosts))
         attempt_key = (str(adoption["camera_uuid"]), address)
         now = time.monotonic()
-        if now - ATTEMPTED_AT.get(attempt_key, 0.0) < RECOVERY_RETRY_INTERVAL:
+        previous_attempt = ATTEMPTED_AT.get(attempt_key)
+        if previous_attempt is not None and now - previous_attempt < RECOVERY_RETRY_INTERVAL:
             continue
         ATTEMPTED_AT[attempt_key] = now
         if any(stream.get("health_status") == "auth_failed" for stream in streams):
