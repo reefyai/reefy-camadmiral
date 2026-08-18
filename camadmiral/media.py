@@ -44,6 +44,7 @@ class RelayHealthMonitor:
 
     def __init__(self) -> None:
         self._video_samples: dict[str, tuple[str, int]] = {}
+        self._failure_samples: dict[str, int] = {}
 
     @staticmethod
     def _active_video_sample(stream: object) -> tuple[str, int] | None:
@@ -68,6 +69,16 @@ class RelayHealthMonitor:
 
     def probe(self, repository: Any) -> dict[str, ProbeResult]:
         started = time.monotonic()
+        sources = repository.managed_stream_sources(
+            include_auth_failed=False,
+            role_bound_only=True,
+        )
+        health_sources = repository.managed_stream_sources(
+            include_auth_failed=False,
+            bound_role="detect",
+        )
+        expected_active = {str(source["stream_uuid"]): source for source in health_sources}
+        reconcile_preloads(health_sources)
         try:
             runtime = json.loads(_request("GET", "/api/streams"))
         except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
@@ -75,32 +86,61 @@ class RelayHealthMonitor:
         if not isinstance(runtime, dict):
             raise RuntimeError("go2rtc returned invalid stream state")
         latency_ms = round((time.monotonic() - started) * 1000)
-        sources = repository.managed_stream_sources(role_bound_only=True)
         active_ids = {str(source["stream_uuid"]) for source in sources}
         results: dict[str, ProbeResult] = {}
+        auth_failures: dict[str, ProbeResult] = {}
         for source in sources:
             stream_uuid = str(source["stream_uuid"])
             stream = runtime.get(source["stream_key"])
             consumers = stream.get("consumers") if isinstance(stream, dict) else None
             if not consumers:
                 self._video_samples.pop(stream_uuid, None)
-                results[stream_uuid] = ProbeResult("idle", latency_ms)
-                continue
-            current = self._active_video_sample(stream)
-            if current is None or current[1] <= 0:
-                self._video_samples.pop(stream_uuid, None)
-                results[stream_uuid] = ProbeResult("unavailable", latency_ms)
-                continue
-            previous = self._video_samples.get(stream_uuid)
-            self._video_samples[stream_uuid] = current
-            advancing = previous is None or previous[0] != current[0] or current[1] > previous[1]
-            results[stream_uuid] = ProbeResult(
-                "ready" if advancing else "unavailable",
-                latency_ms,
-            )
+                if stream_uuid in expected_active:
+                    restart_preload(str(source["stream_key"]))
+                    result = ProbeResult("unavailable", latency_ms)
+                else:
+                    result = ProbeResult("idle", latency_ms)
+            else:
+                current = self._active_video_sample(stream)
+                if current is None or current[1] <= 0:
+                    self._video_samples.pop(stream_uuid, None)
+                    result = ProbeResult("unavailable", latency_ms)
+                else:
+                    previous = self._video_samples.get(stream_uuid)
+                    self._video_samples[stream_uuid] = current
+                    advancing = (
+                        previous is None
+                        or previous[0] != current[0]
+                        or current[1] > previous[1]
+                    )
+                    result = ProbeResult("ready" if advancing else "unavailable", latency_ms)
+            if result.status == "unavailable":
+                failures = self._failure_samples.get(stream_uuid, 0) + 1
+                self._failure_samples[stream_uuid] = failures
+                diagnostic_source = expected_active.get(stream_uuid)
+                if failures == 2 and diagnostic_source is not None:
+                    diagnostic = probe_source(
+                        diagnostic_source["uri"],
+                        diagnostic_source["username"],
+                        diagnostic_source["password"],
+                    )
+                    if diagnostic.status == "auth_failed":
+                        auth_failures[str(source["camera_uuid"])] = diagnostic
+            else:
+                self._failure_samples.pop(stream_uuid, None)
+            results[stream_uuid] = result
         for stream_uuid in set(self._video_samples) - active_ids:
             self._video_samples.pop(stream_uuid, None)
-        repository.record_probe_results(results)
+        for stream_uuid in set(self._failure_samples) - active_ids:
+            self._failure_samples.pop(stream_uuid, None)
+        failed_camera_ids = set(auth_failures)
+        repository.record_probe_results({
+            str(source["stream_uuid"]): results[str(source["stream_uuid"])]
+            for source in sources
+            if str(source["camera_uuid"]) not in failed_camera_ids
+        })
+        for camera_uuid, result in auth_failures.items():
+            repository.record_camera_auth_failure(camera_uuid, result)
         return results
 
 
@@ -125,6 +165,35 @@ def _request(method: str, path: str, query: dict[str, str] | None = None) -> byt
     request = urllib.request.Request(url, method=method)
     with urllib.request.urlopen(request, timeout=3) as response:
         return response.read()
+
+
+def preload_stream_keys() -> set[str]:
+    try:
+        preloads = json.loads(_request("GET", "/api/preload"))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("go2rtc returned invalid preload state") from exc
+    if not isinstance(preloads, dict):
+        raise RuntimeError("go2rtc returned invalid preload state")
+    return {str(name) for name in preloads}
+
+
+def restart_preload(stream_key: str) -> None:
+    try:
+        _request("DELETE", "/api/preload", {"src": stream_key})
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
+
+
+def reconcile_preloads(sources: list[dict[str, str]]) -> None:
+    desired = {str(source["stream_key"]) for source in sources}
+    current = preload_stream_keys()
+    for stream_key in sorted(current - desired):
+        if stream_key.startswith("stream_"):
+            _request("DELETE", "/api/preload", {"src": stream_key})
+    for stream_key in sorted(desired - current):
+        _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
 
 
 def wait_for_go2rtc(attempts: int = 20, delay: float = 0.1) -> None:
@@ -165,13 +234,23 @@ def runtime_stream_keys() -> set[str]:
 
 def reconcile_runtime_drift(repository: Any) -> bool:
     sources = repository.managed_stream_sources()
+    health_sources = repository.managed_stream_sources(
+        include_auth_failed=False,
+        bound_role="detect",
+    )
     desired = {source["stream_key"] for source in sources}
+    desired_preloads = {source["stream_key"] for source in health_sources}
     current = {
         stream_key
         for stream_key in runtime_stream_keys()
         if stream_key.startswith("stream_")
     }
-    if current == desired:
+    current_preloads = {
+        stream_key
+        for stream_key in preload_stream_keys()
+        if stream_key.startswith("stream_")
+    }
+    if current == desired and current_preloads == desired_preloads:
         return False
     reconcile_and_probe(repository)
     return True
@@ -364,9 +443,14 @@ def probe_upstreams(repository: Any) -> dict[str, ProbeResult]:
 
 def reconcile_and_probe(repository: Any) -> dict[str, ProbeResult]:
     sources = repository.managed_stream_sources()
+    health_sources = repository.managed_stream_sources(
+        include_auth_failed=False,
+        bound_role="detect",
+    )
     revision_id, revision_status = repository.record_desired_media_revision(sources)
     try:
         reconcile_streams(sources)
+        reconcile_preloads(health_sources)
         desired_keys = {source["stream_key"] for source in sources}
         if not desired_keys.issubset(runtime_stream_keys()):
             raise RuntimeError("go2rtc did not retain the desired stream set")

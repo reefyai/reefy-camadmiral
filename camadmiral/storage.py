@@ -1292,19 +1292,28 @@ class CameraRepository:
         include_disabled: bool = False,
         camera_uuid: str | None = None,
         role_bound_only: bool = False,
+        bound_role: str | None = None,
     ) -> list[dict[str, str]]:
         health_filter = "" if include_auth_failed else "AND s.health_status != 'auth_failed' "
         enabled_filter = "" if include_disabled else "AND a.enabled = 1 "
         camera_filter = "AND s.camera_uuid = ? " if camera_uuid is not None else ""
-        role_join = "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid " if role_bound_only else ""
-        parameters = (camera_uuid,) if camera_uuid is not None else ()
+        role_join = (
+            "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
+            if role_bound_only or bound_role is not None
+            else ""
+        )
+        role_filter = "AND b.role = ? " if bound_role is not None else ""
+        parameters = (
+            *((bound_role,) if bound_role is not None else ()),
+            *((camera_uuid,) if camera_uuid is not None else ()),
+        )
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid, p.uri, p.source_scheme, p.source_host, p.source_port, "
                 "p.source_path, p.source_query, c.username, c.password_ciphertext, c.credential_uuid "
                 "FROM managed_streams s JOIN onvif_profiles p USING (profile_uuid) "
                 "JOIN cameras a USING (camera_uuid) JOIN camera_credentials c USING (credential_uuid) "
-                f"{role_join}WHERE p.uri IS NOT NULL {health_filter}{enabled_filter}{camera_filter}"
+                f"{role_join}WHERE p.uri IS NOT NULL {health_filter}{enabled_filter}{role_filter}{camera_filter}"
                 "ORDER BY s.camera_uuid, s.stream_key",
                 parameters,
             ).fetchall()

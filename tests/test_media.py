@@ -38,26 +38,91 @@ class MediaTests(unittest.TestCase):
                 "consumers": [],
             },
         }
-        request.return_value = json.dumps(runtime).encode()
+        request.side_effect = lambda _method, path, _query=None: json.dumps(
+            {"stream_active": {}} if path == "/api/preload" else runtime
+        ).encode()
         repository = Mock()
-        repository.managed_stream_sources.return_value = [
-            {"stream_uuid": "active", "stream_key": "stream_active"},
-            {"stream_uuid": "idle", "stream_key": "stream_idle"},
+        sources = [
+            {
+                "stream_uuid": "active",
+                "stream_key": "stream_active",
+                "camera_uuid": "camera-active",
+            },
+            {
+                "stream_uuid": "idle",
+                "stream_key": "stream_idle",
+                "camera_uuid": "camera-idle",
+            },
+        ]
+        repository.managed_stream_sources.side_effect = [
+            sources,
+            [sources[0]],
+            sources,
+            [sources[0]],
+            sources,
+            [sources[0]],
         ]
         monitor = RelayHealthMonitor()
 
         first = monitor.probe(repository)
         second = monitor.probe(repository)
         runtime["stream_active"]["producers"][0]["receivers"][0]["packets"] = 21
-        request.return_value = json.dumps(runtime).encode()
         third = monitor.probe(repository)
 
         self.assertEqual(first["active"].status, "ready")
         self.assertEqual(first["idle"].status, "idle")
         self.assertEqual(second["active"].status, "unavailable")
         self.assertEqual(third["active"].status, "ready")
-        repository.managed_stream_sources.assert_called_with(role_bound_only=True)
-        self.assertEqual(request.call_args.args, ("GET", "/api/streams"))
+        repository.managed_stream_sources.assert_any_call(
+            include_auth_failed=False,
+            role_bound_only=True,
+        )
+        repository.managed_stream_sources.assert_any_call(
+            include_auth_failed=False,
+            bound_role="detect",
+        )
+        self.assertIn(("GET", "/api/streams"), [call.args for call in request.call_args_list])
+
+    @patch("camadmiral.media.probe_source", return_value=ProbeResult("auth_failed", 20))
+    @patch("camadmiral.media._request")
+    def test_relay_diagnoses_auth_only_after_sustained_preloaded_failure(
+        self,
+        request,
+        probe_source_mock,
+    ) -> None:
+        source = {
+            "stream_uuid": "detect",
+            "stream_key": "stream_detect",
+            "camera_uuid": "camera-1",
+            "uri": "rtsp://192.0.2.10/live",
+            "username": "operator",
+            "password": "synthetic-secret",
+        }
+        runtime = {
+            "stream_detect": {
+                "producers": [{"url": source["uri"]}],
+                "consumers": [{"id": 9}],
+            }
+        }
+        request.side_effect = lambda _method, path, _query=None: json.dumps(
+            {"stream_detect": {}} if path == "/api/preload" else runtime
+        ).encode()
+        repository = Mock()
+        repository.managed_stream_sources.return_value = [source]
+        monitor = RelayHealthMonitor()
+
+        monitor.probe(repository)
+        monitor.probe(repository)
+
+        probe_source_mock.assert_called_once_with(
+            source["uri"],
+            source["username"],
+            source["password"],
+        )
+        repository.record_camera_auth_failure.assert_called_once_with(
+            "camera-1",
+            ProbeResult("auth_failed", 20),
+        )
 
     @patch("camadmiral.media.GO2RTC_URL", "http://127.0.0.1:1984")
     def test_live_websocket_url_targets_only_managed_stream(self) -> None:
@@ -239,10 +304,12 @@ class MediaTests(unittest.TestCase):
 
     @patch("camadmiral.media.probe_streams", return_value={})
     @patch("camadmiral.media.runtime_stream_keys", return_value={"stream_one"})
+    @patch("camadmiral.media.reconcile_preloads")
     @patch("camadmiral.media.reconcile_streams")
     def test_reconcile_marks_desired_revision_applied(
         self,
         reconcile,
+        reconcile_preloads_mock,
         _runtime_keys,
         _probe_streams,
     ) -> None:
@@ -262,6 +329,7 @@ class MediaTests(unittest.TestCase):
         reconcile_and_probe(repository)
 
         reconcile.assert_called_once_with([source])
+        reconcile_preloads_mock.assert_called_once_with([source])
         repository.complete_media_revision.assert_called_once_with(7, "applied")
 
     @patch("camadmiral.media.reconcile_streams", side_effect=RuntimeError("synthetic failure"))
@@ -280,10 +348,12 @@ class MediaTests(unittest.TestCase):
         )
 
     @patch("camadmiral.media.reconcile_and_probe")
+    @patch("camadmiral.media.preload_stream_keys", return_value={"stream_one"})
     @patch("camadmiral.media.runtime_stream_keys", return_value={"stream_one", "other_app"})
     def test_runtime_streams_are_left_unchanged_without_drift(
         self,
         _runtime_keys,
+        _preload_keys,
         reconcile,
     ) -> None:
         repository = Mock()
@@ -295,10 +365,12 @@ class MediaTests(unittest.TestCase):
         reconcile.assert_not_called()
 
     @patch("camadmiral.media.reconcile_and_probe")
+    @patch("camadmiral.media.preload_stream_keys", return_value=set())
     @patch("camadmiral.media.runtime_stream_keys", return_value=set())
     def test_missing_runtime_streams_are_reapplied(
         self,
         _runtime_keys,
+        _preload_keys,
         reconcile,
     ) -> None:
         repository = Mock()
