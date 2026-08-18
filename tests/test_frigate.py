@@ -11,6 +11,7 @@ from camadmiral.config import (
     IntegrationSettings,
 )
 from camadmiral.frigate import (
+    FrigateClient,
     FrigateTarget,
     desired_camera,
     frigate_camera_key,
@@ -90,6 +91,25 @@ class FakeFrigateClient:
 
 
 class FrigateTargetTests(unittest.TestCase):
+    def test_frigate_017_camera_stats_are_read_from_nested_cameras(self) -> None:
+        target = FrigateTarget(
+            "frigate-primary",
+            "Primary Frigate",
+            "http://127.0.0.1:20001",
+        )
+        client = FrigateClient(target)
+        with patch.object(
+            client,
+            "_request",
+            return_value={
+                "cameras": {"camadmiral_synthetic": {"camera_fps": 5.0}},
+                "service": {"uptime": 60},
+            },
+        ):
+            stats = client.stats()
+
+        self.assertEqual(stats, {"camadmiral_synthetic": {"camera_fps": 5.0}})
+
     def test_only_targets_with_camera_sync_enabled_are_loaded(self) -> None:
         configured = CamAdmiralSettings(
             integrations=IntegrationSettings(

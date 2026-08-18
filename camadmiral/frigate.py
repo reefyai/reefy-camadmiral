@@ -121,7 +121,10 @@ class FrigateClient:
         result = self._request("GET", "/api/stats")
         if not isinstance(result, dict):
             raise FrigateApiError("invalid_response")
-        return result
+        cameras = result.get("cameras")
+        if not isinstance(cameras, dict):
+            raise FrigateApiError("invalid_response")
+        return cameras
 
     def set_config(self, config_data: dict[str, Any], *, update_topic: str | None = None) -> None:
         payload: dict[str, Any] = {"requires_restart": 0, "config_data": config_data}
