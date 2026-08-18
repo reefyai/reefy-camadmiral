@@ -181,7 +181,7 @@ def _start_preload(stream_key: str) -> bool:
     try:
         _request("PUT", "/api/preload", {"src": stream_key, "video": "all"})
         return True
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
         return False
 
 

@@ -131,7 +131,7 @@ class MediaTests(unittest.TestCase):
         def response(method, path, query=None):
             if method == "GET" and path == "/api/preload":
                 return b"{}"
-            if query and query.get("src") == "stream_offline":
+            if query and query.get("src") == "stream_offline_http":
                 raise urllib.error.HTTPError(
                     "http://127.0.0.1/api/preload",
                     500,
@@ -139,12 +139,15 @@ class MediaTests(unittest.TestCase):
                     {},
                     None,
                 )
+            if query and query.get("src") == "stream_offline_timeout":
+                raise TimeoutError("synthetic camera unavailable")
             return b""
 
         request.side_effect = response
 
         reconcile_preloads([
-            {"stream_key": "stream_offline"},
+            {"stream_key": "stream_offline_http"},
+            {"stream_key": "stream_offline_timeout"},
             {"stream_key": "stream_online"},
         ])
 
