@@ -1700,6 +1700,26 @@
       element.setAttribute("spellcheck", "false");
     }
 
+    function savedAdoptionInspection(adoption) {
+      return {
+        status: "adopted",
+        adoption,
+        role_tokens: adoption.role_tokens || {},
+        rejected_sources: [],
+        catalog_revision: null,
+        profiles: (adoption.streams || []).map(stream => ({
+          token: stream.profile_token,
+          name: stream.name,
+          source_kind: stream.source_kind,
+          width: stream.width,
+          height: stream.height,
+          encoding: stream.encoding,
+          fps: stream.fps,
+          uri: stream.uri
+        }))
+      };
+    }
+
     function inspectionDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details";
@@ -1710,13 +1730,14 @@
         addAdoptionProgress(activity, progress);
         return wrapper;
       }
-      const result = inspections.get(device.candidate_uuid);
-      if (!result || result.status === "loading" || result.status === "adopting") {
+      let result = inspections.get(device.candidate_uuid);
+      const adoption = device.adoption || result?.adoption;
+      if (!adoption && (!result || result.status === "loading" || result.status === "adopting")) {
         const activity = addDetailSection(wrapper, "Working");
         addText(activity, "div", "detail-message", result?.status === "adopting" ? "Validating and adopting camera..." : "Inspecting ONVIF profiles...");
         return wrapper;
       }
-      if (result.status !== "ok" && result.status !== "adopted") {
+      if (!adoption && result.status !== "ok" && result.status !== "adopted") {
         const messages = {
           credentials_required: "Credentials required to inspect ONVIF profiles.",
           not_onvif: "Find compatible streams automatically or enter an exact RTSP URL.",
@@ -1732,7 +1753,6 @@
         if (result.status === "not_onvif" && device.rtsp?.length) addRtspAdoptionForm(connect, device);
         return wrapper;
       }
-      const adoption = device.adoption || result.adoption;
       if (adoption) {
         addCameraManagement(summary, device, adoption);
         if (cameraHealth(device).key === "auth_failed") {
@@ -1741,6 +1761,9 @@
         }
         addAvailability(wrapper, device, adoption);
         if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
+        if (!result || !["ok", "adopted"].includes(result.status)) {
+          result = savedAdoptionInspection(adoption);
+        }
       }
       const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));
       const streamCount = `${result.profiles.length} ${rtspOnly ? "RTSP stream" : "ONVIF profile"}${result.profiles.length === 1 ? "" : "s"}`;
@@ -2097,13 +2120,13 @@
       const candidateId = device.candidate_uuid;
       if (!candidateId) return;
       expandedCandidate = candidateId;
-      if (!inspections.has(candidateId)) {
+      if (!inspections.has(candidateId) && !device.adoption) {
         inspections.set(candidateId, {status: "loading"});
       }
       const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
       openAppModal("camera", title, inspectionDetails(device), trigger, "wide");
       if (device.adoption?.camera_uuid) loadCameraAvailability(device);
-      if (inspections.get(candidateId)?.status === "loading") {
+      if (!device.adoption && inspections.get(candidateId)?.status === "loading") {
         try {
           const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {
             method: "POST", headers: {"X-CamAdmiral-Action": "inspect"}

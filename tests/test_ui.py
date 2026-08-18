@@ -48,6 +48,13 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("detail-row", self.html)
         self.assertNotIn("detailCell.colSpan", self.html)
 
+    def test_adopted_camera_details_use_saved_data_while_offline(self) -> None:
+        self.assertIn("function savedAdoptionInspection(adoption)", self.html)
+        self.assertIn("const adoption = device.adoption || result?.adoption", self.html)
+        self.assertIn('result = savedAdoptionInspection(adoption)', self.html)
+        self.assertIn("if (!inspections.has(candidateId) && !device.adoption)", self.html)
+        self.assertIn("if (!device.adoption && inspections.get(candidateId)?.status", self.html)
+
     def test_popups_share_modal_shell_and_disable_uses_custom_confirmation(self) -> None:
         self.assertGreaterEqual(self.html.count('class="modal-backdrop'), 3)
         self.assertIn('openAppModal("manual"', self.html)
