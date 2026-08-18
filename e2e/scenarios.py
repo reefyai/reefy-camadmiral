@@ -182,6 +182,10 @@ def availability(camera_uuid: str, window: str = "24h") -> dict[str, object]:
     return result
 
 
+def incidents(status: str = "all") -> dict[str, object]:
+    return request_json(f"/internal/incidents?status={status}&limit=100")
+
+
 def wait_for_camera_sources(
     description: str,
     expected: dict[str, tuple[int, int]],
@@ -542,7 +546,17 @@ def baseline() -> None:
     }
     STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
     STATE_PATH.chmod(0o600)
-    print("baseline: adoption, roles, auth rejection, lifecycle, media, snapshots, and fan-out passed")
+    settings = request_json("/internal/notification-settings")
+    if settings.get("provider") != "telegram" or settings.get("bot_configured") is not False:
+        raise ScenarioFailure("Telegram notification settings did not start safely unconfigured")
+    request_json(
+        "/internal/notification-settings",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "update-notification-settings"},
+        payload={"enabled": True},
+        expected=422,
+    )
+    print("baseline: adoption, roles, auth rejection, lifecycle, media, snapshots, fan-out, and alert contracts passed")
 
 
 def load_state() -> dict[str, object]:
@@ -576,10 +590,20 @@ def camera_outage() -> None:
         auth_camera = camera_by_name(directory, AUTH_NAME)
         timeline = availability(str(open_camera["id"]))
         latest = timeline["buckets"][-1]
+        incident_state = incidents("open")
+        outage_incident = next(
+            (
+                incident for incident in incident_state.get("incidents", [])
+                if incident.get("camera_id") == open_camera.get("id")
+            ),
+            None,
+        )
         return (
             open_camera.get("state") in {"degraded", "offline"}
             and auth_camera.get("state") == "online"
             and latest.get("state") in {"degraded", "offline"}
+            and outage_incident is not None
+            and outage_incident.get("kind") == "media_offline"
         )
 
     wait_for("camera outage health transition", outage_visible, timeout=120)
@@ -594,6 +618,17 @@ def camera_recovery() -> None:
     timeline = availability(str(state["open_camera_uuid"]))
     if timeline.get("availability_percent") is None or timeline["availability_percent"] >= 100:
         raise ScenarioFailure("Recovered camera availability did not retain outage history")
+    history = incidents("resolved")
+    recovered = next(
+        (
+            incident for incident in history.get("incidents", [])
+            if incident.get("camera_id") == state["open_camera_uuid"]
+            and incident.get("kind") == "media_offline"
+        ),
+        None,
+    )
+    if recovered is None or recovered.get("resolution_reason") != "recovered":
+        raise ScenarioFailure("Recovered camera did not retain its resolved incident")
     print("camera-recovery: synthetic camera reboot recovered without user action")
 
 

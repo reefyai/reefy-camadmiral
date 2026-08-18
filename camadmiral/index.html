@@ -38,6 +38,33 @@
       background: rgba(12, 26, 42, .72); color: #b8c7d0; font-weight: 750; cursor: pointer;
     }
     .header-secondary:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
+    .incident-count {
+      display: inline-grid; min-width: 19px; height: 19px; margin-left: 6px; padding: 0 5px;
+      place-items: center; border-radius: 10px; background: #fb7185; color: #310711; font-size: 10px;
+    }
+    .settings-form { display: grid; gap: 16px; }
+    .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .settings-copy { color: #8ea2b3; font-size: 12px; line-height: 1.5; }
+    .settings-copy strong { display: block; color: #e0eaf0; font-size: 13px; }
+    .settings-form .setup-field input { width: 100%; }
+    .settings-form .password-control { width: 100%; }
+    .settings-actions { display: flex; gap: 9px; flex-wrap: wrap; }
+    .settings-status { min-height: 18px; color: #8ea2b3; font-size: 12px; }
+    .settings-status.error { color: #fda4af; }
+    .settings-status.success { color: #75f4e2; }
+    .connect-card {
+      display: grid; gap: 10px; padding: 13px; border: 1px solid rgba(45, 212, 191, .2);
+      border-radius: 10px; background: rgba(45, 212, 191, .05);
+    }
+    .incident-list { display: grid; gap: 9px; }
+    .incident-item {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 14px; padding: 12px;
+      border: 1px solid rgba(148, 163, 184, .13); border-radius: 10px; background: rgba(5, 15, 27, .38);
+    }
+    .incident-camera { color: #e0eaf0; font-weight: 750; overflow-wrap: anywhere; }
+    .incident-state { color: #fb7185; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .incident-state.resolved { color: #75f4e2; }
+    .incident-meta { grid-column: 1 / -1; color: #7890a4; font-size: 11px; }
     .address-panel {
       display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
     }
@@ -403,6 +430,10 @@
       .modal-header { min-height: 54px; padding: 10px 12px; }
       .modal-body { max-height: calc(100vh - 70px); padding: 12px; }
       .app-footer { padding-bottom: 18px; }
+      .settings-row { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .settings-actions > * { width: 100%; }
+      .incident-item { grid-template-columns: 1fr; }
+      .incident-state, .incident-meta { grid-column: 1; }
     }
   </style>
 </head>
@@ -411,6 +442,8 @@
     <header>
       <h1>CamAdmiral</h1>
       <div class="header-actions">
+        <button class="header-secondary" id="show-incidents" type="button" aria-haspopup="dialog">Incidents<span class="incident-count" id="incident-count" hidden>0</span></button>
+        <button class="header-secondary" id="show-notifications" type="button" aria-haspopup="dialog">Notifications</button>
         <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera manually</button>
         <button id="scan" type="button">Scan network</button>
         <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
@@ -508,6 +541,9 @@
   <script>
     const scanButton = document.querySelector("#scan");
     const showAddAddress = document.querySelector("#show-add-address");
+    const showIncidents = document.querySelector("#show-incidents");
+    const showNotifications = document.querySelector("#show-notifications");
+    const incidentCount = document.querySelector("#incident-count");
     const addressPanel = document.querySelector("#address-panel");
     const addressInput = document.querySelector("#address-input");
     const addressStatus = document.querySelector("#address-status");
@@ -561,6 +597,8 @@
     let mediaAccessFailed = false;
     let mediaHost = window.location.hostname;
     let pendingManualRtsp = null;
+    let notificationSettings = null;
+    let notificationPollTimer = null;
     const inspections = new Map();
     const credentialDrafts = new Map();
     const credentialRepairDrafts = new Map();
@@ -604,6 +642,10 @@
       if (appModal.hidden) return;
       if (appModalKind === "manual") addressPanel.hidden = true;
       if (appModalKind === "camera") expandedCandidate = null;
+      if (appModalKind === "notifications" && notificationPollTimer) {
+        clearTimeout(notificationPollTimer);
+        notificationPollTimer = null;
+      }
       appModal.hidden = true;
       appModalKind = null;
       appModalBody.replaceChildren();
@@ -742,6 +784,184 @@
       node.textContent = value;
       parent.append(node);
       return node;
+    }
+
+    function formatTime(value) {
+      if (!value) return "Unknown time";
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.valueOf()) ? "Unknown time" : parsed.toLocaleString();
+    }
+
+    function incidentLabel(kind) {
+      return kind === "authentication_failed" ? "Authentication failed" : "Camera offline";
+    }
+
+    async function loadIncidentCount() {
+      try {
+        const response = await fetch("/internal/incidents?status=open&limit=1", {cache: "no-store"});
+        const result = await response.json();
+        const count = Number(result.open_count || 0);
+        setText(incidentCount, count);
+        incidentCount.hidden = count === 0;
+      } catch (_) {}
+    }
+
+    async function openIncidents(trigger = null) {
+      const content = addText(document.createElement("div"), "div", "incident-list", "");
+      addText(content, "div", "settings-copy", "Loading incidents...");
+      openAppModal("incidents", "Incidents", content, trigger, "wide");
+      try {
+        const response = await fetch("/internal/incidents?status=all&limit=50", {cache: "no-store"});
+        const result = await response.json();
+        if (!response.ok) throw new Error();
+        content.replaceChildren();
+        const incidents = result.incidents || [];
+        if (!incidents.length) {
+          addText(content, "div", "empty", "No camera incidents recorded.");
+        }
+        incidents.forEach(incident => {
+          const item = addText(content, "article", "incident-item", "");
+          addText(item, "div", "incident-camera", incident.camera_name || "Camera");
+          addText(item, "div", `incident-state ${incident.status === "resolved" ? "resolved" : ""}`, incident.status);
+          const details = [incidentLabel(incident.kind), `Opened ${formatTime(incident.opened_at)}`];
+          if (incident.resolved_at) details.push(`Resolved ${formatTime(incident.resolved_at)}`);
+          addText(item, "div", "incident-meta", details.join(" · "));
+        });
+        setText(incidentCount, Number(result.open_count || 0));
+        incidentCount.hidden = !result.open_count;
+      } catch (_) {
+        content.replaceChildren();
+        addText(content, "div", "errorbox", "CamAdmiral could not load incidents.");
+      }
+    }
+
+    function renderNotificationSettings(trigger = null, message = "", messageKind = "") {
+      const data = notificationSettings || {};
+      const form = addText(document.createElement("form"), "form", "settings-form", "");
+      const enabledRow = addText(form, "label", "settings-row", "");
+      const enabledCopy = addText(enabledRow, "span", "settings-copy", "");
+      addText(enabledCopy, "strong", "", "Telegram alerts");
+      addText(enabledCopy, "span", "", "Notify the connected chat when a camera goes offline or recovers.");
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = Boolean(data.enabled);
+      enabledRow.append(enabled);
+
+      const tokenField = addText(form, "label", "setup-field", data.bot_configured ? "Replace bot token" : "Bot token");
+      const tokenControl = addText(tokenField, "span", "password-control", "");
+      const token = document.createElement("input");
+      token.type = "password";
+      token.name = "telegram-bot-token";
+      token.autocomplete = "off";
+      token.spellcheck = false;
+      token.placeholder = data.bot_configured ? "Leave blank to keep the configured token" : "Paste token from BotFather";
+      token.maxLength = 256;
+      tokenControl.append(token);
+      const reveal = addText(tokenControl, "button", "password-toggle", "👁");
+      reveal.type = "button";
+      reveal.setAttribute("aria-label", "Show bot token");
+      reveal.addEventListener("click", () => {
+        token.type = token.type === "password" ? "text" : "password";
+        reveal.classList.toggle("visible", token.type === "text");
+      });
+
+      if (data.bot_username) {
+        const identity = addText(form, "div", "settings-copy", "");
+        addText(identity, "strong", "", `@${data.bot_username}`);
+        addText(identity, "span", "", data.connection_status === "connected" ? `Connected to ${data.destination || "Telegram chat"}` : "Bot verified. Connect its destination next.");
+      }
+      if (data.connect_url && data.connection_status !== "connected") {
+        const connect = addText(form, "div", "connect-card", "");
+        addText(connect, "div", "settings-copy", "Open the bot in Telegram and press Start. This link expires after 15 minutes.");
+        const link = addText(connect, "a", "row-action", "Open Telegram");
+        link.href = data.connect_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      }
+      const status = addText(form, "div", `settings-status ${messageKind}`, message);
+      const actions = addText(form, "div", "settings-actions", "");
+      const save = addText(actions, "button", "row-action", "Save settings");
+      save.type = "submit";
+      if (data.connection_status === "connected") {
+        const test = addText(actions, "button", "row-action", "Send test");
+        test.type = "button";
+        test.addEventListener("click", async () => {
+          test.disabled = true;
+          setText(status, "Sending test notification...");
+          status.className = "settings-status";
+          try {
+            const response = await fetch("/internal/notification-settings/test", {method: "POST", headers: {"X-CamAdmiral-Action": "test-notification-settings"}});
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.message || "Test notification failed.");
+            setText(status, result.message || "Test notification sent.");
+            status.className = "settings-status success";
+          } catch (error) {
+            setText(status, error.message);
+            status.className = "settings-status error";
+          } finally { test.disabled = false; }
+        });
+      }
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        save.disabled = true;
+        setText(status, "Checking Telegram bot...");
+        status.className = "settings-status";
+        const body = {enabled: enabled.checked};
+        if (token.value.trim()) body.telegram_bot_token = token.value.trim();
+        try {
+          const response = await fetch("/internal/notification-settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "update-notification-settings"},
+            body: JSON.stringify(body)
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || "Settings could not be saved.");
+          notificationSettings = result;
+          renderNotificationSettings(trigger, result.connection_status === "connected" ? "Settings saved." : "Bot verified. Press Open Telegram, then Start.", "success");
+        } catch (error) {
+          setText(status, error.message);
+          status.className = "settings-status error";
+          save.disabled = false;
+        }
+      });
+      if (appModalKind === "notifications") {
+        appModalBody.replaceChildren(form);
+      } else {
+        openAppModal("notifications", "Notifications", form, trigger, "compact");
+      }
+      if (data.connection_status === "waiting_for_start") scheduleNotificationPoll(trigger);
+    }
+
+    function scheduleNotificationPoll(trigger) {
+      if (notificationPollTimer) clearTimeout(notificationPollTimer);
+      notificationPollTimer = setTimeout(async () => {
+        if (appModalKind !== "notifications") return;
+        try {
+          const response = await fetch("/internal/notification-settings", {cache: "no-store"});
+          const result = await response.json();
+          if (response.ok) {
+            const changed = notificationSettings?.connection_status !== result.connection_status || notificationSettings?.destination !== result.destination;
+            notificationSettings = result;
+            if (changed) renderNotificationSettings(trigger, result.connection_status === "connected" ? "Telegram connected." : "", result.connection_status === "connected" ? "success" : "");
+          }
+        } catch (_) {}
+        if (appModalKind === "notifications" && notificationSettings?.connection_status === "waiting_for_start") scheduleNotificationPoll(trigger);
+      }, 3000);
+    }
+
+    async function openNotificationSettings(trigger = null) {
+      notificationSettings = null;
+      const loading = addText(document.createElement("div"), "div", "settings-copy", "Loading notification settings...");
+      openAppModal("notifications", "Notifications", loading, trigger, "compact");
+      try {
+        const response = await fetch("/internal/notification-settings", {cache: "no-store"});
+        notificationSettings = await response.json();
+        if (!response.ok) throw new Error();
+        renderNotificationSettings(trigger);
+      } catch (_) {
+        appModalBody.replaceChildren();
+        addText(appModalBody, "div", "errorbox", "CamAdmiral could not load notification settings.");
+      }
     }
 
     function addCell(row, className = "") {
@@ -1993,6 +2213,8 @@
       openAppModal("manual", "Add camera manually", addressPanel, showAddAddress, "compact");
       addressInput.focus();
     });
+    showIncidents.addEventListener("click", () => openIncidents(showIncidents));
+    showNotifications.addEventListener("click", () => openNotificationSettings(showNotifications));
     scanDetails.addEventListener("click", () => {
       scanDialogContent.hidden = false;
       openAppModal("scan", "Scan details", scanDialogContent, scanDetails, "wide");
@@ -2076,8 +2298,10 @@
     });
 
     loadVersion();
+    loadIncidentCount();
     refresh();
     setInterval(refresh, 1000);
+    setInterval(loadIncidentCount, 10000);
   </script>
 </body>
 </html>

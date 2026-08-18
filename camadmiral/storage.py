@@ -158,6 +158,55 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX camera_health_events_camera_time
         ON camera_health_events(camera_uuid, observed_at, event_id);
     """,
+    """
+    CREATE TABLE camera_incidents (
+        incident_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('media_offline', 'authentication_failed')),
+        severity TEXT NOT NULL DEFAULT 'critical' CHECK(severity IN ('critical')),
+        opened_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolution_reason TEXT
+    );
+    CREATE UNIQUE INDEX camera_incidents_one_open_per_camera
+        ON camera_incidents(camera_uuid) WHERE resolved_at IS NULL;
+    CREATE INDEX camera_incidents_status_time
+        ON camera_incidents(resolved_at, opened_at DESC);
+
+    CREATE TABLE notification_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        provider TEXT NOT NULL DEFAULT 'telegram' CHECK(provider = 'telegram'),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+        bot_token_ciphertext BLOB,
+        bot_id TEXT,
+        bot_username TEXT,
+        chat_id TEXT,
+        chat_label TEXT,
+        pairing_token_ciphertext BLOB,
+        pairing_expires_at TEXT,
+        update_offset INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE notification_outbox (
+        outbox_uuid TEXT PRIMARY KEY,
+        incident_uuid TEXT REFERENCES camera_incidents(incident_uuid) ON DELETE SET NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN ('incident_opened', 'incident_resolved', 'test')),
+        payload_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'retry', 'sent', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        provider_message_id TEXT,
+        last_error_code TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT
+    );
+    CREATE INDEX notification_outbox_due
+        ON notification_outbox(status, next_attempt_at);
+    """,
 )
 
 
@@ -241,6 +290,14 @@ class CameraRepository:
                             str(row["camera_uuid"]),
                             timestamp,
                         )
+                if version == 11:
+                    timestamp = _now()
+                    for row in connection.execute("SELECT camera_uuid FROM cameras"):
+                        self._reconcile_camera_incident(
+                            connection,
+                            str(row["camera_uuid"]),
+                            timestamp,
+                        )
                 connection.commit()
 
     @staticmethod
@@ -293,12 +350,145 @@ class CameraRepository:
             "ORDER BY observed_at DESC, event_id DESC LIMIT 1",
             (camera_uuid,),
         ).fetchone()
-        if previous is not None and previous["state"] == state and previous["reason"] == reason:
+        if previous is None or previous["state"] != state or previous["reason"] != reason:
+            connection.execute(
+                "INSERT INTO camera_health_events(camera_uuid, state, reason, observed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (camera_uuid, state, reason, timestamp),
+            )
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='camera_incidents'"
+        ).fetchone() is not None:
+            cls._reconcile_camera_incident(connection, camera_uuid, timestamp)
+
+    @classmethod
+    def _reconcile_camera_incident(
+        cls,
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+        timestamp: str,
+    ) -> None:
+        current = cls._camera_health_state(connection, camera_uuid)
+        if current is None:
+            return
+        state, _ = current
+        desired_kind = {
+            "offline": "media_offline",
+            "auth_failed": "authentication_failed",
+        }.get(state)
+        opened = connection.execute(
+            "SELECT incident_uuid, kind FROM camera_incidents "
+            "WHERE camera_uuid = ? AND resolved_at IS NULL",
+            (camera_uuid,),
+        ).fetchone()
+        if desired_kind is not None:
+            if opened is not None and opened["kind"] == desired_kind:
+                connection.execute(
+                    "UPDATE camera_incidents SET last_observed_at = ? WHERE incident_uuid = ?",
+                    (timestamp, opened["incident_uuid"]),
+                )
+                return
+            if opened is not None:
+                cls._resolve_incident(
+                    connection,
+                    str(opened["incident_uuid"]),
+                    timestamp,
+                    "cause_changed",
+                )
+            incident_uuid = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, opened_at, "
+                "last_observed_at) VALUES (?, ?, ?, ?, ?)",
+                (incident_uuid, camera_uuid, desired_kind, timestamp, timestamp),
+            )
+            cls._enqueue_incident_notification(
+                connection,
+                incident_uuid,
+                camera_uuid,
+                desired_kind,
+                "incident_opened",
+                timestamp,
+            )
+            return
+        if opened is not None and state in {"healthy", "disabled"}:
+            cls._resolve_incident(
+                connection,
+                str(opened["incident_uuid"]),
+                timestamp,
+                "recovered" if state == "healthy" else "operator_disabled",
+            )
+
+    @classmethod
+    def _resolve_incident(
+        cls,
+        connection: sqlite3.Connection,
+        incident_uuid: str,
+        timestamp: str,
+        reason: str,
+    ) -> None:
+        incident = connection.execute(
+            "SELECT camera_uuid, kind FROM camera_incidents WHERE incident_uuid = ?",
+            (incident_uuid,),
+        ).fetchone()
+        if incident is None:
             return
         connection.execute(
-            "INSERT INTO camera_health_events(camera_uuid, state, reason, observed_at) "
-            "VALUES (?, ?, ?, ?)",
-            (camera_uuid, state, reason, timestamp),
+            "UPDATE camera_incidents SET last_observed_at = ?, resolved_at = ?, "
+            "resolution_reason = ? WHERE incident_uuid = ? AND resolved_at IS NULL",
+            (timestamp, timestamp, reason, incident_uuid),
+        )
+        cls._enqueue_incident_notification(
+            connection,
+            incident_uuid,
+            str(incident["camera_uuid"]),
+            str(incident["kind"]),
+            "incident_resolved",
+            timestamp,
+        )
+
+    @staticmethod
+    def _enqueue_incident_notification(
+        connection: sqlite3.Connection,
+        incident_uuid: str,
+        camera_uuid: str,
+        kind: str,
+        event_type: str,
+        timestamp: str,
+    ) -> None:
+        settings_row = connection.execute(
+            "SELECT enabled, chat_id FROM notification_settings WHERE singleton_id = 1"
+        ).fetchone()
+        if settings_row is None or not bool(settings_row["enabled"]) or not settings_row["chat_id"]:
+            return
+        camera = connection.execute(
+            "SELECT display_name FROM cameras WHERE camera_uuid = ?",
+            (camera_uuid,),
+        ).fetchone()
+        if camera is None:
+            return
+        payload = json.dumps(
+            {
+                "camera_id": camera_uuid,
+                "camera_name": str(camera["display_name"]),
+                "kind": kind,
+                "observed_at": timestamp,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO notification_outbox(outbox_uuid, incident_uuid, event_type, "
+            "payload_json, idempotency_key, status, next_attempt_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (
+                str(uuid.uuid4()),
+                incident_uuid,
+                event_type,
+                payload,
+                f"{incident_uuid}:{event_type}",
+                timestamp,
+                timestamp,
+            ),
         )
 
     def camera_availability(
@@ -405,6 +595,243 @@ class CameraRepository:
             "observed_seconds": round(observed_seconds, 3),
             "buckets": buckets,
         }
+
+    def incidents(self, *, status: str = "open", limit: int = 50) -> dict[str, Any]:
+        filters = {
+            "open": "i.resolved_at IS NULL",
+            "resolved": "i.resolved_at IS NOT NULL",
+            "all": "1 = 1",
+        }
+        where = filters.get(status)
+        if where is None:
+            raise ValueError("Incident status is invalid")
+        bounded_limit = max(1, min(100, limit))
+        with self.connect() as connection:
+            open_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM camera_incidents WHERE resolved_at IS NULL"
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                "SELECT i.incident_uuid AS id, i.camera_uuid AS camera_id, "
+                "c.display_name AS camera_name, i.kind, i.severity, "
+                "CASE WHEN i.resolved_at IS NULL THEN 'open' ELSE 'resolved' END AS status, "
+                "i.opened_at, i.last_observed_at, i.resolved_at, i.resolution_reason "
+                "FROM camera_incidents i JOIN cameras c USING(camera_uuid) "
+                f"WHERE {where} ORDER BY i.opened_at DESC LIMIT ?",
+                (bounded_limit,),
+            ).fetchall()
+        return {"open_count": open_count, "incidents": [dict(row) for row in rows]}
+
+    def notification_credentials(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM notification_settings WHERE singleton_id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        ciphertext = result.pop("bot_token_ciphertext")
+        pairing_ciphertext = result.pop("pairing_token_ciphertext")
+        result["enabled"] = bool(result["enabled"])
+        result["bot_token"] = (
+            decrypt_password(ciphertext, "notification-telegram-bot", self.master_key)
+            if ciphertext is not None
+            else None
+        )
+        result["pairing_token"] = (
+            decrypt_password(pairing_ciphertext, "notification-telegram-pairing", self.master_key)
+            if pairing_ciphertext is not None
+            else None
+        )
+        return result
+
+    def notification_settings(self) -> dict[str, Any]:
+        credentials = self.notification_credentials()
+        with self.connect() as connection:
+            delivery = connection.execute(
+                "SELECT status, sent_at, last_error_code, event_type FROM notification_outbox "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        return {
+            "provider": "telegram",
+            "enabled": bool(credentials and credentials["enabled"]),
+            "bot_configured": bool(credentials and credentials.get("bot_token")),
+            "bot_username": credentials.get("bot_username") if credentials else None,
+            "connection_status": (
+                "connected"
+                if credentials and credentials.get("chat_id")
+                else "waiting_for_start"
+                if credentials and credentials.get("bot_token")
+                else "not_configured"
+            ),
+            "destination": credentials.get("chat_label") if credentials else None,
+            "last_delivery": dict(delivery) if delivery is not None else None,
+        }
+
+    def save_telegram_settings(
+        self,
+        *,
+        enabled: bool,
+        bot_token: str | None,
+        bot_id: str | None = None,
+        bot_username: str | None = None,
+        pairing_token: str | None = None,
+        pairing_expires_at: str | None = None,
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT bot_token_ciphertext, bot_id, bot_username, chat_id, chat_label, "
+                "pairing_token_ciphertext, pairing_expires_at, update_offset, created_at "
+                "FROM notification_settings WHERE singleton_id = 1"
+            ).fetchone()
+            replacing = bot_token is not None
+            token_ciphertext = (
+                encrypt_password(bot_token, "notification-telegram-bot", self.master_key)
+                if replacing
+                else existing["bot_token_ciphertext"] if existing is not None else None
+            )
+            pairing_ciphertext = (
+                encrypt_password(pairing_token, "notification-telegram-pairing", self.master_key)
+                if pairing_token is not None
+                else existing["pairing_token_ciphertext"] if existing is not None else None
+            )
+            values = {
+                "bot_id": bot_id if replacing else existing["bot_id"] if existing is not None else None,
+                "bot_username": bot_username if replacing else existing["bot_username"] if existing is not None else None,
+                "chat_id": None if replacing else existing["chat_id"] if existing is not None else None,
+                "chat_label": None if replacing else existing["chat_label"] if existing is not None else None,
+                "pairing_expires_at": pairing_expires_at if pairing_token is not None else existing["pairing_expires_at"] if existing is not None else None,
+                "update_offset": None if replacing else existing["update_offset"] if existing is not None else None,
+                "created_at": existing["created_at"] if existing is not None else timestamp,
+            }
+            connection.execute(
+                "INSERT INTO notification_settings(singleton_id, provider, enabled, bot_token_ciphertext, "
+                "bot_id, bot_username, chat_id, chat_label, pairing_token_ciphertext, "
+                "pairing_expires_at, update_offset, created_at, updated_at) "
+                "VALUES (1, 'telegram', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(singleton_id) DO UPDATE SET enabled=excluded.enabled, "
+                "bot_token_ciphertext=excluded.bot_token_ciphertext, bot_id=excluded.bot_id, "
+                "bot_username=excluded.bot_username, chat_id=excluded.chat_id, "
+                "chat_label=excluded.chat_label, pairing_token_ciphertext=excluded.pairing_token_ciphertext, "
+                "pairing_expires_at=excluded.pairing_expires_at, update_offset=excluded.update_offset, "
+                "updated_at=excluded.updated_at",
+                (
+                    int(enabled), token_ciphertext, values["bot_id"], values["bot_username"],
+                    values["chat_id"], values["chat_label"], pairing_ciphertext,
+                    values["pairing_expires_at"], values["update_offset"], values["created_at"], timestamp,
+                ),
+            )
+            connection.commit()
+
+    def complete_telegram_pairing(
+        self,
+        *,
+        chat_id: str,
+        chat_label: str,
+        update_offset: int,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notification_settings SET chat_id=?, chat_label=?, "
+                "pairing_token_ciphertext=NULL, pairing_expires_at=NULL, update_offset=?, updated_at=? "
+                "WHERE singleton_id=1",
+                (chat_id, chat_label, update_offset, _now()),
+            )
+            connection.commit()
+
+    def update_telegram_offset(self, update_offset: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notification_settings SET update_offset=?, updated_at=? WHERE singleton_id=1",
+                (update_offset, _now()),
+            )
+            connection.commit()
+
+    def enqueue_test_notification(self) -> dict[str, Any]:
+        timestamp = _now()
+        outbox_uuid = str(uuid.uuid4())
+        payload = json.dumps(
+            {"camera_name": "CamAdmiral", "kind": "test", "observed_at": timestamp},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO notification_outbox(outbox_uuid, event_type, payload_json, "
+                "idempotency_key, status, next_attempt_at, created_at) "
+                "VALUES (?, 'test', ?, ?, 'pending', ?, ?)",
+                (outbox_uuid, payload, f"test:{outbox_uuid}", timestamp, timestamp),
+            )
+            connection.commit()
+        return self.outbox_item(outbox_uuid) or {}
+
+    def outbox_item(self, outbox_uuid: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM notification_outbox WHERE outbox_uuid = ?",
+                (outbox_uuid,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        return result
+
+    def due_notifications(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM notification_outbox WHERE status IN ('pending', 'retry') "
+                "AND next_attempt_at <= ? ORDER BY created_at LIMIT ?",
+                (_now(), max(1, min(100, limit))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            result.append(item)
+        return result
+
+    def complete_notification_delivery(
+        self,
+        outbox_uuid: str,
+        *,
+        message_id: str,
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notification_outbox SET status='sent', attempt_count=attempt_count+1, "
+                "provider_message_id=?, last_error_code=NULL, sent_at=? WHERE outbox_uuid=?",
+                (message_id, timestamp, outbox_uuid),
+            )
+            connection.commit()
+
+    def fail_notification_delivery(
+        self,
+        outbox_uuid: str,
+        *,
+        error_code: str,
+        retry_after_seconds: int | None,
+    ) -> None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT attempt_count FROM notification_outbox WHERE outbox_uuid=?",
+                (outbox_uuid,),
+            ).fetchone()
+            if row is None:
+                return
+            attempts = int(row["attempt_count"]) + 1
+            retry = retry_after_seconds is not None and attempts < 8
+            delay = retry_after_seconds or min(3600, 30 * (2 ** max(0, attempts - 1)))
+            next_attempt = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+            connection.execute(
+                "UPDATE notification_outbox SET status=?, attempt_count=?, next_attempt_at=?, "
+                "last_error_code=? WHERE outbox_uuid=?",
+                ("retry" if retry else "failed", attempts, next_attempt, error_code, outbox_uuid),
+            )
+            connection.commit()
 
     def adoption_for_candidate(self, candidate_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:

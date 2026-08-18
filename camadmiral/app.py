@@ -11,7 +11,7 @@ import time
 import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -41,6 +41,7 @@ from .media import (
     snapshot_frame,
 )
 from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
+from .notifications import TelegramClient, TelegramError, notification_text, pairing_message
 from .roles import select_stream_roles
 from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
 from .recovery import recover_inventory_addresses
@@ -73,6 +74,7 @@ RECOVERY_SCAN_INTERVAL = max(
 )
 RECOVERY_SCAN_ATTEMPTS: dict[str, float] = {}
 FRIGATE_RECONCILE_INTERVAL = 30.0
+NOTIFICATION_INTERVAL = 5.0
 
 
 def _admin_password() -> bytes | None:
@@ -129,6 +131,11 @@ class CameraCredentialRequest(BaseModel):
 
 class ExplicitAddressRequest(BaseModel):
     address: str = Field(min_length=7, max_length=45)
+
+
+class NotificationSettingsRequest(BaseModel):
+    enabled: bool
+    telegram_bot_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
 FACTORY_ONVIF_USERNAME = "admin"
@@ -284,6 +291,99 @@ def _queue_frigate_reconciliation() -> None:
     ).start()
 
 
+def _notification_settings_payload(repository: CameraRepository) -> dict[str, object]:
+    payload = repository.notification_settings()
+    credentials = repository.notification_credentials()
+    if credentials and credentials.get("pairing_token") and credentials.get("bot_username"):
+        expires_at = credentials.get("pairing_expires_at")
+        if expires_at:
+            expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if expires > datetime.now(timezone.utc):
+                username = urllib.parse.quote(str(credentials["bot_username"]), safe="_")
+                token = urllib.parse.quote(str(credentials["pairing_token"]), safe="-_")
+                payload["connect_url"] = f"https://t.me/{username}?start={token}"
+                payload["pairing_expires_at"] = expires.isoformat()
+    return payload
+
+
+def _poll_telegram_pairing(repository: CameraRepository, credentials: dict[str, object]) -> None:
+    token = credentials.get("bot_token")
+    pairing_token = credentials.get("pairing_token")
+    expires_at = credentials.get("pairing_expires_at")
+    if not token or not pairing_token or credentials.get("chat_id") or not expires_at:
+        return
+    expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    if expires <= datetime.now(timezone.utc):
+        return
+    updates = TelegramClient(str(token)).updates(credentials.get("update_offset"))
+    next_offset = credentials.get("update_offset")
+    for update in updates:
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            next_offset = max(int(next_offset or 0), update_id + 1)
+        destination = pairing_message(update, str(pairing_token))
+        if destination is not None:
+            repository.complete_telegram_pairing(
+                chat_id=destination[0],
+                chat_label=destination[1],
+                update_offset=int(next_offset or 0),
+            )
+            return
+    if next_offset is not None and next_offset != credentials.get("update_offset"):
+        repository.update_telegram_offset(int(next_offset))
+
+
+def _deliver_notification(
+    repository: CameraRepository,
+    credentials: dict[str, object],
+    item: dict[str, object],
+) -> None:
+    token = credentials.get("bot_token")
+    chat_id = credentials.get("chat_id")
+    if not token or not chat_id:
+        return
+    try:
+        message_id = TelegramClient(str(token)).send(
+            str(chat_id),
+            notification_text(str(item["event_type"]), dict(item["payload"])),
+        )
+    except TelegramError as exc:
+        repository.fail_notification_delivery(
+            str(item["outbox_uuid"]),
+            error_code=exc.code,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
+        raise
+    repository.complete_notification_delivery(
+        str(item["outbox_uuid"]),
+        message_id=message_id,
+    )
+
+
+def _notification_loop() -> None:
+    while True:
+        time.sleep(NOTIFICATION_INTERVAL)
+        repository = _repository()
+        if repository is None:
+            continue
+        credentials = repository.notification_credentials()
+        if credentials is None or not credentials.get("bot_token"):
+            continue
+        try:
+            if not credentials.get("chat_id"):
+                _poll_telegram_pairing(repository, credentials)
+                continue
+            if not credentials.get("enabled"):
+                continue
+            for item in repository.due_notifications():
+                try:
+                    _deliver_notification(repository, credentials, item)
+                except TelegramError:
+                    continue
+        except Exception as exc:
+            print(f"notifications: delivery deferred ({type(exc).__name__})", flush=True)
+
+
 def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
     if SCAN_REQUEST.exists():
         return False
@@ -367,6 +467,11 @@ def start_media_reconciliation() -> None:
     threading.Thread(
         target=_frigate_reconciliation_loop,
         name="frigate-reconcile",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_notification_loop,
+        name="notification-delivery",
         daemon=True,
     ).start()
 
@@ -629,6 +734,120 @@ def camera_availability(camera_uuid: str, window: str = "24h") -> JSONResponse:
         raise HTTPException(status_code=404, detail="Adopted camera not found")
     result["window"] = window
     return _secured_json(result)
+
+
+@app.get("/internal/incidents", include_in_schema=False)
+def incidents(status: str = "open", limit: int = 50) -> JSONResponse:
+    if status not in {"open", "resolved", "all"}:
+        return _secured_json(
+            {"status": "invalid_status", "message": "Choose open, resolved, or all incidents."},
+            status_code=422,
+        )
+    if limit < 1 or limit > 100:
+        return _secured_json(
+            {"status": "invalid_limit", "message": "Choose a limit from 1 to 100."},
+            status_code=422,
+        )
+    repository = _repository(required=True)
+    assert repository is not None
+    return _secured_json(repository.incidents(status=status, limit=limit))
+
+
+@app.get("/internal/notification-settings", include_in_schema=False)
+def notification_settings() -> JSONResponse:
+    repository = _repository(required=True)
+    assert repository is not None
+    return _secured_json(_notification_settings_payload(repository))
+
+
+@app.post("/internal/notification-settings", include_in_schema=False)
+def update_notification_settings(
+    request: NotificationSettingsRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "update-notification-settings":
+        raise HTTPException(status_code=400, detail="Missing notification settings action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    credentials = repository.notification_credentials()
+    token = request.telegram_bot_token.strip() if request.telegram_bot_token else None
+    if token is None and (credentials is None or not credentials.get("bot_token")):
+        if request.enabled:
+            return _secured_json(
+                {"status": "bot_token_required", "message": "Paste a Telegram bot token first."},
+                status_code=422,
+            )
+        repository.save_telegram_settings(enabled=False, bot_token=None)
+        return _secured_json(_notification_settings_payload(repository))
+
+    bot_id = None
+    bot_username = None
+    if token is not None:
+        client = TelegramClient(token)
+        try:
+            identity = client.identity()
+            webhook = client.webhook()
+        except TelegramError as exc:
+            message = (
+                "Telegram did not accept that bot token. Copy it again from BotFather."
+                if exc.code == "invalid_bot_token"
+                else "Telegram is unavailable. Try again shortly."
+            )
+            return _secured_json({"status": exc.code, "message": message}, status_code=422 if exc.retry_after_seconds is None else 503)
+        if webhook.get("url"):
+            return _secured_json(
+                {
+                    "status": "bot_has_webhook",
+                    "message": "This bot is connected to another application. Create a dedicated CamAdmiral bot.",
+                },
+                status_code=409,
+            )
+        bot_id = str(identity["id"])
+        bot_username = str(identity["username"])
+
+    disconnected = token is not None or not credentials or not credentials.get("chat_id")
+    pairing_token = secrets.token_urlsafe(24) if disconnected else None
+    pairing_expires_at = (
+        (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+        if disconnected
+        else None
+    )
+    repository.save_telegram_settings(
+        enabled=request.enabled,
+        bot_token=token,
+        bot_id=bot_id,
+        bot_username=bot_username,
+        pairing_token=pairing_token,
+        pairing_expires_at=pairing_expires_at,
+    )
+    return _secured_json(_notification_settings_payload(repository))
+
+
+@app.post("/internal/notification-settings/test", include_in_schema=False)
+def test_notification_settings(
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "test-notification-settings":
+        raise HTTPException(status_code=400, detail="Missing notification test action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    credentials = repository.notification_credentials()
+    if not credentials or not credentials.get("bot_token") or not credentials.get("chat_id"):
+        return _secured_json(
+            {"status": "telegram_not_connected", "message": "Connect a Telegram chat first."},
+            status_code=409,
+        )
+    item = repository.enqueue_test_notification()
+    try:
+        _deliver_notification(repository, credentials, item)
+    except TelegramError as exc:
+        return _secured_json(
+            {"status": exc.code, "message": "Telegram could not deliver the test notification."},
+            status_code=503,
+        )
+    return _secured_json(
+        {"status": "sent", "message": "Test notification sent.", "settings": _notification_settings_payload(repository)}
+    )
 
 
 @app.post("/internal/cameras/{camera_uuid}/update", include_in_schema=False)

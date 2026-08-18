@@ -57,6 +57,80 @@ class CameraRepositoryTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertNotIn(first.encode(), ciphertext)
 
+    def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-incident", "display_name": "Synthetic entrance"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.60/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        stream_uuid = adoption["streams"][0]["stream_uuid"]
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token="synthetic-pairing-token",
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+        self.repository.complete_telegram_pairing(
+            chat_id="100200300",
+            chat_label="Synthetic operator",
+            update_offset=7,
+        )
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        for _ in range(3):
+            self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 10)})
+        first = self.repository.incidents(status="open")
+        self.assertEqual(first["open_count"], 1)
+        self.assertEqual(first["incidents"][0]["kind"], "media_offline")
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 10)})
+        repeated = self.repository.incidents(status="open")
+        self.assertEqual(len(repeated["incidents"]), 1)
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        resolved = self.repository.incidents(status="resolved")
+        self.assertEqual(resolved["open_count"], 0)
+        self.assertEqual(resolved["incidents"][0]["resolution_reason"], "recovered")
+        notifications = self.repository.due_notifications()
+        self.assertEqual(
+            [item["event_type"] for item in notifications],
+            ["incident_opened", "incident_resolved"],
+        )
+        self.assertNotIn("192.0.2.60", str(notifications))
+        self.assertNotIn("synthetic-secret", str(notifications))
+
+    def test_telegram_token_and_pairing_secret_are_encrypted_and_never_exposed(self) -> None:
+        bot_token = "123456:synthetic-bot-token-value"
+        pairing_token = "synthetic-pairing-token"
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token=bot_token,
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token=pairing_token,
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+
+        public = self.repository.notification_settings()
+        credentials = self.repository.notification_credentials()
+        self.assertNotIn("token", str(public))
+        self.assertEqual(credentials["bot_token"], bot_token)
+        self.assertEqual(credentials["pairing_token"], pairing_token)
+        with self.repository.connect() as connection:
+            row = connection.execute(
+                "SELECT bot_token_ciphertext, pairing_token_ciphertext FROM notification_settings"
+            ).fetchone()
+        self.assertNotIn(bot_token.encode(), row[0])
+        self.assertNotIn(pairing_token.encode(), row[1])
+
     def test_frigate_binding_tracks_pending_applied_and_error_without_secrets(self) -> None:
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-frigate", "display_name": "Camera"},

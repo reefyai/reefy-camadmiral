@@ -80,6 +80,16 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("availability_percent", self.html)
         self.assertIn("Unknown or disabled", self.html)
 
+    def test_incidents_and_telegram_settings_use_compact_shared_modals(self) -> None:
+        self.assertIn('id="show-incidents"', self.html)
+        self.assertIn('id="incident-count"', self.html)
+        self.assertIn('openAppModal("incidents"', self.html)
+        self.assertIn('id="show-notifications"', self.html)
+        self.assertIn('openAppModal("notifications"', self.html)
+        self.assertIn("Paste token from BotFather", self.html)
+        self.assertIn("Open Telegram", self.html)
+        self.assertIn('autocomplete = "off"', self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

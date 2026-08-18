@@ -201,6 +201,84 @@ class AvailabilityApiTests(unittest.TestCase):
         repository.assert_not_called()
 
 
+class IncidentAndNotificationApiTests(unittest.TestCase):
+    def test_incident_filter_and_limit_are_bounded(self) -> None:
+        repository = Mock()
+        repository.incidents.return_value = {"open_count": 1, "incidents": []}
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.incidents("all", 100)
+        self.assertEqual(response.status_code, 200)
+        repository.incidents.assert_called_once_with(status="all", limit=100)
+
+        with patch.object(app_module, "_repository") as untouched:
+            invalid = app_module.incidents("unexpected", 50)
+        self.assertEqual(invalid.status_code, 422)
+        untouched.assert_not_called()
+
+    def test_notification_update_requires_action_header(self) -> None:
+        request = app_module.NotificationSettingsRequest(enabled=False)
+        with self.assertRaises(app_module.HTTPException) as raised:
+            app_module.update_notification_settings(request, None)
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_new_bot_is_validated_and_secret_is_not_returned(self) -> None:
+        repository = Mock()
+        repository.notification_credentials.return_value = None
+        repository.notification_settings.return_value = {
+            "provider": "telegram",
+            "enabled": True,
+            "bot_configured": True,
+            "bot_username": "synthetic_alert_bot",
+            "connection_status": "waiting_for_start",
+            "destination": None,
+            "last_delivery": None,
+        }
+        client = Mock()
+        client.identity.return_value = {"id": 123, "username": "synthetic_alert_bot"}
+        client.webhook.return_value = {"url": ""}
+        request = app_module.NotificationSettingsRequest(
+            enabled=True,
+            telegram_bot_token="123456:synthetic-bot-token-value",
+        )
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "TelegramClient", return_value=client),
+            patch.object(app_module.secrets, "token_urlsafe", return_value="synthetic-pairing"),
+        ):
+            response = app_module.update_notification_settings(
+                request,
+                "update-notification-settings",
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["provider"], "telegram")
+        self.assertNotIn("telegram_bot_token", payload)
+        self.assertNotIn("synthetic-bot-token-value", response.body.decode())
+        repository.save_telegram_settings.assert_called_once()
+
+    def test_bot_with_existing_webhook_is_rejected_without_modifying_it(self) -> None:
+        repository = Mock()
+        repository.notification_credentials.return_value = None
+        client = Mock()
+        client.identity.return_value = {"id": 123, "username": "shared_bot"}
+        client.webhook.return_value = {"url": "https://example.invalid/receiver"}
+        request = app_module.NotificationSettingsRequest(
+            enabled=True,
+            telegram_bot_token="123456:synthetic-bot-token-value",
+        )
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "TelegramClient", return_value=client),
+        ):
+            response = app_module.update_notification_settings(
+                request,
+                "update-notification-settings",
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.body)["status"], "bot_has_webhook")
+        repository.save_telegram_settings.assert_not_called()
+
+
 class ConsumerApiTests(unittest.TestCase):
     @staticmethod
     def request(host: str = "camadmiral.invalid:18080") -> Request:

@@ -50,6 +50,20 @@ The complete persistent state boundary is `/var/lib/camadmiral`. Back up and res
 volume as a unit. Stop CamAdmiral before making a raw volume copy so the SQLite database and
 its generated key are captured consistently.
 
+## Telegram notifications
+
+Open **Notifications** in the web UI to connect a dedicated Telegram bot. Create the bot
+with `@BotFather`, paste its token, then use the generated **Open Telegram** link and press
+**Start**. CamAdmiral discovers the destination chat from that one-time pairing message, so
+you do not need to find or enter a numeric chat ID.
+
+Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already connected
+to another application and never changes their webhook configuration. The bot token and
+temporary pairing secret are encrypted with CamAdmiral's master key and are never returned
+by the settings API. Alert messages contain only the camera name, incident state, and
+observation time. They do not contain camera credentials, media URLs, IP addresses, or MAC
+addresses.
+
 ## Tests
 
 Run the fast unit and component suite in an environment with the dependencies from
