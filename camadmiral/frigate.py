@@ -152,7 +152,8 @@ def _stream_for_role(camera: dict[str, Any], role: str) -> dict[str, Any] | None
     usable = [
         stream
         for stream in camera.get("streams", [])
-        if role in stream.get("roles", []) and stream.get("health_status") == "healthy"
+        if role in stream.get("roles", [])
+        and stream.get("health_status") not in {"offline", "auth_failed"}
     ]
     return usable[0] if usable else None
 

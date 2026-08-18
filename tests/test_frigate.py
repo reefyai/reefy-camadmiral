@@ -218,6 +218,17 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.assertNotIn("upstream-secret", sources[0])
         self.assertEqual(desired["camera_config"]["detect"], {"width": 640, "height": 360, "fps": 10})
 
+    def test_idle_role_stream_remains_valid_frigate_configuration(self) -> None:
+        camera = self.repository.consumer_inventory()[0]
+        record = next(stream for stream in camera["streams"] if "record" in stream["roles"])
+        record["health_status"] = "unknown"
+        record["probe_status"] = "idle"
+
+        desired = desired_camera(camera, "shared-media-secret", "192.168.50.12")
+
+        self.assertIsNotNone(desired)
+        self.assertEqual(len(desired["camera_config"]["ffmpeg"]["inputs"]), 2)
+
     def test_reconcile_persists_and_hot_adds_then_becomes_idempotent(self) -> None:
         factory = lambda _target: self.client
 

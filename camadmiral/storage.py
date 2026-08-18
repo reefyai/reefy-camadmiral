@@ -327,17 +327,18 @@ class CameraRepository:
                 (camera_uuid,),
             )
         ]
-        if not states or all(state == "unknown" for state in states):
+        observed_states = [state for state in states if state != "unknown"]
+        if not observed_states:
             return "unknown", "media_check_pending"
-        if "auth_failed" in states:
+        if "auth_failed" in observed_states:
             return "auth_failed", "authentication_failed"
-        if all(state == "healthy" for state in states):
+        if all(state == "healthy" for state in observed_states):
             return "healthy", "all_streams_healthy"
-        if all(state == "offline" for state in states):
+        if all(state == "offline" for state in observed_states):
             return "offline", "all_streams_offline"
-        if "offline" in states:
+        if "offline" in observed_states:
             return "degraded", "partial_stream_failure"
-        if "degraded" in states:
+        if "degraded" in observed_states:
             return "degraded", "media_probe_failed"
         return "unknown", "media_check_pending"
 
@@ -916,7 +917,7 @@ class CameraRepository:
                     roles.setdefault(str(row["stream_uuid"]), []).append(str(row["role"]))
                 streams = []
                 for row in connection.execute(
-                    "SELECT s.stream_uuid, s.stream_key, s.health_status, "
+                    "SELECT s.stream_uuid, s.stream_key, s.probe_status, s.health_status, "
                     "s.video_codec, s.probed_width, s.probed_height, s.probed_fps, "
                     "p.encoding, p.width, p.height, p.fps "
                     "FROM managed_streams s JOIN onvif_profiles p USING (profile_uuid) "

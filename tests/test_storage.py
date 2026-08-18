@@ -564,6 +564,39 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(stream["health_status"], "unknown")
         self.assertEqual(stream["consecutive_failures"], 0)
 
+    def test_active_healthy_role_keeps_camera_healthy_when_another_role_is_idle(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-partly-idle", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "record", "name": "Record", "uri": "rtsp://192.0.2.44/main",
+                    "width": 1920, "height": 1080, "encoding": "H264", "fps": 20,
+                    "bitrate_kbps": 0,
+                },
+                {
+                    "token": "detect", "name": "Detect", "uri": "rtsp://192.0.2.44/sub",
+                    "width": 640, "height": 360, "encoding": "H264", "fps": 10,
+                    "bitrate_kbps": 0,
+                },
+            ],
+            {"record": "record", "detect": "detect"},
+        )
+        streams = {stream["profile_token"]: stream["stream_uuid"] for stream in adoption["streams"]}
+        self.repository.record_probe_results({
+            streams["record"]: ProbeResult("idle", 1),
+            streams["detect"]: ProbeResult("ready", 1),
+        })
+
+        with self.repository.connect() as connection:
+            state = connection.execute(
+                "SELECT state FROM camera_health_events WHERE camera_uuid = ? "
+                "ORDER BY event_id DESC LIMIT 1",
+                (adoption["camera_uuid"],),
+            ).fetchone()["state"]
+        self.assertEqual(state, "healthy")
+
     def test_availability_excludes_unknown_and_disabled_time(self) -> None:
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-availability", "display_name": "Camera"},

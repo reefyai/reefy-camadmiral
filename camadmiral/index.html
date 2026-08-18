@@ -996,10 +996,11 @@
         return {key, label: key};
       }
       const states = streams.map(stream => stream.health_status || "unknown");
-      if (states.includes("auth_failed")) return {key: "auth_failed", label: "authentication failed"};
-      if (states.every(state => state === "healthy")) return {key: "healthy", label: "healthy"};
-      if (states.every(state => state === "offline")) return {key: "offline", label: "offline"};
-      if (states.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
+      const observed = states.filter(state => state !== "unknown");
+      if (observed.includes("auth_failed")) return {key: "auth_failed", label: "authentication failed"};
+      if (observed.length && observed.every(state => state === "healthy")) return {key: "healthy", label: "healthy"};
+      if (observed.length && observed.every(state => state === "offline")) return {key: "offline", label: "offline"};
+      if (observed.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
       if (streams.every(stream => stream.probe_status === "idle")) return {key: "checking", label: "idle"};
       return {key: "checking", label: "checking"};
     }
