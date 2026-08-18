@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +12,29 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_PATTERN = re.compile(r"^v\d{4}\.\d{2}\.\d{2}-\d{2}$")
 
 
+def validate_icon() -> None:
+    data = (ROOT / "reefy" / "icon.png").read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise SystemExit("Reefy icon must be a PNG")
+    width, height, _depth, color_type, _compression, _filter, _interlace = (
+        struct.unpack(">IIBBBBB", data[16:29])
+    )
+    if (width, height) != (512, 512):
+        raise SystemExit("Reefy icon must be 512x512")
+    if color_type != 2:
+        raise SystemExit("Reefy icon must be opaque RGB without an alpha channel")
+
+    offset = 8
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_type = data[offset + 4:offset + 8]
+        if chunk_type == b"tRNS":
+            raise SystemExit("Reefy icon must not contain transparency")
+        offset += length + 12
+
+
 def main() -> int:
+    validate_icon()
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     if not VERSION_PATTERN.fullmatch(version):
         raise SystemExit("VERSION must use vYYYY.MM.DD-NN")
