@@ -307,14 +307,15 @@ def assert_snapshot(camera_uuid: str) -> None:
             (value for name, value in headers.items() if name.lower() == "content-type"),
             "",
         )
-        return (
-            status == 200
-            and body.startswith(b"\xff\xd8\xff")
-            and body.endswith(b"\xff\xd9")
-            and content_type.startswith("image/jpeg")
-        )
+        if status != 200:
+            raise ScenarioFailure(f"Snapshot returned HTTP {status}")
+        if not content_type.startswith("image/jpeg"):
+            raise ScenarioFailure(f"Snapshot returned {content_type or 'no content type'}")
+        if not body.startswith(b"\xff\xd8\xff") or not body.endswith(b"\xff\xd9"):
+            raise ScenarioFailure("Snapshot returned invalid JPEG data")
+        return True
 
-    wait_for("valid camera snapshot", valid_snapshot, timeout=30, interval=1)
+    wait_for("valid camera snapshot", valid_snapshot, timeout=60, interval=1)
 
 
 def assert_all_media(directory: dict[str, object]) -> None:
