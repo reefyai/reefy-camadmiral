@@ -554,7 +554,7 @@ class CameraRepository:
                     healthy_seconds += duration
 
         bucket_seconds = (window_end - window_start).total_seconds() / bucket_count
-        buckets: list[dict[str, str]] = []
+        buckets: list[dict[str, Any]] = []
         for position in range(bucket_count):
             bucket_start = window_start + timedelta(seconds=bucket_seconds * position)
             bucket_end = window_start + timedelta(seconds=bucket_seconds * (position + 1))
@@ -563,31 +563,31 @@ class CameraRepository:
                 for segment in segments
                 if segment[0] < bucket_end and segment[1] > bucket_start
             ]
-            states = [segment[2] for segment in overlapping]
-            if "auth_failed" in states:
-                bucket_state = "auth_failed"
-            elif "offline" in states:
-                bucket_state = "offline"
-            elif "degraded" in states:
-                bucket_state = "degraded"
-            elif any(value in {"unknown", "disabled"} for value in states):
-                bucket_state = "disabled" if states and all(value == "disabled" for value in states) else "unknown"
-            else:
-                bucket_state = "healthy" if states else "unknown"
-            bucket_reason = next(
-                (
-                    segment[3]
-                    for segment in reversed(overlapping)
-                    if segment[2] == bucket_state
-                ),
-                overlapping[-1][3] if overlapping else "no_observation",
-            )
+            bucket_segments = []
+            for segment_start, segment_end, segment_state, segment_reason in overlapping:
+                clipped_start = max(segment_start, bucket_start)
+                clipped_end = min(segment_end, bucket_end)
+                if clipped_end <= clipped_start:
+                    continue
+                bucket_segments.append(
+                    {
+                        "start": clipped_start.isoformat(),
+                        "end": clipped_end.isoformat(),
+                        "state": segment_state,
+                        "reason": segment_reason,
+                        "seconds": round((clipped_end - clipped_start).total_seconds(), 3),
+                    }
+                )
+            ending_segment = bucket_segments[-1] if bucket_segments else None
+            bucket_state = str(ending_segment["state"]) if ending_segment else "unknown"
+            bucket_reason = str(ending_segment["reason"]) if ending_segment else "no_observation"
             buckets.append(
                 {
                     "start": bucket_start.isoformat(),
                     "end": bucket_end.isoformat(),
                     "state": bucket_state,
                     "reason": bucket_reason,
+                    "segments": bucket_segments,
                 }
             )
 

@@ -89,6 +89,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="availability-tooltip" role="tooltip"', self.html)
         self.assertIn("showAvailabilityTooltip(block)", self.html)
         self.assertIn("toggleAvailabilityTooltip(block)", self.html)
+        self.assertIn("applyAvailabilitySegments(block, bucket)", self.html)
+        self.assertIn("availabilitySegmentSummary(bucket)", self.html)
+        self.assertIn("Ended ${availabilityState(bucket.state).toLowerCase()}", self.html)
         self.assertNotIn("block.title = description", self.html)
 
     def test_runtime_health_uses_role_streams_without_ambiguous_table_idle(self) -> None:

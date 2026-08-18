@@ -1089,6 +1089,61 @@
       })[state] || "Unknown";
     }
 
+    function availabilityColor(state) {
+      return ({
+        healthy: "#2dd4bf",
+        degraded: "#fbbf24",
+        offline: "#fb7185",
+        auth_failed: "#fb7185",
+        unknown: "#475569",
+        disabled: "#475569"
+      })[state] || "#475569";
+    }
+
+    function availabilityDuration(seconds) {
+      const rounded = Math.max(0, Math.round(Number(seconds) || 0));
+      if (rounded < 60) return `${rounded}s`;
+      if (rounded < 3600) {
+        const minutes = Math.round(rounded / 60);
+        return `${minutes}m`;
+      }
+      const hours = rounded / 3600;
+      return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+    }
+
+    function availabilitySegments(bucket) {
+      if (Array.isArray(bucket.segments) && bucket.segments.length) return bucket.segments;
+      const seconds = Math.max(0, (new Date(bucket.end) - new Date(bucket.start)) / 1000);
+      return [{state: bucket.state, reason: bucket.reason, seconds}];
+    }
+
+    function availabilitySegmentSummary(bucket) {
+      const durations = new Map();
+      availabilitySegments(bucket).forEach(segment => {
+        durations.set(segment.state, (durations.get(segment.state) || 0) + Number(segment.seconds || 0));
+      });
+      return Array.from(durations.entries())
+        .map(([state, seconds]) => `${availabilityState(state)} ${availabilityDuration(seconds)}`)
+        .join(", ");
+    }
+
+    function applyAvailabilitySegments(block, bucket) {
+      const segments = availabilitySegments(bucket).filter(segment => Number(segment.seconds) > 0);
+      if (segments.length < 2) return;
+      const total = segments.reduce((sum, segment) => sum + Number(segment.seconds), 0);
+      if (!total) return;
+      let elapsed = 0;
+      const stops = [];
+      segments.forEach(segment => {
+        const start = elapsed * 100 / total;
+        elapsed += Number(segment.seconds);
+        const end = elapsed * 100 / total;
+        const color = availabilityColor(segment.state);
+        stops.push(`${color} ${start.toFixed(3)}%`, `${color} ${end.toFixed(3)}%`);
+      });
+      block.style.background = `linear-gradient(to right, ${stops.join(", ")})`;
+    }
+
     function availabilityDescription(bucket) {
       const startDate = new Date(bucket.start);
       const endDate = new Date(bucket.end);
@@ -1097,6 +1152,10 @@
       const end = sameDay
         ? endDate.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})
         : endDate.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      const segments = availabilitySegments(bucket);
+      if (segments.length > 1) {
+        return `${start}-${end} · ${availabilitySegmentSummary(bucket)} · Ended ${availabilityState(bucket.state).toLowerCase()}`;
+      }
       return `${start}-${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
     }
 
@@ -1148,6 +1207,7 @@
         const block = addText(parent, "button", `${className} ${bucket.state}`, "");
         const description = availabilityDescription(bucket);
         block.type = "button";
+        applyAvailabilitySegments(block, bucket);
         block.dataset.availabilityDescription = description;
         block.setAttribute("aria-label", description);
         block.addEventListener("pointerenter", () => {

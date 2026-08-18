@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 
@@ -172,13 +173,24 @@ def availability(camera_uuid: str, window: str = "24h") -> dict[str, object]:
     buckets = result.get("buckets", [])
     if result.get("window") != window or len(buckets) != expected_buckets:
         raise ScenarioFailure("Camera availability returned an invalid bounded timeline")
-    if any(
-        bucket.get("state") not in {
-            "healthy", "degraded", "offline", "auth_failed", "unknown", "disabled"
-        }
-        for bucket in buckets
-    ):
+    valid_states = {"healthy", "degraded", "offline", "auth_failed", "unknown", "disabled"}
+    if any(bucket.get("state") not in valid_states for bucket in buckets):
         raise ScenarioFailure("Camera availability returned an unknown health state")
+    for bucket in buckets:
+        segments = bucket.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise ScenarioFailure("Camera availability omitted bucket segments")
+        if any(segment.get("state") not in valid_states for segment in segments):
+            raise ScenarioFailure("Camera availability returned an unknown segment state")
+        if bucket.get("state") != segments[-1].get("state"):
+            raise ScenarioFailure("Camera availability bucket does not end in its latest state")
+        bucket_seconds = (
+            datetime.fromisoformat(str(bucket["end"]))
+            - datetime.fromisoformat(str(bucket["start"]))
+        ).total_seconds()
+        segment_seconds = sum(float(segment.get("seconds", 0)) for segment in segments)
+        if abs(bucket_seconds - segment_seconds) > 0.01:
+            raise ScenarioFailure("Camera availability segments do not fill their bucket")
     return result
 
 
@@ -618,6 +630,17 @@ def camera_recovery() -> None:
     timeline = availability(str(state["open_camera_uuid"]))
     if timeline.get("availability_percent") is None or timeline["availability_percent"] >= 100:
         raise ScenarioFailure("Recovered camera availability did not retain outage history")
+    segment_states = [
+        segment["state"]
+        for bucket in timeline["buckets"]
+        for segment in bucket["segments"]
+    ]
+    recovered_after_failure = any(
+        failed_state in {"degraded", "offline"} and "healthy" in segment_states[position + 1:]
+        for position, failed_state in enumerate(segment_states)
+    )
+    if not recovered_after_failure:
+        raise ScenarioFailure("Recovered camera timeline did not preserve its state transition")
     history = incidents("resolved")
     recovered = next(
         (

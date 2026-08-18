@@ -648,7 +648,67 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(timeline["observed_seconds"], 9 * 60 * 60)
         self.assertEqual(
             [bucket["state"] for bucket in timeline["buckets"]],
-            ["unknown", "unknown", "healthy", "degraded"],
+            ["unknown", "unknown", "healthy", "disabled"],
+        )
+
+    def test_availability_bucket_preserves_recovery_transition(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-recovery-timeline", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "stream",
+                    "name": "Stream",
+                    "uri": "rtsp://192.0.2.42/live",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }
+            ],
+            {"record": "stream", "detect": "stream"},
+        )
+        now = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM camera_health_events WHERE camera_uuid = ?",
+                (adoption["camera_uuid"],),
+            )
+            connection.executemany(
+                "INSERT INTO camera_health_events(camera_uuid, state, reason, observed_at) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        adoption["camera_uuid"],
+                        "offline",
+                        "all_streams_offline",
+                        (now - timedelta(minutes=30)).isoformat(),
+                    ),
+                    (
+                        adoption["camera_uuid"],
+                        "healthy",
+                        "all_streams_healthy",
+                        (now - timedelta(minutes=20)).isoformat(),
+                    ),
+                ],
+            )
+            connection.commit()
+
+        timeline = self.repository.camera_availability(
+            adoption["camera_uuid"],
+            hours=1,
+            bucket_count=2,
+            now=now,
+        )
+
+        recovery_bucket = timeline["buckets"][-1]
+        self.assertEqual(recovery_bucket["state"], "healthy")
+        self.assertEqual(recovery_bucket["reason"], "all_streams_healthy")
+        self.assertEqual(
+            [(segment["state"], segment["seconds"]) for segment in recovery_bucket["segments"]],
+            [("offline", 600.0), ("healthy", 1200.0)],
         )
 
     def test_address_recovery_preserves_stream_identity_and_records_event(self) -> None:
