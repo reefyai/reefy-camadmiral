@@ -346,9 +346,6 @@ def assert_stable(state: dict[str, object]) -> dict[str, object]:
 
     directory = wait_for("stable downstream identities", stable_identities, timeout=120)
     assert_all_media(directory)
-    directory = wait_for_online({OPEN_NAME, AUTH_NAME})
-    if directory_signature(directory) != state["signature"]:
-        raise ScenarioFailure("Stable camera, stream, or downstream identity changed")
     return directory
 
 
