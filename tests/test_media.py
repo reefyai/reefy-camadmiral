@@ -16,6 +16,7 @@ from camadmiral.media import (
     reconcile_and_probe,
     reconcile_preloads,
     reconcile_runtime_drift,
+    restart_preload,
     snapshot_frame,
 )
 
@@ -155,6 +156,24 @@ class MediaTests(unittest.TestCase):
             ("PUT", "/api/preload", {"src": "stream_online", "video": "all"}),
             [call.args for call in request.call_args_list],
         )
+
+    @patch("camadmiral.media._request")
+    def test_failed_preload_removal_does_not_abort_health_cycle(self, request) -> None:
+        def response(method, _path, _query=None):
+            if method == "DELETE":
+                raise urllib.error.HTTPError(
+                    "http://127.0.0.1/api/preload",
+                    500,
+                    "synthetic broken preload",
+                    {},
+                    None,
+                )
+            return b""
+
+        request.side_effect = response
+
+        self.assertTrue(restart_preload("stream_synthetic"))
+        self.assertEqual([call.args[0] for call in request.call_args_list], ["DELETE", "PUT"])
 
     @patch("camadmiral.media.GO2RTC_URL", "http://127.0.0.1:1984")
     def test_live_websocket_url_targets_only_managed_stream(self) -> None:

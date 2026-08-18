@@ -188,9 +188,8 @@ def _start_preload(stream_key: str) -> bool:
 def restart_preload(stream_key: str) -> bool:
     try:
         _request("DELETE", "/api/preload", {"src": stream_key})
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+        pass
     return _start_preload(stream_key)
 
 
