@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from e2e.scenarios import recovered_streams_ready
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +52,30 @@ class ReleaseMetadataTests(unittest.TestCase):
             scenarios,
         )
         self.assertIn("last observation=", scenarios)
+
+    def test_address_recovery_accepts_idle_recording_stream(self) -> None:
+        adoption = {
+            "roles": {"detect": "detect-stream", "record": "record-stream"},
+            "streams": [
+                {
+                    "stream_uuid": "detect-stream",
+                    "uri": "rtsp://192.0.2.12/detect",
+                    "health_status": "healthy",
+                },
+                {
+                    "stream_uuid": "record-stream",
+                    "uri": "rtsp://192.0.2.12/record",
+                    "health_status": "unknown",
+                },
+            ],
+        }
+
+        self.assertTrue(recovered_streams_ready(adoption, "192.0.2.12"))
+        adoption["streams"][0]["health_status"] = "unknown"
+        self.assertFalse(recovered_streams_ready(adoption, "192.0.2.12"))
+        adoption["streams"][0]["health_status"] = "healthy"
+        adoption["streams"][1]["uri"] = "rtsp://192.0.2.10/record"
+        self.assertFalse(recovered_streams_ready(adoption, "192.0.2.12"))
 
 
 if __name__ == "__main__":

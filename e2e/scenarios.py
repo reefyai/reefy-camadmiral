@@ -662,6 +662,25 @@ def container_restart() -> None:
     print("container-restart: persistent identities, secrets, and streams passed")
 
 
+def recovered_streams_ready(adoption: dict[str, object], expected_host: str) -> bool:
+    streams = adoption.get("streams") or []
+    roles = adoption.get("roles") or {}
+    detect_stream_uuid = roles.get("detect")
+    if not streams or not detect_stream_uuid:
+        return False
+    if any(
+        urllib.parse.urlsplit(stream.get("uri", "")).hostname != expected_host
+        or stream.get("health_status") not in {"healthy", "unknown"}
+        for stream in streams
+    ):
+        return False
+    return any(
+        stream.get("stream_uuid") == detect_stream_uuid
+        and stream.get("health_status") == "healthy"
+        for stream in streams
+    )
+
+
 def address_recovery() -> None:
     wait_for_open_camera_sources("camera-open-moved")
     state = load_state()
@@ -685,11 +704,7 @@ def address_recovery() -> None:
                 ],
             }
         )
-        return bool(streams) and all(
-            urllib.parse.urlsplit(stream.get("uri", "")).hostname == "172.30.0.12"
-            and stream.get("health_status") == "healthy"
-            for stream in streams
-        )
+        return recovered_streams_ready(adoption, "172.30.0.12")
 
     try:
         wait_for("validated camera address promotion", moved, timeout=180)
