@@ -7,7 +7,7 @@ import secrets
 import urllib.parse
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -145,11 +145,31 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE frigate_bindings ADD COLUMN camera_enabled_applied INTEGER NOT NULL DEFAULT 1
         CHECK(camera_enabled_applied IN (0, 1));
     """,
+    """
+    CREATE TABLE camera_health_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        state TEXT NOT NULL CHECK(state IN (
+            'healthy', 'degraded', 'offline', 'auth_failed', 'unknown', 'disabled'
+        )),
+        reason TEXT NOT NULL,
+        observed_at TEXT NOT NULL
+    );
+    CREATE INDEX camera_health_events_camera_time
+        ON camera_health_events(camera_uuid, observed_at, event_id);
+    """,
 )
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _source_parts(uri: str | None) -> tuple[str | None, str | None, int | None, str | None, str | None]:
@@ -213,7 +233,178 @@ class CameraRepository:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, _now()),
                 )
+                if version == 10:
+                    timestamp = _now()
+                    for row in connection.execute("SELECT camera_uuid FROM cameras"):
+                        self._record_camera_health_transition(
+                            connection,
+                            str(row["camera_uuid"]),
+                            timestamp,
+                        )
                 connection.commit()
+
+    @staticmethod
+    def _camera_health_state(
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+    ) -> tuple[str, str] | None:
+        camera = connection.execute(
+            "SELECT enabled FROM cameras WHERE camera_uuid = ?",
+            (camera_uuid,),
+        ).fetchone()
+        if camera is None:
+            return None
+        if not bool(camera["enabled"]):
+            return "disabled", "operator_disabled"
+        states = [
+            str(row["health_status"])
+            for row in connection.execute(
+                "SELECT health_status FROM managed_streams WHERE camera_uuid = ?",
+                (camera_uuid,),
+            )
+        ]
+        if not states or all(state == "unknown" for state in states):
+            return "unknown", "media_check_pending"
+        if "auth_failed" in states:
+            return "auth_failed", "authentication_failed"
+        if all(state == "healthy" for state in states):
+            return "healthy", "all_streams_healthy"
+        if all(state == "offline" for state in states):
+            return "offline", "all_streams_offline"
+        if "offline" in states:
+            return "degraded", "partial_stream_failure"
+        if "degraded" in states:
+            return "degraded", "media_probe_failed"
+        return "unknown", "media_check_pending"
+
+    @classmethod
+    def _record_camera_health_transition(
+        cls,
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+        timestamp: str,
+    ) -> None:
+        current = cls._camera_health_state(connection, camera_uuid)
+        if current is None:
+            return
+        state, reason = current
+        previous = connection.execute(
+            "SELECT state, reason FROM camera_health_events WHERE camera_uuid = ? "
+            "ORDER BY observed_at DESC, event_id DESC LIMIT 1",
+            (camera_uuid,),
+        ).fetchone()
+        if previous is not None and previous["state"] == state and previous["reason"] == reason:
+            return
+        connection.execute(
+            "INSERT INTO camera_health_events(camera_uuid, state, reason, observed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (camera_uuid, state, reason, timestamp),
+        )
+
+    def camera_availability(
+        self,
+        camera_uuid: str,
+        *,
+        hours: int,
+        bucket_count: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        if hours <= 0 or bucket_count <= 0:
+            raise ValueError("Availability window must be positive")
+        window_end = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        window_start = window_end - timedelta(hours=hours)
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone() is None:
+                return None
+            previous = connection.execute(
+                "SELECT state, reason, observed_at FROM camera_health_events "
+                "WHERE camera_uuid = ? AND observed_at < ? "
+                "ORDER BY observed_at DESC, event_id DESC LIMIT 1",
+                (camera_uuid, window_start.isoformat()),
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT state, reason, observed_at FROM camera_health_events "
+                "WHERE camera_uuid = ? AND observed_at >= ? AND observed_at <= ? "
+                "ORDER BY observed_at, event_id",
+                (camera_uuid, window_start.isoformat(), window_end.isoformat()),
+            ).fetchall()
+
+        state = str(previous["state"]) if previous is not None else "unknown"
+        reason = str(previous["reason"]) if previous is not None else "no_observation"
+        cursor = window_start
+        segments: list[tuple[datetime, datetime, str, str]] = []
+        for row in rows:
+            observed_at = min(window_end, max(window_start, _parse_timestamp(str(row["observed_at"]))))
+            if observed_at > cursor:
+                segments.append((cursor, observed_at, state, reason))
+            state = str(row["state"])
+            reason = str(row["reason"])
+            cursor = observed_at
+        if cursor < window_end:
+            segments.append((cursor, window_end, state, reason))
+
+        observed_seconds = 0.0
+        healthy_seconds = 0.0
+        for start, end, segment_state, _ in segments:
+            duration = (end - start).total_seconds()
+            if segment_state in {"healthy", "degraded", "offline", "auth_failed"}:
+                observed_seconds += duration
+                if segment_state == "healthy":
+                    healthy_seconds += duration
+
+        bucket_seconds = (window_end - window_start).total_seconds() / bucket_count
+        buckets: list[dict[str, str]] = []
+        for position in range(bucket_count):
+            bucket_start = window_start + timedelta(seconds=bucket_seconds * position)
+            bucket_end = window_start + timedelta(seconds=bucket_seconds * (position + 1))
+            overlapping = [
+                segment
+                for segment in segments
+                if segment[0] < bucket_end and segment[1] > bucket_start
+            ]
+            states = [segment[2] for segment in overlapping]
+            if "auth_failed" in states:
+                bucket_state = "auth_failed"
+            elif "offline" in states:
+                bucket_state = "offline"
+            elif "degraded" in states:
+                bucket_state = "degraded"
+            elif any(value in {"unknown", "disabled"} for value in states):
+                bucket_state = "disabled" if states and all(value == "disabled" for value in states) else "unknown"
+            else:
+                bucket_state = "healthy" if states else "unknown"
+            bucket_reason = next(
+                (
+                    segment[3]
+                    for segment in reversed(overlapping)
+                    if segment[2] == bucket_state
+                ),
+                overlapping[-1][3] if overlapping else "no_observation",
+            )
+            buckets.append(
+                {
+                    "start": bucket_start.isoformat(),
+                    "end": bucket_end.isoformat(),
+                    "state": bucket_state,
+                    "reason": bucket_reason,
+                }
+            )
+
+        return {
+            "window": f"{hours}h",
+            "start": window_start.isoformat(),
+            "end": window_end.isoformat(),
+            "availability_percent": (
+                round(healthy_seconds * 100 / observed_seconds, 2)
+                if observed_seconds > 0
+                else None
+            ),
+            "observed_seconds": round(observed_seconds, 3),
+            "buckets": buckets,
+        }
 
     def adoption_for_candidate(self, candidate_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -350,11 +541,14 @@ class CameraRepository:
         return cursor.rowcount == 1
 
     def set_camera_enabled(self, camera_uuid: str, enabled: bool) -> bool:
+        timestamp = _now()
         with self.connect() as connection:
             cursor = connection.execute(
                 "UPDATE cameras SET enabled = ?, updated_at = ? WHERE camera_uuid = ?",
-                (int(enabled), _now(), camera_uuid),
+                (int(enabled), timestamp, camera_uuid),
             )
+            if cursor.rowcount == 1:
+                self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
         return cursor.rowcount == 1
 
@@ -395,6 +589,7 @@ class CameraRepository:
                 "WHERE camera_uuid = ?",
                 (camera_uuid,),
             )
+            self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
         return True
 
@@ -649,6 +844,7 @@ class CameraRepository:
                     "ON CONFLICT(camera_uuid, role) DO UPDATE SET stream_uuid=excluded.stream_uuid, updated_at=excluded.updated_at",
                     (camera_uuid, role, stream_uuid, timestamp),
                 )
+            self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
         adoption = self.adoption_for_candidate(candidate_uuid)
         assert adoption is not None
@@ -807,6 +1003,7 @@ class CameraRepository:
                 f"({','.join('?' for _ in sources_by_token)}))",
                 (camera_uuid, camera_uuid, *sources_by_token.keys()),
             )
+            self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
 
     def record_address_change(
@@ -834,13 +1031,15 @@ class CameraRepository:
     def record_probe_results(self, results: dict[str, ProbeResult]) -> None:
         timestamp = _now()
         with self.connect() as connection:
+            affected_cameras: set[str] = set()
             for stream_uuid, result in results.items():
                 current = connection.execute(
-                    "SELECT consecutive_failures FROM managed_streams WHERE stream_uuid = ?",
+                    "SELECT camera_uuid, consecutive_failures FROM managed_streams WHERE stream_uuid = ?",
                     (stream_uuid,),
                 ).fetchone()
                 if current is None:
                     continue
+                affected_cameras.add(str(current["camera_uuid"]))
                 failures = 0 if result.status == "ready" else int(current["consecutive_failures"]) + 1
                 if result.status == "ready":
                     health_status = "healthy"
@@ -882,6 +1081,8 @@ class CameraRepository:
                             stream_uuid,
                         ),
                     )
+            for camera_uuid in affected_cameras:
+                self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
 
     def record_camera_auth_failure(self, camera_uuid: str, result: ProbeResult) -> None:

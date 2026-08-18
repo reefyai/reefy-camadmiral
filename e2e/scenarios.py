@@ -164,6 +164,86 @@ def directory_signature(directory: dict[str, object]) -> dict[str, object]:
     return signature
 
 
+def availability(camera_uuid: str, window: str = "24h") -> dict[str, object]:
+    result = request_json(
+        f"/internal/cameras/{urllib.parse.quote(camera_uuid)}/availability?window={window}"
+    )
+    expected_buckets = 48 if window == "24h" else 56
+    buckets = result.get("buckets", [])
+    if result.get("window") != window or len(buckets) != expected_buckets:
+        raise ScenarioFailure("Camera availability returned an invalid bounded timeline")
+    if any(
+        bucket.get("state") not in {
+            "healthy", "degraded", "offline", "auth_failed", "unknown", "disabled"
+        }
+        for bucket in buckets
+    ):
+        raise ScenarioFailure("Camera availability returned an unknown health state")
+    return result
+
+
+def wait_for_camera_sources(
+    description: str,
+    expected: dict[str, tuple[int, int]],
+) -> None:
+    def ready() -> bool:
+        for url, dimensions in expected.items():
+            completed = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-rtsp_transport",
+                    "tcp",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    url,
+                ],
+                check=False,
+                capture_output=True,
+                timeout=15,
+            )
+            if completed.returncode != 0:
+                return False
+            streams = json.loads(completed.stdout).get("streams", [])
+            if not streams or (streams[0].get("width"), streams[0].get("height")) != dimensions:
+                return False
+        return True
+
+    wait_for(description, ready, timeout=120, interval=1)
+
+
+def wait_for_open_camera_sources(host: str = "camera-open") -> None:
+    wait_for_camera_sources(
+        "open synthetic camera source readiness",
+        {
+            f"rtsp://{host}:8554/main": (1280, 720),
+            f"rtsp://{host}:8554/sub": (640, 360),
+        },
+    )
+
+
+def wait_for_baseline_camera_sources() -> None:
+    wait_for_open_camera_sources()
+    wait_for_camera_sources(
+        "authenticated synthetic camera source readiness",
+        {
+            "rtsp://operator:synthetic-camera-secret@camera-auth:8554/live": (640, 360),
+        },
+    )
+    wait_for_camera_sources(
+        "ONVIF synthetic camera source readiness",
+        {
+            "rtsp://camera-onvif:8554/main": (1280, 720),
+            "rtsp://camera-onvif:8554/sub": (640, 360),
+        },
+    )
+
+
 def authenticated_rtsp_url(stream: dict[str, object]) -> str:
     parsed = urllib.parse.urlsplit(stream["downstream"]["url"])
     authentication = stream["downstream"]["authentication"]
@@ -224,7 +304,12 @@ def assert_snapshot(camera_uuid: str) -> None:
 def assert_all_media(directory: dict[str, object]) -> None:
     for camera in directory.get("cameras", []):
         for stream in camera.get("streams", []):
-            probe_stream(stream)
+            wait_for(
+                "decoded stable downstream media",
+                lambda stream=stream: probe_stream(stream),
+                timeout=120,
+                interval=1,
+            )
         assert_snapshot(str(camera["id"]))
 
 
@@ -253,10 +338,11 @@ def assert_stable(state: dict[str, object]) -> dict[str, object]:
             return None
         if directory_signature(directory) != state["signature"]:
             raise ScenarioFailure("Stable camera, stream, or downstream identity changed")
-        assert_all_media(directory)
         return directory
 
-    return wait_for("stable identities and decoded media", stable_media, timeout=120)
+    directory = wait_for("stable downstream identities", stable_media, timeout=120)
+    assert_all_media(directory)
+    return directory
 
 
 def adopt_rtsp(
@@ -329,6 +415,7 @@ def assert_shared_upstream(stream: dict[str, object]) -> None:
 
 def baseline() -> None:
     wait_for_health()
+    wait_for_baseline_camera_sources()
     assert_version_surface()
     wait_for(
         "seeded discovery inventory",
@@ -413,6 +500,9 @@ def baseline() -> None:
     assert_all_media(directory)
     open_camera = camera_by_name(directory, OPEN_NAME)
     auth_camera = camera_by_name(directory, AUTH_NAME)
+    open_availability = availability(str(open_camera["id"]))
+    if open_availability.get("availability_percent") is None:
+        raise ScenarioFailure("Healthy camera time was not included in availability")
     detect_stream = next(stream for stream in open_camera["streams"] if "detect" in stream["roles"])
     assert_shared_upstream(detect_stream)
 
@@ -429,13 +519,19 @@ def baseline() -> None:
             and not camera.get("streams")
         ),
     )
-    request_json(
-        f'/internal/cameras/{open_camera["id"]}/enabled',
-        method="POST",
-        headers={"X-CamAdmiral-Action": "set-camera-enabled"},
-        payload={"enabled": True},
-        timeout=120,
-    )
+    wait_for_open_camera_sources()
+
+    def enable_camera() -> bool:
+        request_json(
+            f'/internal/cameras/{open_camera["id"]}/enabled',
+            method="POST",
+            headers={"X-CamAdmiral-Action": "set-camera-enabled"},
+            payload={"enabled": True},
+            timeout=120,
+        )
+        return True
+
+    wait_for("saved camera stream validation", enable_camera, timeout=180, interval=2)
     directory = wait_for_online({OPEN_NAME, AUTH_NAME, ONVIF_NAME})
     assert_all_media(directory)
 
@@ -478,7 +574,13 @@ def camera_outage() -> None:
             raise ScenarioFailure("Camera outage changed stable downstream identity")
         open_camera = camera_by_name(directory, OPEN_NAME)
         auth_camera = camera_by_name(directory, AUTH_NAME)
-        return open_camera.get("state") in {"degraded", "offline"} and auth_camera.get("state") == "online"
+        timeline = availability(str(open_camera["id"]))
+        latest = timeline["buckets"][-1]
+        return (
+            open_camera.get("state") in {"degraded", "offline"}
+            and auth_camera.get("state") == "online"
+            and latest.get("state") in {"degraded", "offline"}
+        )
 
     wait_for("camera outage health transition", outage_visible, timeout=120)
     print("camera-outage: failure was visible without withdrawing stable downstream identities")
@@ -486,7 +588,12 @@ def camera_outage() -> None:
 
 def camera_recovery() -> None:
     wait_for_health()
-    assert_stable(load_state())
+    wait_for_open_camera_sources()
+    state = load_state()
+    assert_stable(state)
+    timeline = availability(str(state["open_camera_uuid"]))
+    if timeline.get("availability_percent") is None or timeline["availability_percent"] >= 100:
+        raise ScenarioFailure("Recovered camera availability did not retain outage history")
     print("camera-recovery: synthetic camera reboot recovered without user action")
 
 
@@ -497,6 +604,7 @@ def container_restart() -> None:
 
 
 def address_recovery() -> None:
+    wait_for_open_camera_sources("camera-open-moved")
     state = load_state()
 
     def moved() -> bool:
@@ -512,6 +620,11 @@ def address_recovery() -> None:
     wait_for("validated camera address promotion", moved, timeout=120)
     assert_stable(state)
     print("address-recovery: upstream moved while downstream identities stayed stable")
+
+
+def moved_camera_ready() -> None:
+    wait_for_open_camera_sources("camera-open-moved")
+    print("camera-ready: moved synthetic source is readable")
 
 
 def invalid_address() -> None:
@@ -660,6 +773,7 @@ SCENARIOS = {
     "camera-recovery": camera_recovery,
     "container-restart": container_restart,
     "address-recovery": address_recovery,
+    "moved-camera-ready": moved_camera_ready,
     "invalid-address": invalid_address,
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,

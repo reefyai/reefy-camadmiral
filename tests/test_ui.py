@@ -73,6 +73,13 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("CamAdmiral will retry until its process appears.", self.html)
         self.assertNotIn("Retry pending", self.html)
 
+    def test_camera_details_show_bounded_availability_views(self) -> None:
+        self.assertIn('addDetailSection(parent, "Availability"', self.html)
+        self.assertIn('[["24h", "24 hours"], ["7d", "7 days"]]', self.html)
+        self.assertIn("availability-block", self.html)
+        self.assertIn("availability_percent", self.html)
+        self.assertIn("Unknown or disabled", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

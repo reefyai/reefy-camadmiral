@@ -169,6 +169,32 @@
     .detail-title { color: #dce8ee; font-size: 13px; font-weight: 800; }
     .detail-section-note { color: #60798e; font-size: 11px; }
     .detail-message { color: #8ea2b3; font-size: 13px; }
+    .availability-toolbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;
+    }
+    .availability-value { color: #dce8ee; font-size: 12px; font-weight: 750; }
+    .availability-range { display: inline-flex; gap: 3px; padding: 3px; border-radius: 8px; background: rgba(5, 15, 27, .5); }
+    .availability-range button {
+      border: 0; border-radius: 6px; padding: 4px 8px; background: transparent; color: #7890a4;
+      cursor: pointer; font-size: 11px; font-weight: 750;
+    }
+    .availability-range button.selected { background: rgba(45, 212, 191, .13); color: #8ff8e8; }
+    .availability-strip { display: flex; gap: 2px; width: 100%; height: 28px; }
+    .availability-block {
+      min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0; cursor: help;
+      background: #475569;
+    }
+    .availability-block.healthy { background: #2dd4bf; }
+    .availability-block.degraded { background: #fbbf24; }
+    .availability-block.offline, .availability-block.auth_failed { background: #fb7185; }
+    .availability-block.unknown, .availability-block.disabled { background: #475569; }
+    .availability-block:hover, .availability-block:focus-visible { outline: 2px solid #dce8ee; outline-offset: 1px; }
+    .availability-legend { display: flex; flex-wrap: wrap; gap: 6px 13px; margin-top: 9px; color: #7890a4; font-size: 10px; }
+    .availability-key { display: inline-flex; align-items: center; gap: 5px; }
+    .availability-key::before { width: 7px; height: 7px; border-radius: 2px; background: #475569; content: ""; }
+    .availability-key.healthy::before { background: #2dd4bf; }
+    .availability-key.degraded::before { background: #fbbf24; }
+    .availability-key.offline::before { background: #fb7185; }
     .camera-management {
       display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; align-items: end; gap: 8px;
       margin-top: 1px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, .09);
@@ -367,6 +393,10 @@
       .profile { grid-template-columns: 1fr; gap: 6px; }
       .integration-row { grid-template-columns: 1fr; gap: 4px; }
       .camera-summary-top { align-items: flex-start; }
+      .availability-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .availability-range { align-self: stretch; }
+      .availability-range button { flex: 1; padding: 6px 8px; }
+      .availability-strip { gap: 1px; height: 24px; }
       .endpoint, .downstream-url { max-width: 100%; }
       .modal-backdrop { padding: 8px; }
       .modal-dialog { max-height: calc(100vh - 16px); border-radius: 13px; }
@@ -536,6 +566,7 @@
     const credentialRepairDrafts = new Map();
     const adoptionProgress = new Map();
     const lifecycleErrors = new Map();
+    const availabilityResults = new Map();
     let liveSocket = null;
     let liveReconnectTimer = null;
     let liveMediaSource = null;
@@ -787,6 +818,92 @@
       addText(header, "div", "detail-title", title);
       if (note) addText(header, "div", "detail-section-note", note);
       return section;
+    }
+
+    function availabilityReason(reason) {
+      return ({
+        all_streams_healthy: "All streams healthy",
+        authentication_failed: "Authentication failed",
+        all_streams_offline: "All streams offline",
+        partial_stream_failure: "Partial stream failure",
+        media_probe_failed: "Media check failed",
+        media_check_pending: "Media check pending",
+        operator_disabled: "Camera disabled",
+        no_observation: "No observation"
+      })[reason] || "Camera state changed";
+    }
+
+    function availabilityState(state) {
+      return ({
+        healthy: "Healthy",
+        degraded: "Degraded",
+        offline: "Offline",
+        auth_failed: "Authentication failed",
+        unknown: "Unknown",
+        disabled: "Disabled"
+      })[state] || "Unknown";
+    }
+
+    function addAvailability(parent, device, adoption) {
+      const current = availabilityResults.get(adoption.camera_uuid);
+      const windowName = current?.window || "24h";
+      const section = addDetailSection(parent, "Availability", windowName === "7d" ? "Last 7 days" : "Last 24 hours");
+      const toolbar = addText(section, "div", "availability-toolbar", "");
+      let value = "Loading observations...";
+      if (current?.status === "error") value = "Availability unavailable";
+      if (current?.status === "ready") {
+        const percent = current.data.availability_percent;
+        value = percent == null ? "No observed uptime yet" : `${Number(percent).toFixed(2).replace(/\.00$/, "")}% available`;
+      }
+      addText(toolbar, "div", "availability-value", value);
+      const ranges = addText(toolbar, "div", "availability-range", "");
+      [["24h", "24 hours"], ["7d", "7 days"]].forEach(([window, label]) => {
+        const button = addText(ranges, "button", window === windowName ? "selected" : "", label);
+        button.type = "button";
+        button.disabled = current?.status === "loading" && current.window === window;
+        button.addEventListener("click", () => loadCameraAvailability(device, window));
+      });
+      if (current?.status === "ready") {
+        const strip = addText(section, "div", "availability-strip", "");
+        current.data.buckets.forEach(bucket => {
+          const block = addText(strip, "button", `availability-block ${bucket.state}`, "");
+          block.type = "button";
+          const start = new Date(bucket.start).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+          const end = new Date(bucket.end).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+          const description = `${start} to ${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
+          block.title = description;
+          block.setAttribute("aria-label", description);
+        });
+        const legend = addText(section, "div", "availability-legend", "");
+        addText(legend, "span", "availability-key healthy", "Healthy");
+        addText(legend, "span", "availability-key degraded", "Degraded");
+        addText(legend, "span", "availability-key offline", "Offline");
+        addText(legend, "span", "availability-key", "Unknown or disabled");
+      } else if (current?.status === "error") {
+        addText(section, "div", "detail-message", "CamAdmiral could not load camera observations.");
+      }
+    }
+
+    async function loadCameraAvailability(device, window = "24h") {
+      const cameraUuid = device.adoption?.camera_uuid;
+      if (!cameraUuid) return;
+      const current = availabilityResults.get(cameraUuid);
+      if (current?.status === "loading" && current.window === window) return;
+      if (current?.status === "ready" && current.window === window) return;
+      const requestId = Symbol("availability");
+      availabilityResults.set(cameraUuid, {status: "loading", window, requestId});
+      renderActiveCameraModal();
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/availability?window=${encodeURIComponent(window)}`, {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "Availability could not be loaded.");
+        if (availabilityResults.get(cameraUuid)?.requestId !== requestId) return;
+        availabilityResults.set(cameraUuid, {status: "ready", window, data});
+      } catch (error) {
+        if (availabilityResults.get(cameraUuid)?.requestId !== requestId) return;
+        availabilityResults.set(cameraUuid, {status: "error", window});
+      }
+      renderActiveCameraModal();
     }
 
     function matchesSearch(device, query) {
@@ -1348,6 +1465,7 @@
           const credentials = addDetailSection(wrapper, "Camera credentials");
           addCredentialRepair(credentials, device, adoption);
         }
+        addAvailability(wrapper, device, adoption);
         if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       }
       const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));
@@ -1710,6 +1828,7 @@
       }
       const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
       openAppModal("camera", title, inspectionDetails(device), trigger, "wide");
+      if (device.adoption?.camera_uuid) loadCameraAvailability(device);
       if (inspections.get(candidateId)?.status === "loading") {
         try {
           const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {

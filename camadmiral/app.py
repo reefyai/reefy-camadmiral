@@ -606,6 +606,31 @@ def _validate_replacement_credentials(
     return False, "media_unavailable", "Camera streams are unavailable."
 
 
+@app.get("/internal/cameras/{camera_uuid}/availability", include_in_schema=False)
+def camera_availability(camera_uuid: str, window: str = "24h") -> JSONResponse:
+    windows = {
+        "24h": (24, 48),
+        "7d": (24 * 7, 56),
+    }
+    selected = windows.get(window)
+    if selected is None:
+        return _secured_json(
+            {"status": "invalid_window", "message": "Choose the 24-hour or 7-day view."},
+            status_code=422,
+        )
+    repository = _repository(required=True)
+    assert repository is not None
+    result = repository.camera_availability(
+        camera_uuid,
+        hours=selected[0],
+        bucket_count=selected[1],
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    result["window"] = window
+    return _secured_json(result)
+
+
 @app.post("/internal/cameras/{camera_uuid}/update", include_in_schema=False)
 def update_camera(
     camera_uuid: str,

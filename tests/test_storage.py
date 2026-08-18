@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from camadmiral.storage import CameraRepository
@@ -375,6 +376,96 @@ class CameraRepositoryTests(unittest.TestCase):
         offline = self.repository.adoption_for_candidate("candidate-health")
         self.assertEqual(offline["streams"][0]["health_status"], "offline")
         self.assertEqual(offline["streams"][0]["consecutive_failures"], 3)
+
+    def test_health_history_records_transitions_without_duplicate_poll_events(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-history", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "stream",
+                    "name": "Stream",
+                    "uri": "rtsp://192.0.2.40/live",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }
+            ],
+            {"record": "stream", "detect": "stream"},
+        )
+        stream_uuid = adoption["streams"][0]["stream_uuid"]
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 20)})
+        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 20)})
+        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 20)})
+        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 20)})
+
+        with self.repository.connect() as connection:
+            states = [
+                row["state"]
+                for row in connection.execute(
+                    "SELECT state FROM camera_health_events WHERE camera_uuid = ? ORDER BY event_id",
+                    (adoption["camera_uuid"],),
+                )
+            ]
+        self.assertEqual(states, ["unknown", "healthy", "degraded", "offline"])
+
+    def test_availability_excludes_unknown_and_disabled_time(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-availability", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "stream",
+                    "name": "Stream",
+                    "uri": "rtsp://192.0.2.41/live",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }
+            ],
+            {"record": "stream", "detect": "stream"},
+        )
+        now = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
+        events = [
+            ("healthy", "all_streams_healthy", now - timedelta(hours=12)),
+            ("degraded", "media_probe_failed", now - timedelta(hours=6)),
+            ("disabled", "operator_disabled", now - timedelta(hours=3)),
+        ]
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM camera_health_events WHERE camera_uuid = ?",
+                (adoption["camera_uuid"],),
+            )
+            connection.executemany(
+                "INSERT INTO camera_health_events(camera_uuid, state, reason, observed_at) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (adoption["camera_uuid"], state, reason, observed_at.isoformat())
+                    for state, reason, observed_at in events
+                ],
+            )
+            connection.commit()
+
+        timeline = self.repository.camera_availability(
+            adoption["camera_uuid"],
+            hours=24,
+            bucket_count=4,
+            now=now,
+        )
+
+        self.assertEqual(timeline["availability_percent"], 66.67)
+        self.assertEqual(timeline["observed_seconds"], 9 * 60 * 60)
+        self.assertEqual(
+            [bucket["state"] for bucket in timeline["buckets"]],
+            ["unknown", "unknown", "healthy", "degraded"],
+        )
 
     def test_address_recovery_preserves_stream_identity_and_records_event(self) -> None:
         candidate = {"candidate_uuid": "candidate-move", "display_name": "Camera"}

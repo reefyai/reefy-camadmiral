@@ -80,6 +80,7 @@ def main() -> int:
         run("stop", "camera-open")
         run("rm", "--force", "camera-open")
         run("up", "--detach", "camera-open-moved")
+        scenario("moved-camera-ready")
         run(
             "exec",
             "-T",

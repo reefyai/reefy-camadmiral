@@ -169,6 +169,38 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
 
+class AvailabilityApiTests(unittest.TestCase):
+    def test_supported_window_uses_bounded_bucket_count(self) -> None:
+        repository = Mock()
+        repository.camera_availability.return_value = {
+            "window": "168h",
+            "start": "2026-01-01T00:00:00+00:00",
+            "end": "2026-01-08T00:00:00+00:00",
+            "availability_percent": 99.5,
+            "observed_seconds": 604800,
+            "buckets": [],
+        }
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.camera_availability("camera-1", "7d")
+
+        payload = json.loads(response.body)
+        repository.camera_availability.assert_called_once_with(
+            "camera-1",
+            hours=168,
+            bucket_count=56,
+        )
+        self.assertEqual(payload["window"], "7d")
+        self.assertEqual(payload["availability_percent"], 99.5)
+
+    def test_unsupported_window_is_rejected_before_storage_access(self) -> None:
+        with patch.object(app_module, "_repository") as repository:
+            response = app_module.camera_availability("camera-1", "30d")
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(json.loads(response.body)["status"], "invalid_window")
+        repository.assert_not_called()
+
+
 class ConsumerApiTests(unittest.TestCase):
     @staticmethod
     def request(host: str = "camadmiral.invalid:18080") -> Request:
