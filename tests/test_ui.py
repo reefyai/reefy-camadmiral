@@ -80,6 +80,11 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("availability_percent", self.html)
         self.assertIn("Unknown or disabled", self.html)
 
+    def test_runtime_health_uses_role_streams_and_shows_idle_without_alarm(self) -> None:
+        self.assertIn("const roleStreams = new Set", self.html)
+        self.assertIn('label: "idle"', self.html)
+        self.assertIn("Idle - waiting for a consumer", self.html)
+
     def test_incidents_and_telegram_settings_use_compact_shared_modals(self) -> None:
         self.assertIn('id="show-incidents"', self.html)
         self.assertIn('id="incident-count"', self.html)
@@ -89,6 +94,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Paste token from BotFather", self.html)
         self.assertIn("Open Telegram", self.html)
         self.assertIn('autocomplete = "off"', self.html)
+        self.assertNotIn('"Telegram alerts"', self.html)
+        self.assertNotIn("enabled.checked", self.html)
+        self.assertIn("const body = {enabled: true}", self.html)
 
 
 if __name__ == "__main__":

@@ -385,6 +385,31 @@ def reconcile_frigate(
                 )
             applied += 1
             continue
+        if camera_exists and actual_matches and not camera_running:
+            # Frigate 0.17 camera add events are not idempotent. Re-publishing
+            # an add for an existing camera starts another set of workers and
+            # leaves the previous processes alive. Keep the binding pending and
+            # wait for Frigate to report the process instead.
+            if binding is not None and (
+                binding.get("status") != "error"
+                or binding.get("last_error_code") != "camera_start_pending"
+            ):
+                repository.record_frigate_attempt(
+                    target.target_id,
+                    camera["camera_uuid"],
+                    desired["key"],
+                    desired["record_stream_uuid"],
+                    desired["detect_stream_uuid"],
+                    desired["desired_hash"],
+                )
+                repository.complete_frigate_attempt(
+                    target.target_id,
+                    camera["camera_uuid"],
+                    status="error",
+                    error_code="camera_start_pending",
+                )
+            pending += 1
+            continue
         repository.record_frigate_attempt(
             target.target_id,
             camera["camera_uuid"],
@@ -410,7 +435,7 @@ def reconcile_frigate(
                 {"cameras": {desired["key"]: camera_update}},
                 update_topic=(
                     f"config/cameras/{desired['key']}/add"
-                    if not camera_exists or not camera_running
+                    if not camera_exists
                     else None
                 ),
             )

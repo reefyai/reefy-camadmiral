@@ -131,6 +131,21 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn(bot_token.encode(), row[0])
         self.assertNotIn(pairing_token.encode(), row[1])
 
+    def test_migration_enables_alerts_for_an_existing_configured_bot(self) -> None:
+        self.repository.save_telegram_settings(
+            enabled=False,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+        )
+        with self.repository.connect() as connection:
+            connection.execute("DELETE FROM schema_migrations WHERE version = 12")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertTrue(self.repository.notification_settings()["enabled"])
+
     def test_frigate_binding_tracks_pending_applied_and_error_without_secrets(self) -> None:
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-frigate", "display_name": "Camera"},
@@ -441,11 +456,14 @@ class CameraRepositoryTests(unittest.TestCase):
             {stream_uuid: ProbeResult("ready", 25, "h264", None, 1280, 720, 15)}
         )
         self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 30)})
+        grace = self.repository.adoption_for_candidate("candidate-health")
+        self.assertEqual(grace["streams"][0]["health_status"], "healthy")
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 30)})
         degraded = self.repository.adoption_for_candidate("candidate-health")
         self.assertEqual(degraded["streams"][0]["health_status"], "degraded")
         self.assertEqual(degraded["streams"][0]["probed_width"], 1280)
 
-        self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 30)})
         self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 30)})
         offline = self.repository.adoption_for_candidate("candidate-health")
         self.assertEqual(offline["streams"][0]["health_status"], "offline")
@@ -486,6 +504,65 @@ class CameraRepositoryTests(unittest.TestCase):
                 )
             ]
         self.assertEqual(states, ["unknown", "healthy", "degraded", "offline"])
+
+    def test_unused_profile_failure_does_not_degrade_camera_health(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-unused", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "selected", "name": "Selected", "uri": "rtsp://192.0.2.42/main",
+                    "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                    "bitrate_kbps": 0,
+                },
+                {
+                    "token": "unused", "name": "Unused", "uri": "rtsp://192.0.2.42/extra",
+                    "width": 640, "height": 360, "encoding": "H264", "fps": 10,
+                    "bitrate_kbps": 0,
+                },
+            ],
+            {"record": "selected", "detect": "selected"},
+        )
+        streams = {stream["profile_token"]: stream["stream_uuid"] for stream in adoption["streams"]}
+        self.repository.record_probe_results({
+            streams["selected"]: ProbeResult("ready", 20),
+            streams["unused"]: ProbeResult("ready", 20),
+        })
+        for _ in range(3):
+            self.repository.record_probe_results({streams["unused"]: ProbeResult("unavailable", 20)})
+
+        refreshed = self.repository.adoption_for_candidate("candidate-unused")
+        states = {stream["profile_token"]: stream["health_status"] for stream in refreshed["streams"]}
+        self.assertEqual(states, {"selected": "healthy", "unused": "offline"})
+        with self.repository.connect() as connection:
+            camera_state = connection.execute(
+                "SELECT state FROM camera_health_events WHERE camera_uuid = ? "
+                "ORDER BY event_id DESC LIMIT 1",
+                (adoption["camera_uuid"],),
+            ).fetchone()["state"]
+        self.assertEqual(camera_state, "healthy")
+
+    def test_idle_relay_is_unobserved_instead_of_degraded(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-idle", "display_name": "Camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.43/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        stream_uuid = adoption["streams"][0]["stream_uuid"]
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 20)})
+        self.repository.record_probe_results({stream_uuid: ProbeResult("idle", 1)})
+
+        stream = self.repository.adoption_for_candidate("candidate-idle")["streams"][0]
+        self.assertEqual(stream["probe_status"], "idle")
+        self.assertEqual(stream["health_status"], "unknown")
+        self.assertEqual(stream["consecutive_failures"], 0)
 
     def test_availability_excludes_unknown_and_disabled_time(self) -> None:
         adoption = self.repository.adopt(

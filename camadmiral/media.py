@@ -39,6 +39,71 @@ class ProbeResult:
     fps: float = 0
 
 
+class RelayHealthMonitor:
+    """Observe active go2rtc relays without opening camera connections."""
+
+    def __init__(self) -> None:
+        self._video_samples: dict[str, tuple[str, int]] = {}
+
+    @staticmethod
+    def _active_video_sample(stream: object) -> tuple[str, int] | None:
+        if not isinstance(stream, dict):
+            return None
+        for producer in stream.get("producers") or []:
+            if not isinstance(producer, dict) or "bytes_recv" not in producer:
+                continue
+            packets = 0
+            found_video = False
+            for receiver in producer.get("receivers") or []:
+                if not isinstance(receiver, dict):
+                    continue
+                codec = receiver.get("codec")
+                if not isinstance(codec, dict) or codec.get("codec_type") != "video":
+                    continue
+                found_video = True
+                packets += int(receiver.get("packets") or 0)
+            if found_video:
+                return str(producer.get("id") or "producer"), packets
+        return None
+
+    def probe(self, repository: Any) -> dict[str, ProbeResult]:
+        started = time.monotonic()
+        try:
+            runtime = json.loads(_request("GET", "/api/streams"))
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("go2rtc returned invalid stream state") from exc
+        if not isinstance(runtime, dict):
+            raise RuntimeError("go2rtc returned invalid stream state")
+        latency_ms = round((time.monotonic() - started) * 1000)
+        sources = repository.managed_stream_sources(role_bound_only=True)
+        active_ids = {str(source["stream_uuid"]) for source in sources}
+        results: dict[str, ProbeResult] = {}
+        for source in sources:
+            stream_uuid = str(source["stream_uuid"])
+            stream = runtime.get(source["stream_key"])
+            consumers = stream.get("consumers") if isinstance(stream, dict) else None
+            if not consumers:
+                self._video_samples.pop(stream_uuid, None)
+                results[stream_uuid] = ProbeResult("idle", latency_ms)
+                continue
+            current = self._active_video_sample(stream)
+            if current is None or current[1] <= 0:
+                self._video_samples.pop(stream_uuid, None)
+                results[stream_uuid] = ProbeResult("unavailable", latency_ms)
+                continue
+            previous = self._video_samples.get(stream_uuid)
+            self._video_samples[stream_uuid] = current
+            advancing = previous is None or previous[0] != current[0] or current[1] > previous[1]
+            results[stream_uuid] = ProbeResult(
+                "ready" if advancing else "unavailable",
+                latency_ms,
+            )
+        for stream_uuid in set(self._video_samples) - active_ids:
+            self._video_samples.pop(stream_uuid, None)
+        repository.record_probe_results(results)
+        return results
+
+
 def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     parsed = urllib.parse.urlsplit(uri)
     if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.hostname:

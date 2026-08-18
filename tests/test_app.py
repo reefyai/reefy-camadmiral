@@ -216,7 +216,7 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         untouched.assert_not_called()
 
     def test_notification_update_requires_action_header(self) -> None:
-        request = app_module.NotificationSettingsRequest(enabled=False)
+        request = app_module.NotificationSettingsRequest()
         with self.assertRaises(app_module.HTTPException) as raised:
             app_module.update_notification_settings(request, None)
         self.assertEqual(raised.exception.status_code, 400)
@@ -255,6 +255,38 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         self.assertNotIn("telegram_bot_token", payload)
         self.assertNotIn("synthetic-bot-token-value", response.body.decode())
         repository.save_telegram_settings.assert_called_once()
+        self.assertTrue(repository.save_telegram_settings.call_args.kwargs["enabled"])
+
+    def test_existing_clients_cannot_disable_configured_telegram_alerts(self) -> None:
+        repository = Mock()
+        repository.notification_credentials.return_value = {
+            "bot_token": "123456:synthetic-bot-token-value",
+            "chat_id": "100200300",
+        }
+        repository.notification_settings.return_value = {
+            "provider": "telegram",
+            "enabled": True,
+            "bot_configured": True,
+            "bot_username": "synthetic_alert_bot",
+            "connection_status": "connected",
+            "destination": "Synthetic operator",
+            "last_delivery": None,
+        }
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.update_notification_settings(
+                app_module.NotificationSettingsRequest(enabled=False),
+                "update-notification-settings",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.save_telegram_settings.assert_called_once_with(
+            enabled=True,
+            bot_token=None,
+            bot_id=None,
+            bot_username=None,
+            pairing_token=None,
+            pairing_expires_at=None,
+        )
 
     def test_bot_with_existing_webhook_is_rejected_without_modifying_it(self) -> None:
         repository = Mock()

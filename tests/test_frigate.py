@@ -216,21 +216,30 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
 
-    def test_missed_hot_add_is_replayed_until_camera_process_exists(self) -> None:
+    def test_missed_hot_add_waits_without_starting_duplicate_workers(self) -> None:
         self.client.drop_add_events = 1
         factory = lambda _target: self.client
 
         first = reconcile_frigate(self.repository, self.target, client_factory=factory)
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
+        writes_after_first = (len(self.client.config_writes), len(self.client.runtime_writes))
         second = reconcile_frigate(self.repository, self.target, client_factory=factory)
 
         self.assertEqual(first, {"applied": 0, "pending": 1})
         self.assertEqual(binding["status"], "error")
         self.assertEqual(binding["last_error_code"], "camera_start_pending")
-        self.assertEqual(second, {"applied": 1, "pending": 0})
+        self.assertEqual(second, {"applied": 0, "pending": 1})
         key = frigate_camera_key(self.camera_uuid)
         add_topics = [topic for _data, topic in self.client.config_writes if topic and topic.endswith("/add")]
-        self.assertEqual(add_topics, [f"config/cameras/{key}/add"] * 2)
+        self.assertEqual(add_topics, [f"config/cameras/{key}/add"])
+        self.assertEqual(
+            (len(self.client.config_writes), len(self.client.runtime_writes)),
+            writes_after_first,
+        )
+
+        self.client.current_stats[key] = {"camera_fps": 5.0}
+        third = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        self.assertEqual(third, {"applied": 1, "pending": 0})
 
     def test_unknown_existing_key_is_not_claimed_or_modified(self) -> None:
         key = frigate_camera_key(self.camera_uuid)

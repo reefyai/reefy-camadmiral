@@ -207,6 +207,11 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX notification_outbox_due
         ON notification_outbox(status, next_attempt_at);
     """,
+    """
+    UPDATE notification_settings
+    SET enabled = 1
+    WHERE bot_token_ciphertext IS NOT NULL;
+    """,
 )
 
 
@@ -316,7 +321,9 @@ class CameraRepository:
         states = [
             str(row["health_status"])
             for row in connection.execute(
-                "SELECT health_status FROM managed_streams WHERE camera_uuid = ?",
+                "SELECT DISTINCT s.health_status FROM managed_streams s "
+                "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
+                "WHERE s.camera_uuid = ?",
                 (camera_uuid,),
             )
         ]
@@ -1461,21 +1468,28 @@ class CameraRepository:
             affected_cameras: set[str] = set()
             for stream_uuid, result in results.items():
                 current = connection.execute(
-                    "SELECT camera_uuid, consecutive_failures FROM managed_streams WHERE stream_uuid = ?",
+                    "SELECT camera_uuid, consecutive_failures, health_status "
+                    "FROM managed_streams WHERE stream_uuid = ?",
                     (stream_uuid,),
                 ).fetchone()
                 if current is None:
                     continue
                 affected_cameras.add(str(current["camera_uuid"]))
-                failures = 0 if result.status == "ready" else int(current["consecutive_failures"]) + 1
+                failures = 0 if result.status in {"ready", "idle"} else int(current["consecutive_failures"]) + 1
                 if result.status == "ready":
                     health_status = "healthy"
+                elif result.status == "idle":
+                    health_status = "unknown"
                 elif result.status == "auth_failed":
                     health_status = "auth_failed"
                 elif failures >= 3:
                     health_status = "offline"
-                else:
+                elif failures >= 2:
                     health_status = "degraded"
+                else:
+                    health_status = (
+                        "healthy" if current["health_status"] == "healthy" else "unknown"
+                    )
                 connection.execute(
                     "UPDATE managed_streams SET probe_status=?, probed_at=?, probe_latency_ms=?, "
                     "health_status=?, consecutive_failures=?, "

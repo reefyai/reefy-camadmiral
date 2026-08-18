@@ -32,10 +32,10 @@ from .frigate import (
 )
 from .media import (
     ProbeResult,
+    RelayHealthMonitor,
     SnapshotError,
     go2rtc_websocket_url,
     probe_source,
-    probe_upstreams,
     reconcile_and_probe,
     reconcile_runtime_drift,
     snapshot_frame,
@@ -63,6 +63,7 @@ REPOSITORY: CameraRepository | None = None
 MEDIA_LOCK = threading.Lock()
 FRIGATE_LOCK = threading.Lock()
 SCAN_REQUEST_LOCK = threading.Lock()
+RELAY_HEALTH_MONITOR = RelayHealthMonitor()
 HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "30")))
 RUNTIME_RECONCILE_INTERVAL = max(
     2.0,
@@ -134,7 +135,9 @@ class ExplicitAddressRequest(BaseModel):
 
 
 class NotificationSettingsRequest(BaseModel):
-    enabled: bool
+    # Retained for compatibility with existing clients. Telegram alerts are
+    # enabled whenever a bot is configured, so callers no longer need to send it.
+    enabled: bool = True
     telegram_bot_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
@@ -230,7 +233,7 @@ def _media_health_loop() -> None:
             continue
         try:
             recover_inventory_addresses(repository, INVENTORY)
-            probe_upstreams(repository)
+            RELAY_HEALTH_MONITOR.probe(repository)
             _queue_targeted_recovery_scan(repository)
         except Exception as exc:
             print(f"media: health probe failed ({type(exc).__name__})", flush=True)
@@ -772,13 +775,10 @@ def update_notification_settings(
     credentials = repository.notification_credentials()
     token = request.telegram_bot_token.strip() if request.telegram_bot_token else None
     if token is None and (credentials is None or not credentials.get("bot_token")):
-        if request.enabled:
-            return _secured_json(
-                {"status": "bot_token_required", "message": "Paste a Telegram bot token first."},
-                status_code=422,
-            )
-        repository.save_telegram_settings(enabled=False, bot_token=None)
-        return _secured_json(_notification_settings_payload(repository))
+        return _secured_json(
+            {"status": "bot_token_required", "message": "Paste a Telegram bot token first."},
+            status_code=422,
+        )
 
     bot_id = None
     bot_username = None
@@ -813,7 +813,7 @@ def update_notification_settings(
         else None
     )
     repository.save_telegram_settings(
-        enabled=request.enabled,
+        enabled=True,
         bot_token=token,
         bot_id=bot_id,
         bot_username=bot_username,

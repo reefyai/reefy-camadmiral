@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from camadmiral.media import (
     ProbeResult,
+    RelayHealthMonitor,
     SnapshotError,
     authenticated_rtsp_uri,
     go2rtc_websocket_url,
@@ -18,6 +19,46 @@ from camadmiral.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch("camadmiral.media._request")
+    def test_relay_health_uses_active_video_counters_without_opening_sources(self, request) -> None:
+        runtime = {
+            "stream_active": {
+                "producers": [{
+                    "id": 7,
+                    "bytes_recv": 1000,
+                    "receivers": [{
+                        "codec": {"codec_name": "h264", "codec_type": "video"},
+                        "packets": 20,
+                    }],
+                }],
+                "consumers": [{"id": 9}],
+            },
+            "stream_idle": {
+                "producers": [{"url": "rtsp://synthetic.invalid/idle"}],
+                "consumers": [],
+            },
+        }
+        request.return_value = json.dumps(runtime).encode()
+        repository = Mock()
+        repository.managed_stream_sources.return_value = [
+            {"stream_uuid": "active", "stream_key": "stream_active"},
+            {"stream_uuid": "idle", "stream_key": "stream_idle"},
+        ]
+        monitor = RelayHealthMonitor()
+
+        first = monitor.probe(repository)
+        second = monitor.probe(repository)
+        runtime["stream_active"]["producers"][0]["receivers"][0]["packets"] = 21
+        request.return_value = json.dumps(runtime).encode()
+        third = monitor.probe(repository)
+
+        self.assertEqual(first["active"].status, "ready")
+        self.assertEqual(first["idle"].status, "idle")
+        self.assertEqual(second["active"].status, "unavailable")
+        self.assertEqual(third["active"].status, "ready")
+        repository.managed_stream_sources.assert_called_with(role_bound_only=True)
+        self.assertEqual(request.call_args.args, ("GET", "/api/streams"))
+
     @patch("camadmiral.media.GO2RTC_URL", "http://127.0.0.1:1984")
     def test_live_websocket_url_targets_only_managed_stream(self) -> None:
         self.assertEqual(

@@ -838,15 +838,6 @@
     function renderNotificationSettings(trigger = null, message = "", messageKind = "") {
       const data = notificationSettings || {};
       const form = addText(document.createElement("form"), "form", "settings-form", "");
-      const enabledRow = addText(form, "label", "settings-row", "");
-      const enabledCopy = addText(enabledRow, "span", "settings-copy", "");
-      addText(enabledCopy, "strong", "", "Telegram alerts");
-      addText(enabledCopy, "span", "", "Notify the connected chat when a camera goes offline or recovers.");
-      const enabled = document.createElement("input");
-      enabled.type = "checkbox";
-      enabled.checked = Boolean(data.enabled);
-      enabledRow.append(enabled);
-
       const tokenField = addText(form, "label", "setup-field", data.bot_configured ? "Replace bot token" : "Bot token");
       const tokenControl = addText(tokenField, "span", "password-control", "");
       const token = document.createElement("input");
@@ -906,7 +897,7 @@
         save.disabled = true;
         setText(status, "Checking Telegram bot...");
         status.className = "settings-status";
-        const body = {enabled: enabled.checked};
+        const body = {enabled: true};
         if (token.value.trim()) body.telegram_bot_token = token.value.trim();
         try {
           const response = await fetch("/internal/notification-settings", {
@@ -994,7 +985,12 @@
       if (device.adoption && device.adoption.enabled === false) {
         return {key: "disabled", label: "disabled"};
       }
-      const streams = device.adoption?.streams || [];
+      const adoption = device.adoption;
+      const roleStreams = new Set(Object.values(adoption?.roles || {}));
+      const allStreams = adoption?.streams || [];
+      const streams = roleStreams.size
+        ? allStreams.filter(stream => roleStreams.has(stream.stream_uuid))
+        : allStreams;
       if (!streams.length) {
         const key = device.status === "online" ? "online" : "offline";
         return {key, label: key};
@@ -1004,6 +1000,7 @@
       if (states.every(state => state === "healthy")) return {key: "healthy", label: "healthy"};
       if (states.every(state => state === "offline")) return {key: "offline", label: "offline"};
       if (states.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
+      if (streams.every(stream => stream.probe_status === "idle")) return {key: "checking", label: "idle"};
       return {key: "checking", label: "checking"};
     }
 
@@ -1718,10 +1715,10 @@
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
-          const labels = {healthy: "Healthy", degraded: "Degraded", offline: "Offline", auth_failed: "Authentication failed", unknown: "Media check pending"};
-          const health = managed.health_status || "unknown";
+          const labels = {healthy: "Healthy", degraded: "Degraded", offline: "Offline", auth_failed: "Authentication failed", unknown: "Media check pending", idle: "Idle - waiting for a consumer"};
+          const health = managed.probe_status === "idle" ? "idle" : managed.health_status || "unknown";
           if (managed.consecutive_failures) facts.push(`${managed.consecutive_failures} consecutive failure${managed.consecutive_failures === 1 ? "" : "s"}`);
-          addText(endpoint, "div", `media-state ${health === "healthy" ? "ready" : health === "unknown" ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
+          addText(endpoint, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
       if (adoption?.frigate?.length) {

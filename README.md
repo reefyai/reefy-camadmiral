@@ -55,7 +55,8 @@ its generated key are captured consistently.
 Open **Notifications** in the web UI to connect a dedicated Telegram bot. Create the bot
 with `@BotFather`, paste its token, then use the generated **Open Telegram** link and press
 **Start**. CamAdmiral discovers the destination chat from that one-time pairing message, so
-you do not need to find or enter a numeric chat ID.
+you do not need to find or enter a numeric chat ID. Alerts are enabled automatically when
+the bot is configured and paired.
 
 Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already connected
 to another application and never changes their webhook configuration. The bot token and
