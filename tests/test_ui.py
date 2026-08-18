@@ -86,7 +86,10 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("availability-block", self.html)
         self.assertIn("availability_percent", self.html)
         self.assertIn("Unknown or disabled", self.html)
-        self.assertIn("cursor: default", self.html)
+        self.assertIn('id="availability-tooltip" role="tooltip"', self.html)
+        self.assertIn("showAvailabilityTooltip(block)", self.html)
+        self.assertIn("toggleAvailabilityTooltip(block)", self.html)
+        self.assertNotIn("block.title = description", self.html)
 
     def test_runtime_health_uses_role_streams_without_ambiguous_table_idle(self) -> None:
         self.assertIn("const roleStreams = new Set", self.html)
@@ -100,6 +103,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("addRowAvailability(statusStack, device)", self.html)
         self.assertIn("Recent camera availability", self.html)
         self.assertIn(".row-availability-block:nth-child(-n+2)", self.html)
+        self.assertIn('addText(parent, "button", `${className} ${bucket.state}`', self.html)
+        self.assertIn("row-availability-block.selected", self.html)
 
     def test_incidents_and_telegram_settings_use_compact_shared_modals(self) -> None:
         self.assertIn('id="show-incidents"', self.html)

@@ -160,11 +160,15 @@
     .device-status.offline, .device-status.auth_failed { color: #fda4af; }
     .device-status.offline .status-dot, .device-status.auth_failed .status-dot { background: #fb7185; box-shadow: 0 0 0 4px rgba(251, 113, 133, .09); }
     .row-availability-strip { display: flex; gap: 3px; width: 100%; max-width: 112px; height: 7px; }
-    .row-availability-block { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: #475569; }
+    .row-availability-block {
+      flex: 1 1 0; min-width: 3px; border: 0; border-radius: 2px; padding: 0;
+      appearance: none; background: #475569; cursor: pointer;
+    }
     .row-availability-block.healthy { background: #2dd4bf; }
     .row-availability-block.degraded { background: #fbbf24; }
     .row-availability-block.offline, .row-availability-block.auth_failed { background: #fb7185; }
     .row-availability-block.unknown, .row-availability-block.disabled { background: #475569; }
+    .row-availability-block:hover, .row-availability-block:focus-visible { outline: 1px solid #dce8ee; outline-offset: 1px; }
     .service-note { margin-top: 5px; color: #fbbf24; font-size: 10px; line-height: 1.25; }
     tr.offline .camera-name { color: #a7b4bf; }
     .row-action {
@@ -215,14 +219,21 @@
     .availability-range button.selected { background: rgba(45, 212, 191, .13); color: #8ff8e8; }
     .availability-strip { display: flex; gap: 2px; width: 100%; height: 28px; }
     .availability-block {
-      min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0; cursor: default;
-      background: #475569;
+      min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0;
+      appearance: none; background: #475569; cursor: pointer;
     }
     .availability-block.healthy { background: #2dd4bf; }
     .availability-block.degraded { background: #fbbf24; }
     .availability-block.offline, .availability-block.auth_failed { background: #fb7185; }
     .availability-block.unknown, .availability-block.disabled { background: #475569; }
     .availability-block:hover, .availability-block:focus-visible { outline: 2px solid #dce8ee; outline-offset: 1px; }
+    .availability-block.selected, .row-availability-block.selected { outline: 2px solid #f8fafc; outline-offset: 2px; }
+    .availability-tooltip {
+      position: fixed; z-index: 160; max-width: min(360px, calc(100vw - 16px)); padding: 7px 9px;
+      border: 1px solid rgba(148, 163, 184, .28); border-radius: 7px;
+      background: #122235; color: #e5f2f7; box-shadow: 0 10px 28px rgba(0, 0, 0, .34);
+      pointer-events: none; font-size: 11px; font-weight: 700; line-height: 1.35; white-space: normal;
+    }
     .availability-legend { display: flex; flex-wrap: wrap; gap: 6px 13px; margin-top: 9px; color: #7890a4; font-size: 10px; }
     .availability-key { display: inline-flex; align-items: center; gap: 5px; }
     .availability-key::before { width: 7px; height: 7px; border-radius: 2px; background: #475569; content: ""; }
@@ -547,6 +558,7 @@
       </div>
     </section>
   </div>
+  <div class="availability-tooltip" id="availability-tooltip" role="tooltip" hidden></div>
   <script>
     const scanButton = document.querySelector("#scan");
     const showAddAddress = document.querySelector("#show-add-address");
@@ -589,6 +601,7 @@
     const liveStatus = document.querySelector("#live-status");
     const liveClose = document.querySelector("#live-close");
     const appVersion = document.querySelector("#app-version");
+    const availabilityTooltip = document.querySelector("#availability-tooltip");
     let busy = false;
     let devices = [];
     let lastResultId = null;
@@ -617,6 +630,7 @@
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
+    let pinnedAvailabilityBlock = null;
     let liveSocket = null;
     let liveReconnectTimer = null;
     let liveMediaSource = null;
@@ -652,6 +666,7 @@
 
     function closeAppModal(restoreFocus = true) {
       if (appModal.hidden) return;
+      dismissAvailabilityTooltip();
       if (appModalKind === "manual") addressPanel.hidden = true;
       if (appModalKind === "camera") expandedCandidate = null;
       if (appModalKind === "notifications" && notificationPollTimer) {
@@ -1075,18 +1090,78 @@
     }
 
     function availabilityDescription(bucket) {
-      const start = new Date(bucket.start).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-      const end = new Date(bucket.end).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-      return `${start} to ${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
+      const startDate = new Date(bucket.start);
+      const endDate = new Date(bucket.end);
+      const sameDay = startDate.toDateString() === endDate.toDateString();
+      const start = startDate.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      const end = sameDay
+        ? endDate.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})
+        : endDate.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      return `${start}-${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
+    }
+
+    function positionAvailabilityTooltip(block) {
+      const blockRect = block.getBoundingClientRect();
+      const tooltipRect = availabilityTooltip.getBoundingClientRect();
+      const left = Math.min(
+        Math.max(8, blockRect.left + blockRect.width / 2 - tooltipRect.width / 2),
+        window.innerWidth - tooltipRect.width - 8
+      );
+      let top = blockRect.top - tooltipRect.height - 8;
+      if (top < 8) top = blockRect.bottom + 8;
+      availabilityTooltip.style.left = `${Math.round(left)}px`;
+      availabilityTooltip.style.top = `${Math.round(top)}px`;
+    }
+
+    function showAvailabilityTooltip(block) {
+      const description = block.dataset.availabilityDescription;
+      if (!description) return;
+      setText(availabilityTooltip, description);
+      availabilityTooltip.hidden = false;
+      positionAvailabilityTooltip(block);
+    }
+
+    function hideAvailabilityTooltip() {
+      if (pinnedAvailabilityBlock) return;
+      availabilityTooltip.hidden = true;
+    }
+
+    function dismissAvailabilityTooltip() {
+      pinnedAvailabilityBlock?.classList.remove("selected");
+      pinnedAvailabilityBlock = null;
+      availabilityTooltip.hidden = true;
+    }
+
+    function toggleAvailabilityTooltip(block) {
+      if (pinnedAvailabilityBlock === block) {
+        dismissAvailabilityTooltip();
+        return;
+      }
+      pinnedAvailabilityBlock?.classList.remove("selected");
+      pinnedAvailabilityBlock = block;
+      block.classList.add("selected");
+      showAvailabilityTooltip(block);
     }
 
     function addAvailabilityBlocks(parent, buckets, className) {
       buckets.forEach(bucket => {
-        const block = addText(parent, "span", `${className} ${bucket.state}`, "");
+        const block = addText(parent, "button", `${className} ${bucket.state}`, "");
         const description = availabilityDescription(bucket);
-        block.tabIndex = 0;
-        block.title = description;
+        block.type = "button";
+        block.dataset.availabilityDescription = description;
         block.setAttribute("aria-label", description);
+        block.addEventListener("pointerenter", () => {
+          if (!pinnedAvailabilityBlock || pinnedAvailabilityBlock === block) showAvailabilityTooltip(block);
+        });
+        block.addEventListener("pointerleave", hideAvailabilityTooltip);
+        block.addEventListener("focus", () => {
+          if (!pinnedAvailabilityBlock || pinnedAvailabilityBlock === block) showAvailabilityTooltip(block);
+        });
+        block.addEventListener("blur", hideAvailabilityTooltip);
+        block.addEventListener("click", event => {
+          event.stopPropagation();
+          toggleAvailabilityTooltip(block);
+        });
       });
     }
 
@@ -2140,6 +2215,7 @@
     }
 
     function renderRows() {
+      dismissAvailabilityTooltip();
       const query = searchInput.value.trim().toLocaleLowerCase();
       const visible = devices.filter(device => matchesSearch(device, query));
       visible.sort((left, right) => {
@@ -2356,10 +2432,16 @@
     });
     document.addEventListener("keydown", event => {
       if (event.key !== "Escape") return;
-      if (!confirmModal.hidden) closeConfirmation();
+      if (!availabilityTooltip.hidden) dismissAvailabilityTooltip();
+      else if (!confirmModal.hidden) closeConfirmation();
       else if (!liveModal.hidden) closeLiveView();
       else if (!appModal.hidden) closeAppModal();
     });
+    document.addEventListener("click", event => {
+      if (!event.target.closest(".availability-block, .row-availability-block")) dismissAvailabilityTooltip();
+    });
+    window.addEventListener("resize", dismissAvailabilityTooltip);
+    document.addEventListener("scroll", dismissAvailabilityTooltip, true);
     window.addEventListener("pagehide", closeLiveView);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && !liveModal.hidden) closeLiveView();
