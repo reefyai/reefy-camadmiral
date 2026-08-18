@@ -37,6 +37,20 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn('raise ScenarioFailure(f"Snapshot returned HTTP {status}")', scenarios)
 
+    def test_e2e_recovery_retries_without_frigate_contention(self) -> None:
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+
+        self.assertIn('CAMADMIRAL_RECOVERY_RETRY_INTERVAL: "60"', compose)
+        self.assertIn('run("stop", "frigate-api-proxy", "frigate")', runner)
+        self.assertIn('run("logs", "--no-color", "--tail", "200", "camadmiral"', runner)
+        self.assertIn(
+            'wait_for("validated camera address promotion", moved, timeout=180)',
+            scenarios,
+        )
+        self.assertIn("last observation=", scenarios)
+
 
 if __name__ == "__main__":
     unittest.main()

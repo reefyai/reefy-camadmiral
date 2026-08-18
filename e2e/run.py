@@ -51,6 +51,7 @@ def main() -> int:
         scenario("baseline")
         run("up", "--detach", "frigate", "frigate-api-proxy")
         scenario("frigate")
+        run("stop", "frigate-api-proxy", "frigate")
 
         run("exec", "-T", "camadmiral", "python", "/e2e/faults.py", "delete-managed-stream")
         scenario("runtime-drift")
@@ -99,6 +100,13 @@ def main() -> int:
         scenario("credential-repair")
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"CamAdmiral E2E failed: {exc}", file=sys.stderr)
+        try:
+            logs = run("logs", "--no-color", "--tail", "200", "camadmiral", capture=True)
+        except (OSError, subprocess.CalledProcessError):
+            logs = ""
+        if logs:
+            print("Recent CamAdmiral logs:", file=sys.stderr)
+            print(logs, file=sys.stderr)
         if keep:
             print("CAMADMIRAL_E2E_KEEP=1, leaving the isolated lab running", file=sys.stderr)
         return 1

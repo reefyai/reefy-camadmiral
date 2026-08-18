@@ -232,7 +232,14 @@ def _media_health_loop() -> None:
         if repository is None or not MEDIA_LOCK.acquire(blocking=False):
             continue
         try:
-            recover_inventory_addresses(repository, INVENTORY)
+            recovery_results = recover_inventory_addresses(repository, INVENTORY)
+            for result in recovery_results:
+                print(
+                    "media: address recovery "
+                    f"camera={result.camera_uuid} status={result.status} "
+                    f"from={result.previous_address} to={result.current_address}",
+                    flush=True,
+                )
             RELAY_HEALTH_MONITOR.probe(repository)
             _queue_targeted_recovery_scan(repository)
         except Exception as exc:

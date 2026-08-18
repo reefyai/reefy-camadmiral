@@ -10,6 +10,7 @@ services:
     entrypoint: ["/bin/sh", "/e2e/start-camadmiral.sh"]
     environment:
       CAMADMIRAL_HEALTH_INTERVAL: "10"
+      CAMADMIRAL_RECOVERY_RETRY_INTERVAL: "60"
       CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
     volumes:
       - camadmiral-data:/var/lib/camadmiral

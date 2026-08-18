@@ -3,7 +3,7 @@ name: camadmiral
 services:
   camadmiral:
     build: .
-    image: ghcr.io/reefyai/reefy-camadmiral:v2026.08.18-03
+    image: ghcr.io/reefyai/reefy-camadmiral:v2026.08.18-04
     network_mode: host
     restart: unless-stopped
     read_only: true

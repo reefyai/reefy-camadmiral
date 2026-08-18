@@ -665,18 +665,38 @@ def container_restart() -> None:
 def address_recovery() -> None:
     wait_for_open_camera_sources("camera-open-moved")
     state = load_state()
+    observation: dict[str, object] = {}
 
     def moved() -> bool:
         device = discovery_device("candidate-open")
         adoption = device.get("adoption") if device else None
         streams = adoption.get("streams", []) if adoption else []
+        observation.clear()
+        observation.update(
+            {
+                "candidate_ip": device.get("ip") if device else None,
+                "candidate_status": device.get("status") if device else None,
+                "streams": [
+                    {
+                        "host": urllib.parse.urlsplit(stream.get("uri", "")).hostname,
+                        "health": stream.get("health_status"),
+                    }
+                    for stream in streams
+                ],
+            }
+        )
         return bool(streams) and all(
             urllib.parse.urlsplit(stream.get("uri", "")).hostname == "172.30.0.12"
             and stream.get("health_status") == "healthy"
             for stream in streams
         )
 
-    wait_for("validated camera address promotion", moved, timeout=120)
+    try:
+        wait_for("validated camera address promotion", moved, timeout=180)
+    except ScenarioFailure as exc:
+        raise ScenarioFailure(
+            f"{exc}; last observation={json.dumps(observation, sort_keys=True)}"
+        ) from exc
     assert_stable(state)
     print("address-recovery: upstream moved while downstream identities stayed stable")
 
