@@ -39,6 +39,15 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn('raise ScenarioFailure(f"Snapshot returned HTTP {status}")', scenarios)
 
+    def test_e2e_requires_periodic_cache_only_thumbnail(self) -> None:
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+
+        self.assertIn(
+            'wait_for("periodic cached camera thumbnail", valid_thumbnail, timeout=60, interval=1)',
+            scenarios,
+        )
+        self.assertIn("/thumbnail.jpg", scenarios)
+
     def test_e2e_recovery_retries_without_frigate_contention(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()

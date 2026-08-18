@@ -56,6 +56,7 @@ app = FastAPI(
 )
 
 INDEX = Path(__file__).with_name("index.html")
+ICON = Path(__file__).parents[1] / "reefy" / "icon.png"
 SCAN_REQUEST = Path("/run/camadmiral/scan-request.json")
 SCAN_STATE = Path("/run/camadmiral/scan-state.json")
 INVENTORY = settings().storage.inventory
@@ -989,6 +990,16 @@ def index() -> FileResponse:
     )
 
 
+@app.get("/app-icon.png", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+def app_icon() -> FileResponse:
+    return FileResponse(
+        ICON,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.get("/internal/status", include_in_schema=False)
 def internal_status() -> JSONResponse:
     return _secured_json(snapshot())
@@ -1018,17 +1029,28 @@ def media_access(
     )
 
 
-def _snapshot_response(content: bytes = b"", *, status_code: int = 200) -> Response:
+def _snapshot_response(
+    content: bytes = b"",
+    *,
+    status_code: int = 200,
+    captured_at: float | None = None,
+) -> Response:
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+    }
+    if captured_at is not None:
+        headers["X-CamAdmiral-Captured-At"] = datetime.fromtimestamp(
+            captured_at,
+            timezone.utc,
+        ).isoformat()
     return Response(
         content=content,
         status_code=status_code,
         media_type="image/jpeg" if status_code == 200 else None,
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Security-Policy": "default-src 'none'",
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-        },
+        headers=headers,
     )
 
 
@@ -1043,9 +1065,21 @@ def camera_snapshot(camera_uuid: str) -> Response:
     if stream is None:
         return _snapshot_response(status_code=404)
     try:
-        return _snapshot_response(snapshot_frame(stream["stream_key"]))
+        frame = RELAY_HEALTH_MONITOR.cache_frame(
+            camera_uuid,
+            snapshot_frame(stream["stream_key"]),
+        )
+        return _snapshot_response(frame.content, captured_at=frame.captured_at)
     except SnapshotError:
         return _snapshot_response(status_code=503)
+
+
+@app.get("/internal/cameras/{camera_uuid}/thumbnail.jpg", include_in_schema=False)
+def camera_thumbnail(camera_uuid: str) -> Response:
+    frame = RELAY_HEALTH_MONITOR.cached_frame(camera_uuid)
+    if frame is None:
+        return _snapshot_response(status_code=404)
+    return _snapshot_response(frame.content, captured_at=frame.captured_at)
 
 
 def _same_websocket_origin(websocket: WebSocket) -> bool:

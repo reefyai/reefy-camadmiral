@@ -50,6 +50,12 @@ The complete persistent state boundary is `/var/lib/camadmiral`. Back up and res
 volume as a unit. Stop CamAdmiral before making a raw volume copy so the SQLite database and
 its generated key are captured consistently.
 
+CamAdmiral checks streams already in use from go2rtc's runtime counters and periodically asks
+go2rtc for one small JPEG frame per camera. For an idle camera, that bounded request briefly
+opens the source, validates decodable video, refreshes the in-memory table thumbnail, and
+disconnects. An active camera reuses its existing upstream connection. Loading the web UI
+reads only this cache and never opens a camera stream.
+
 ## Telegram notifications
 
 Open **Notifications** in the web UI to connect a dedicated Telegram bot. Create the bot

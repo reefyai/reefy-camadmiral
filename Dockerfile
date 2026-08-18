@@ -38,6 +38,7 @@ COPY --from=go2rtc /go2rtc /usr/local/bin/go2rtc
 COPY go2rtc.yaml /etc/camadmiral/go2rtc.yaml
 COPY VERSION ./VERSION
 COPY camadmiral ./camadmiral
+COPY reefy/icon.png ./reefy/icon.png
 
 ENV CAMADMIRAL_CHECKPOINT=downstream-preview \
     CAMADMIRAL_REVISION=${CHECKPOINT_REVISION} \

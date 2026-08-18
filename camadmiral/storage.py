@@ -1521,13 +1521,19 @@ class CameraRepository:
                 )
                 if result.status == "ready":
                     connection.execute(
-                        "UPDATE managed_streams SET video_codec=?, audio_codec=?, probed_width=?, "
-                        "probed_height=?, probed_fps=? WHERE stream_uuid=?",
+                        "UPDATE managed_streams SET video_codec=COALESCE(?, video_codec), "
+                        "audio_codec=COALESCE(?, audio_codec), "
+                        "probed_width=CASE WHEN ?>0 THEN ? ELSE probed_width END, "
+                        "probed_height=CASE WHEN ?>0 THEN ? ELSE probed_height END, "
+                        "probed_fps=CASE WHEN ?>0 THEN ? ELSE probed_fps END WHERE stream_uuid=?",
                         (
                             result.video_codec,
                             result.audio_codec,
                             result.width,
+                            result.width,
                             result.height,
+                            result.height,
+                            result.fps,
                             result.fps,
                             stream_uuid,
                         ),

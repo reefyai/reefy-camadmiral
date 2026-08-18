@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CamAdmiral</title>
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="apple-touch-icon" href="/app-icon.png">
   <style>
     :root {
       color-scheme: dark;
@@ -24,18 +26,25 @@
       color: #60798e; font-size: 12px; text-align: center;
     }
     header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 34px 0 24px; }
+    .app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .app-brand img {
+      width: 48px; height: 48px; flex: none; border-radius: 11px; background: #fff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+    }
     h1 { margin: 0; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.045em; }
     button { font: inherit; }
     #scan {
-      border: 0; border-radius: 11px; padding: 11px 17px; background: #2dd4bf; color: #06201e;
+      border: 0; border-radius: 9px; padding: 9px 13px; background: #2dd4bf; color: #06201e;
       font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(45, 212, 191, .16);
     }
     #scan:hover { background: #5eead4; }
     #scan:disabled { cursor: wait; opacity: .6; }
-    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+    .utility-actions, .scan-actions { display: flex; align-items: center; gap: 6px; }
+    .scan-actions { padding-left: 10px; border-left: 1px solid rgba(148, 163, 184, .14); }
     .header-secondary {
-      border: 1px solid rgba(148, 163, 184, .22); border-radius: 11px; padding: 10px 14px;
-      background: rgba(12, 26, 42, .72); color: #b8c7d0; font-weight: 750; cursor: pointer;
+      border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
+      background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
     }
     .header-secondary:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
     .incident-count {
@@ -51,7 +60,7 @@
     .settings-actions { display: flex; gap: 9px; flex-wrap: wrap; }
     .settings-status { min-height: 18px; color: #8ea2b3; font-size: 12px; }
     .settings-status.error { color: #fda4af; }
-    .settings-status.success { color: #75f4e2; }
+    .settings-status.success { color: #86efac; }
     .connect-card {
       display: grid; gap: 10px; padding: 13px; border: 1px solid rgba(45, 212, 191, .2);
       border-radius: 10px; background: rgba(45, 212, 191, .05);
@@ -63,7 +72,7 @@
     }
     .incident-camera { color: #e0eaf0; font-weight: 750; overflow-wrap: anywhere; }
     .incident-state { color: #fb7185; font-size: 11px; font-weight: 800; text-transform: uppercase; }
-    .incident-state.resolved { color: #75f4e2; }
+    .incident-state.resolved { color: #86efac; }
     .incident-meta { grid-column: 1 / -1; color: #7890a4; font-size: 11px; }
     .address-panel {
       display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
@@ -76,7 +85,7 @@
     .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
     .scan-state { display: flex; align-items: center; gap: 10px; font-weight: 700; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
-    .dot.ready { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45, 212, 191, .1); }
+    .dot.ready { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
     .dot.error { background: #fb7185; box-shadow: 0 0 0 4px rgba(251, 113, 133, .1); }
     @keyframes pulse { 50% { opacity: .35; } }
@@ -86,13 +95,13 @@
     .scanner-state { display: inline-flex; align-items: center; gap: 6px; color: #8ea2b3; font-size: 12px; }
     .scanner-dot { width: 6px; height: 6px; border-radius: 50%; background: #64748b; }
     .scanner-state.running .scanner-dot { background: #fbbf24; }
-    .scanner-state.complete .scanner-dot { background: #2dd4bf; }
+    .scanner-state.complete .scanner-dot { background: #22c55e; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
     .scan-details-trigger {
-      display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px;
-      border: 1px solid rgba(148, 163, 184, .18); border-radius: 10px; padding: 8px 11px;
-      background: rgba(12, 26, 42, .72); color: #91a5b5; font-size: 12px; font-weight: 750; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px;
+      border: 0; border-radius: 8px; padding: 7px 8px;
+      background: transparent; color: #7890a4; font-size: 11px; font-weight: 750; cursor: pointer;
     }
     .scan-details-trigger:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
     .scan-dialog-content { min-width: 0; }
@@ -122,13 +131,13 @@
       overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
     }
-    table { width: 100%; min-width: 980px; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; min-width: 720px; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 13px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid rgba(148, 163, 184, .11); }
     th { color: #7890a4; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     tbody tr:last-child td { border-bottom: 0; }
     tbody tr:hover { background: rgba(30, 56, 76, .3); }
-    .camera-row { height: 68px; }
-    .camera-row td { height: 68px; overflow: hidden; }
+    .camera-row { height: 76px; }
+    .camera-row td { height: 76px; overflow: hidden; }
     .cell-stack { min-width: 0; max-height: 43px; overflow: hidden; }
     .clipped-text {
       display: block; min-width: 0; max-width: 100%; overflow: hidden;
@@ -146,11 +155,34 @@
     .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
     .adopted-label { color: #75f4e2; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
+    .connectivity-cell { display: grid; gap: 1px; min-width: 0; }
+    .connectivity-line {
+      display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 11px; line-height: 11px;
+    }
+    .connectivity-label { flex: none; color: #60798e; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+    .connectivity-value { flex: 0 1 auto; color: #a9bac6; }
+    .connectivity-value.available { color: #86efac; font-weight: 700; }
+    .preview-cell {
+      position: relative; width: 96px; height: 50px; overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, .14); border-radius: 7px; background: #050b12;
+    }
+    button.preview-cell { padding: 0; color: inherit; cursor: pointer; }
+    button.preview-cell:hover { border-color: rgba(134, 239, 172, .55); }
+    button.preview-cell:focus-visible { outline: 2px solid #22c55e; outline-offset: 2px; }
+    .preview-cell img {
+      position: relative; z-index: 1; width: 100%; height: 100%; display: block;
+      object-fit: cover; opacity: 0;
+    }
+    .preview-cell img.ready { opacity: 1; }
+    .preview-placeholder {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      color: #60798e; font-size: 10px; font-weight: 700;
+    }
     .status-stack { display: grid; gap: 7px; min-width: 0; }
     .device-status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; text-transform: capitalize; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-    .device-status.online, .device-status.healthy { color: #75f4e2; }
-    .device-status.online .status-dot, .device-status.healthy .status-dot { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45, 212, 191, .09); }
+    .device-status.online, .device-status.healthy { color: #86efac; }
+    .device-status.online .status-dot, .device-status.healthy .status-dot { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .device-status.degraded { color: #fcd34d; }
     .device-status.degraded .status-dot { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .09); }
     .device-status.checking { color: #a9bac6; }
@@ -164,7 +196,7 @@
       flex: 1 1 0; min-width: 3px; border: 0; border-radius: 2px; padding: 0;
       appearance: none; background: #475569; cursor: pointer;
     }
-    .row-availability-block.healthy { background: #2dd4bf; }
+    .row-availability-block.healthy { background: #22c55e; }
     .row-availability-block.degraded { background: #fbbf24; }
     .row-availability-block.offline, .row-availability-block.auth_failed { background: #fb7185; }
     .row-availability-block.unknown, .row-availability-block.disabled { background: #475569; }
@@ -222,7 +254,7 @@
       min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0;
       appearance: none; background: #475569; cursor: pointer;
     }
-    .availability-block.healthy { background: #2dd4bf; }
+    .availability-block.healthy { background: #22c55e; }
     .availability-block.degraded { background: #fbbf24; }
     .availability-block.offline, .availability-block.auth_failed { background: #fb7185; }
     .availability-block.unknown, .availability-block.disabled { background: #475569; }
@@ -237,7 +269,7 @@
     .availability-legend { display: flex; flex-wrap: wrap; gap: 6px 13px; margin-top: 9px; color: #7890a4; font-size: 10px; }
     .availability-key { display: inline-flex; align-items: center; gap: 5px; }
     .availability-key::before { width: 7px; height: 7px; border-radius: 2px; background: #475569; content: ""; }
-    .availability-key.healthy::before { background: #2dd4bf; }
+    .availability-key.healthy::before { background: #22c55e; }
     .availability-key.degraded::before { background: #fbbf24; }
     .availability-key.offline::before { background: #fb7185; }
     .camera-management {
@@ -265,7 +297,7 @@
     }
     .integration-name { color: #dce8ee; font-size: 12px; font-weight: 750; }
     .integration-state { color: #a9bac6; font-size: 11px; font-weight: 800; }
-    .integration-state.applied { color: #75f4e2; }
+    .integration-state.applied { color: #86efac; }
     .integration-state.error { color: #fcd34d; }
     .integration-help { color: #7890a4; font-size: 11px; line-height: 1.4; }
     .modal-backdrop {
@@ -298,7 +330,14 @@
       position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
       border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px; background: #000;
     }
+    .live-frame:fullscreen { width: 100%; height: 100%; aspect-ratio: auto; border: 0; border-radius: 0; }
     .live-frame video, .live-frame img { width: 100%; height: 100%; display: block; object-fit: contain; }
+    .live-fullscreen {
+      position: absolute; top: 10px; right: 10px; z-index: 3; width: 34px; height: 34px;
+      border: 1px solid rgba(226, 232, 240, .35); border-radius: 8px; background: rgba(3, 10, 18, .7);
+      color: #e2e8f0; cursor: pointer; font-size: 18px; line-height: 1;
+    }
+    .live-fullscreen:hover { background: rgba(15, 30, 45, .9); }
     .live-status {
       position: absolute; inset: 0; display: grid; place-items: center; padding: 18px;
       background: rgba(0, 0, 0, .34); color: #a9bac6; font-size: 13px; text-align: center;
@@ -340,13 +379,16 @@
     .rtsp-setup.manual .rtsp-credentials { margin-top: 2px; }
     .role-label { color: #75f4e2; font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .adoption-progress { display: flex; align-items: center; gap: 9px; color: #fbbf24; font-size: 12px; }
+    .adoption-flow { display: grid; gap: 14px; }
+    .adoption-context { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: #91a5b5; font-size: 12px; }
+    .adoption-prompt { color: #a9bac6; font-size: 13px; line-height: 1.5; }
     .inline-spinner {
       width: 14px; height: 14px; flex: none; border: 2px solid rgba(251, 191, 36, .28);
       border-top-color: #fbbf24; border-radius: 50%; animation: spin .75s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .media-state { margin-top: 4px; color: #7890a4; font: 11px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
-    .media-state.ready { color: #75f4e2; }
+    .media-state.ready { color: #86efac; }
     .media-state.unavailable { color: #fbbf24; }
     .profile-list { display: grid; gap: 9px; }
     .profile {
@@ -371,7 +413,7 @@
     .camera-source summary { color: #7890a4; cursor: pointer; font-size: 11px; }
     .camera-source summary:hover { color: #b9fff5; }
     .camera-source .endpoint { margin-top: 5px; color: #91a5b5; }
-    .rtsp-available { color: #75f4e2; font-weight: 700; }
+    .rtsp-available { color: #86efac; font-weight: 700; }
     .empty {
       padding: 76px 24px; border: 1px dashed rgba(148, 163, 184, .2); border-radius: 15px;
       color: #8298aa; text-align: center;
@@ -386,9 +428,15 @@
       main { padding-bottom: 28px; }
       header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 22px 0 16px; }
       h1 { font-size: 32px; }
-      .header-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); width: 100%; gap: 8px; }
-      .header-actions > button { width: 100%; min-width: 0; padding: 10px 8px; font-size: 12px; }
-      .scan-details-trigger { grid-column: 1 / -1; width: 100%; min-height: 34px; padding: 7px 10px; }
+      .header-actions { display: grid; width: 100%; gap: 8px; }
+      .utility-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+      .utility-actions > button { width: 100%; min-width: 0; padding: 8px 5px; font-size: 11px; }
+      .scan-actions {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px;
+        padding: 0; border: 0;
+      }
+      .scan-details-trigger { justify-content: flex-start; width: 100%; min-height: 34px; padding: 7px 8px; }
+      #scan { padding: 9px 13px; font-size: 12px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
       .scanner-progress { flex-wrap: wrap; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
@@ -405,10 +453,10 @@
       thead { display: none; }
       tbody { display: grid; gap: 10px; }
       tbody tr.camera-row {
-        display: grid; grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-areas: "identity action" "status action";
+        display: grid; grid-template-columns: 78px minmax(0, 1fr) auto;
+        grid-template-areas: "preview identity action" "preview status action";
         height: 112px; min-height: 112px; max-height: 112px; overflow: hidden;
-        column-gap: 12px; row-gap: 8px; border: 1px solid rgba(148, 163, 184, .15);
+        column-gap: 10px; row-gap: 8px; border: 1px solid rgba(148, 163, 184, .15);
         border-radius: 12px; padding: 13px 14px; background: rgba(12, 26, 42, .76);
         box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
       }
@@ -416,8 +464,11 @@
       tbody tr.camera-row td { height: auto; border: 0; padding: 0; }
       tbody tr.camera-row td:nth-child(1) { grid-area: identity; min-width: 0; }
       tbody tr.camera-row td:nth-child(2) { grid-area: status; }
-      tbody tr.camera-row td:nth-child(n+3):nth-child(-n+6) { display: none; }
-      tbody tr.camera-row td:nth-child(7) { grid-area: action; align-self: center; }
+      tbody tr.camera-row td:nth-child(3) { display: block; grid-area: preview; align-self: center; }
+      tbody tr.camera-row td:nth-child(4) { display: none; }
+      tbody tr.camera-row td:nth-child(5) { grid-area: action; align-self: center; }
+      .preview-cell { width: 78px; height: 58px; }
+      .camera-model { display: none; }
       .cell-stack { max-height: 63px; }
       .camera-mobile-ip { display: block; }
       .row-availability-strip { max-width: 94px; }
@@ -460,13 +511,20 @@
 <body>
   <div class="shell">
     <header>
-      <h1>CamAdmiral</h1>
+      <div class="app-brand">
+        <img src="/app-icon.png" alt="" width="48" height="48" aria-hidden="true">
+        <h1>CamAdmiral</h1>
+      </div>
       <div class="header-actions">
-        <button class="header-secondary" id="show-incidents" type="button" aria-haspopup="dialog">Incidents<span class="incident-count" id="incident-count" hidden>0</span></button>
-        <button class="header-secondary" id="show-notifications" type="button" aria-haspopup="dialog">Notifications</button>
-        <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera manually</button>
-        <button id="scan" type="button">Scan network</button>
-        <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
+        <div class="utility-actions">
+          <button class="header-secondary" id="show-incidents" type="button" aria-haspopup="dialog">Incidents<span class="incident-count" id="incident-count" hidden>0</span></button>
+          <button class="header-secondary" id="show-notifications" type="button" aria-haspopup="dialog">Notifications</button>
+          <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
+        </div>
+        <div class="scan-actions">
+          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
+          <button id="scan" type="button">Scan network</button>
+        </div>
       </div>
     </header>
     <main>
@@ -489,17 +547,15 @@
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
           <colgroup>
-            <col style="width: 20%"><col style="width: 13%"><col style="width: 12%"><col style="width: 16%">
-            <col style="width: 17%"><col style="width: 7%"><col style="width: 15%">
+            <col style="width: 22%"><col style="width: 16%"><col style="width: 17%">
+            <col style="width: 27%"><col style="width: 18%">
           </colgroup>
           <thead>
             <tr>
               <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
               <th><button class="sort" type="button" data-sort="status">Status <span class="sort-arrow"></span></button></th>
-              <th><button class="sort" type="button" data-sort="ip">IP address <span class="sort-arrow"></span></button></th>
-              <th><button class="sort" type="button" data-sort="mac">MAC <span class="sort-arrow"></span></button></th>
-              <th><button class="sort" type="button" data-sort="onvif">ONVIF <span class="sort-arrow"></span></button></th>
-              <th><button class="sort" type="button" data-sort="rtsp">RTSP <span class="sort-arrow"></span></button></th>
+              <th>Recent view</th>
+              <th>Connectivity</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -551,9 +607,10 @@
       </div>
       <div class="modal-body">
         <div class="live-frame">
-        <video id="live-video" aria-label="Live camera view" autoplay muted playsinline controls></video>
+        <video id="live-video" aria-label="Live camera view" autoplay muted playsinline></video>
         <img id="live-fallback" alt="Live camera view" hidden>
         <div class="live-status" id="live-status">Connecting to camera...</div>
+        <button class="live-fullscreen" id="live-fullscreen" type="button" aria-label="Open fullscreen" title="Open fullscreen">⛶</button>
         </div>
       </div>
     </section>
@@ -599,6 +656,7 @@
     const liveVideo = document.querySelector("#live-video");
     const liveFallback = document.querySelector("#live-fallback");
     const liveStatus = document.querySelector("#live-status");
+    const liveFullscreen = document.querySelector("#live-fullscreen");
     const liveClose = document.querySelector("#live-close");
     const appVersion = document.querySelector("#app-version");
     const availabilityTooltip = document.querySelector("#availability-tooltip");
@@ -668,7 +726,7 @@
       if (appModal.hidden) return;
       dismissAvailabilityTooltip();
       if (appModalKind === "manual") addressPanel.hidden = true;
-      if (appModalKind === "camera") expandedCandidate = null;
+      if (["camera", "adopt"].includes(appModalKind)) expandedCandidate = null;
       if (appModalKind === "notifications" && notificationPollTimer) {
         clearTimeout(notificationPollTimer);
         notificationPollTimer = null;
@@ -989,22 +1047,8 @@
       return cell;
     }
 
-    function addEndpoints(cell, values) {
-      values.forEach(value => {
-        addClippedText(cell, "div", "endpoint", value);
-      });
-    }
-
-    function ipNumber(value) {
-      return value.split(".").reduce((result, part) => result * 256 + Number(part), 0);
-    }
-
     function sortValue(device, key) {
-      if (key === "ip") return ipNumber(device.ip);
-      if (key === "mac") return device.mac || "";
       if (key === "status") return ({healthy: 0, online: 1, checking: 2, degraded: 3, auth_failed: 4, offline: 5})[cameraHealth(device).key] ?? 6;
-      if (key === "onvif") return device.onvif ? 1 : 0;
-      if (key === "rtsp") return device.rtsp?.length || 0;
       return (device.display_name || device.ip).toLocaleLowerCase();
     }
 
@@ -1091,7 +1135,7 @@
 
     function availabilityColor(state) {
       return ({
-        healthy: "#2dd4bf",
+        healthy: "#22c55e",
         degraded: "#fbbf24",
         offline: "#fb7185",
         auth_failed: "#fb7185",
@@ -1941,10 +1985,69 @@
         const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
         addFrigateStatus(integrations, adoption);
       }
-      if (!result.adoption && !device.adoption) {
-        const connect = addDetailSection(wrapper, "Adopt camera");
-        addAdoptionForm(connect, device, false);
+      return wrapper;
+    }
+
+    function discoveredCameraDetails(device) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "camera-details";
+      addCameraSummary(wrapper, device);
+      const discovery = addDetailSection(wrapper, "Discovery");
+      const methods = [];
+      if (device.onvif?.service_urls?.length) methods.push("ONVIF");
+      if (device.rtsp?.length) methods.push("RTSP");
+      addText(
+        discovery,
+        "div",
+        "detail-message",
+        methods.length
+          ? `${methods.join(" and ")} connectivity was found. This camera has not been adopted.`
+          : "This device has not exposed ONVIF or RTSP connectivity yet."
+      );
+      return wrapper;
+    }
+
+    function adoptionDetails(device) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "adoption-flow";
+      const context = addText(wrapper, "div", "adoption-context", "");
+      addText(context, "span", "mono", device.ip || "IP unavailable");
+      if (device.onvif?.service_urls?.length) addText(context, "span", "protocol-badge", "ONVIF");
+      if (device.rtsp?.length) addText(context, "span", "protocol-badge", "RTSP");
+
+      const progress = adoptionProgress.get(device.candidate_uuid);
+      if (progress) {
+        addAdoptionProgress(wrapper, progress);
+        return wrapper;
       }
+
+      const result = inspections.get(device.candidate_uuid);
+      if (!result || result.status === "loading" || result.status === "adopting") {
+        addAdoptionProgress(wrapper, "Checking camera connectivity...");
+        return wrapper;
+      }
+
+      if (["ok", "adopted"].includes(result.status)) {
+        addText(wrapper, "div", "adoption-prompt", "The camera is ready to adopt.");
+        addAdoptionForm(wrapper, device, false);
+        return wrapper;
+      }
+      if (result.status === "credentials_required") {
+        addText(wrapper, "div", "adoption-prompt", "Enter the camera credentials to continue.");
+        addAdoptionForm(wrapper, device, true);
+        return wrapper;
+      }
+      if (result.status === "not_onvif" && device.rtsp?.length) {
+        addText(wrapper, "div", "adoption-prompt", "Set up this camera using RTSP.");
+        addRtspAdoptionForm(wrapper, device);
+        return wrapper;
+      }
+
+      const messages = {
+        offline: "Camera is offline. Bring it online and try again.",
+        no_profiles: "The camera did not report any ONVIF media profiles."
+      };
+      addText(wrapper, "div", "setup-status error", messages[result.status] || result.message || "Camera inspection failed.");
       return wrapper;
     }
 
@@ -2178,6 +2281,7 @@
             device.display_name = draft.displayName;
             credentialDrafts.delete(device.candidate_uuid);
             inspections.set(device.candidate_uuid, result);
+            closeAppModal(false);
             renderRows();
             return;
           }
@@ -2214,6 +2318,7 @@
           device.adoption = result.adoption;
           credentialDrafts.delete(candidateId);
           inspections.set(candidateId, result);
+          closeAppModal(false);
           renderRows();
           return;
         }
@@ -2239,37 +2344,47 @@
     }
 
     function renderActiveCameraModal() {
-      if (appModalKind !== "camera" || !expandedCandidate) return;
+      if (!["camera", "adopt"].includes(appModalKind) || !expandedCandidate) return;
       const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
       if (!device) {
         closeAppModal(false);
         return;
       }
-      const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
+      const title = appModalKind === "adopt"
+        ? `Adopt ${device.display_name || device.ip}`
+        : (device.display_name || device.ip);
       appModalTitle.textContent = title;
       appModalTitle.title = title;
-      appModalBody.replaceChildren(inspectionDetails(device));
+      appModalBody.replaceChildren(
+        appModalKind === "adopt"
+          ? adoptionDetails(device)
+          : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
+      );
     }
 
-    async function openCameraDetails(device, trigger = null) {
+    function openCameraDetails(device, trigger = null) {
       const candidateId = device.candidate_uuid;
       if (!candidateId) return;
       expandedCandidate = candidateId;
-      if (!inspections.has(candidateId) && !device.adoption) {
-        inspections.set(candidateId, {status: "loading"});
-      }
-      const title = device.adoption ? (device.display_name || device.ip) : `Adopt ${device.display_name || device.ip}`;
-      openAppModal("camera", title, inspectionDetails(device), trigger, "wide");
+      const title = device.display_name || device.ip;
+      const content = device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device);
+      openAppModal("camera", title, content, trigger, "wide");
       if (device.adoption?.camera_uuid) loadCameraAvailability(device);
-      if (!device.adoption && inspections.get(candidateId)?.status === "loading") {
-        try {
-          const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {
-            method: "POST", headers: {"X-CamAdmiral-Action": "inspect"}
-          });
-          inspections.set(candidateId, await response.json());
-        } catch (error) {
-          inspections.set(candidateId, {status: "error", message: "CamAdmiral is unavailable."});
-        }
+    }
+
+    async function openCameraAdoption(device, trigger = null) {
+      const candidateId = device.candidate_uuid;
+      if (!candidateId || device.adoption) return;
+      expandedCandidate = candidateId;
+      inspections.set(candidateId, {status: "loading"});
+      openAppModal("adopt", `Adopt ${device.display_name || device.ip}`, adoptionDetails(device), trigger, "compact");
+      try {
+        const response = await fetch(`/internal/discovery/${encodeURIComponent(candidateId)}/inspect`, {
+          method: "POST", headers: {"X-CamAdmiral-Action": "inspect"}
+        });
+        inspections.set(candidateId, await response.json());
+      } catch (error) {
+        inspections.set(candidateId, {status: "error", message: "CamAdmiral is unavailable."});
       }
       renderActiveCameraModal();
     }
@@ -2305,20 +2420,51 @@
         addText(statusLabel, "span", "status-dot", "");
         addClippedText(statusLabel, "span", "", status.label);
         addRowAvailability(statusStack, device);
-        addClippedText(addCell(row, "mono"), "span", "", device.ip);
-        addClippedText(addCell(row, "mono"), "span", "", device.mac || "-");
-        const onvif = addCell(row);
-        addEndpoints(onvif, device.onvif?.service_urls || []);
-        if (!device.onvif?.service_urls?.length) addText(onvif, "span", "camera-model", "-");
-        const rtsp = addCell(row);
-        if (device.rtsp?.length) {
-          addText(rtsp, "span", "rtsp-available", "Available");
-        } else {
-          addText(rtsp, "span", "camera-model", "-");
+        const preview = addCell(row);
+        const livePreview = Boolean(device.adoption?.camera_uuid && device.adoption.enabled !== false);
+        const previewCell = addText(preview, livePreview ? "button" : "div", "preview-cell", "");
+        if (livePreview) {
+          previewCell.type = "button";
+          previewCell.setAttribute("aria-haspopup", "dialog");
+          previewCell.setAttribute("aria-label", `Open live view for ${device.display_name || "camera"}`);
+          previewCell.title = "Open live view";
+          previewCell.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
         }
+        const previewPlaceholder = addText(previewCell, "span", "preview-placeholder", device.adoption ? "Waiting for video" : "Not adopted");
+        if (device.adoption?.camera_uuid) {
+          const image = document.createElement("img");
+          image.alt = `Recent view from ${device.display_name || "camera"}`;
+          image.loading = "lazy";
+          image.addEventListener("load", () => {
+            image.classList.add("ready");
+            previewPlaceholder.hidden = true;
+          });
+          image.addEventListener("error", () => {
+            image.classList.remove("ready");
+            previewPlaceholder.hidden = false;
+          });
+          image.src = `/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/thumbnail.jpg`;
+          previewCell.append(image);
+        }
+        const connectivity = addCell(row);
+        const connectivityCell = addText(connectivity, "div", "connectivity-cell", "");
+        [
+          ["IP", device.ip || "-", false],
+          ["MAC", device.mac || "-", false],
+          ["ONVIF", device.onvif?.service_urls?.length ? "Available" : "-", Boolean(device.onvif?.service_urls?.length)],
+          ["RTSP", device.rtsp?.length ? "Available" : "-", Boolean(device.rtsp?.length)]
+        ].forEach(([label, value, available]) => {
+          const line = addText(connectivityCell, "div", "connectivity-line", "");
+          addText(line, "span", "connectivity-label", label);
+          addClippedText(line, "span", `connectivity-value${available ? " available" : ""}`, value);
+        });
         const actions = addCell(row);
-        const actionLabel = device.adoption ? "Details" : "Adopt";
         const actionStack = addText(actions, "div", "action-stack", "");
+        const details = addText(actionStack, "button", "row-action", "Details");
+        details.type = "button";
+        details.setAttribute("aria-haspopup", "dialog");
+        details.disabled = !device.candidate_uuid;
+        details.addEventListener("click", () => openCameraDetails(device, details));
         if (device.adoption?.camera_uuid && device.adoption.enabled !== false) {
           const live = addText(actionStack, "button", "row-action", "Live");
           live.type = "button";
@@ -2327,11 +2473,13 @@
           live.title = "Open live view";
           live.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
         }
-        const action = addText(actionStack, "button", "row-action", actionLabel);
-        action.type = "button";
-        action.setAttribute("aria-haspopup", "dialog");
-        action.disabled = !device.candidate_uuid || (!device.adoption && device.status !== "online");
-        action.addEventListener("click", () => openCameraDetails(device, action));
+        if (!device.adoption) {
+          const adopt = addText(actionStack, "button", "row-action", "Adopt");
+          adopt.type = "button";
+          adopt.setAttribute("aria-haspopup", "dialog");
+          adopt.disabled = !device.candidate_uuid || device.status !== "online";
+          adopt.addEventListener("click", () => openCameraAdoption(device, adopt));
+        }
         cameraRows.append(row);
       });
       tableWrap.hidden = visible.length === 0;
@@ -2480,6 +2628,11 @@
       if (event.target === confirmModal) closeConfirmation();
     });
     liveClose.addEventListener("click", closeLiveView);
+    liveFullscreen.addEventListener("click", () => {
+      const frame = liveFullscreen.closest(".live-frame");
+      if (frame.requestFullscreen) frame.requestFullscreen().catch(() => {});
+      else if (liveVideo.webkitEnterFullscreen) liveVideo.webkitEnterFullscreen();
+    });
     liveVideo.addEventListener("playing", () => {
       liveModal.dataset.transport = "mse-playing";
       liveStatus.hidden = true;

@@ -10,7 +10,7 @@ The isolated Docker Compose lab covers:
 - unauthenticated and authenticated RTSP adoption
 - incorrect camera-credential rejection
 - empirical H.264 metadata and automatic recording/detection role selection
-- snapshots and authenticated stable downstream RTSP URLs
+- periodic cache-only camera thumbnails, snapshots, and authenticated stable downstream RTSP URLs
 - two downstream consumers sharing one physical-camera session
 - reversible camera disable and enable
 - out-of-band managed-stream deletion and automatic runtime-drift repair

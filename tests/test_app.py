@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -59,6 +60,12 @@ class FakeRepository:
 
 
 class DiscoveryDecorationTests(unittest.TestCase):
+    def test_app_icon_is_served_for_header_and_browser_tab(self) -> None:
+        response = app_module.app_icon()
+        self.assertEqual(response.media_type, "image/png")
+        self.assertEqual(Path(response.path), app_module.ICON)
+        self.assertTrue(app_module.ICON.is_file())
+
     def test_index_csp_allows_in_memory_player_media_only(self) -> None:
         response = app_module.index()
         policy = response.headers["content-security-policy"]
@@ -715,7 +722,23 @@ class SnapshotEndpointTests(unittest.TestCase):
         self.assertEqual(response.body, jpeg)
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertIn("x-camadmiral-captured-at", response.headers)
         snapshot.assert_called_once_with("stream_synthetic")
+
+    def test_thumbnail_returns_only_an_already_cached_frame(self) -> None:
+        jpeg = b"\xff\xd8\xffcached\xff\xd9"
+        frame = app_module.RELAY_HEALTH_MONITOR.cache_frame("camera-cached", jpeg)
+
+        response = app_module.camera_thumbnail("camera-cached")
+        missing = app_module.camera_thumbnail("camera-missing-thumbnail")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, jpeg)
+        self.assertEqual(
+            response.headers["x-camadmiral-captured-at"],
+            datetime.fromtimestamp(frame.captured_at, timezone.utc).isoformat(),
+        )
+        self.assertEqual(missing.status_code, 404)
 
     def test_snapshot_does_not_resolve_an_unknown_camera(self) -> None:
         repository = Mock()

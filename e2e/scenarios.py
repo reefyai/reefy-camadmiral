@@ -318,6 +318,29 @@ def assert_snapshot(camera_uuid: str) -> None:
     wait_for("valid camera snapshot", valid_snapshot, timeout=60, interval=1)
 
 
+def assert_periodic_thumbnail(camera_uuid: str) -> None:
+    def valid_thumbnail() -> bool:
+        status, body, headers = request(
+            f"/internal/cameras/{camera_uuid}/thumbnail.jpg", timeout=10
+        )
+        if status == 404:
+            return False
+        captured_at = next(
+            (
+                value for name, value in headers.items()
+                if name.lower() == "x-camadmiral-captured-at"
+            ),
+            "",
+        )
+        if status != 200 or not captured_at:
+            raise ScenarioFailure("Periodic camera thumbnail is unavailable")
+        if not body.startswith(b"\xff\xd8\xff") or not body.endswith(b"\xff\xd9"):
+            raise ScenarioFailure("Periodic camera thumbnail is not a valid JPEG")
+        return True
+
+    wait_for("periodic cached camera thumbnail", valid_thumbnail, timeout=60, interval=1)
+
+
 def assert_all_media(directory: dict[str, object]) -> None:
     for camera in directory.get("cameras", []):
         for stream in camera.get("streams", []):
@@ -514,6 +537,8 @@ def baseline() -> None:
         raise ScenarioFailure("A one-stream camera did not bind both consumer roles")
 
     directory = wait_for_online({OPEN_NAME, AUTH_NAME, ONVIF_NAME})
+    for camera in directory.get("cameras", []):
+        assert_periodic_thumbnail(str(camera["id"]))
     assert_all_media(directory)
     open_camera = camera_by_name(directory, OPEN_NAME)
     auth_camera = camera_by_name(directory, AUTH_NAME)
@@ -569,7 +594,7 @@ def baseline() -> None:
         payload={"enabled": True},
         expected=422,
     )
-    print("baseline: adoption, roles, auth rejection, lifecycle, media, snapshots, fan-out, and alert contracts passed")
+    print("baseline: adoption, roles, auth rejection, lifecycle, media, cached views, fan-out, and alert contracts passed")
 
 
 def load_state() -> dict[str, object]:

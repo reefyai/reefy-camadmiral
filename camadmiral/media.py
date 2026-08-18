@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +23,26 @@ SNAPSHOT_MAX_BYTES = max(
     1024,
     int(os.environ.get("CAMADMIRAL_SNAPSHOT_MAX_BYTES", str(8 * 1024 * 1024))),
 )
+FRAME_PROBE_INTERVAL = max(
+    30.0,
+    float(os.environ.get("CAMADMIRAL_FRAME_PROBE_INTERVAL", "60")),
+)
+FRAME_PROBE_BATCH_SIZE = max(
+    1,
+    int(os.environ.get("CAMADMIRAL_FRAME_PROBE_BATCH_SIZE", "8")),
+)
+THUMBNAIL_WIDTH = max(
+    160,
+    min(640, int(os.environ.get("CAMADMIRAL_THUMBNAIL_WIDTH", "320"))),
+)
+THUMBNAIL_CACHE_ITEMS = max(
+    1,
+    int(os.environ.get("CAMADMIRAL_THUMBNAIL_CACHE_ITEMS", "64")),
+)
+THUMBNAIL_CACHE_MAX_BYTES = max(
+    1024,
+    int(os.environ.get("CAMADMIRAL_THUMBNAIL_CACHE_MAX_BYTES", str(32 * 1024 * 1024))),
+)
 
 
 class SnapshotError(RuntimeError):
@@ -39,12 +60,109 @@ class ProbeResult:
     fps: float = 0
 
 
-class RelayHealthMonitor:
-    """Observe active go2rtc relays without opening camera connections."""
+@dataclass(frozen=True)
+class CachedFrame:
+    content: bytes
+    captured_at: float
 
-    def __init__(self) -> None:
+
+class RelayHealthMonitor:
+    """Observe active relays and periodically sample one frame per camera."""
+
+    def __init__(
+        self,
+        *,
+        frame_probe_interval: float = FRAME_PROBE_INTERVAL,
+        frame_probe_batch_size: int = FRAME_PROBE_BATCH_SIZE,
+        thumbnail_width: int = THUMBNAIL_WIDTH,
+        thumbnail_cache_items: int = THUMBNAIL_CACHE_ITEMS,
+        thumbnail_cache_max_bytes: int = THUMBNAIL_CACHE_MAX_BYTES,
+    ) -> None:
         self._video_samples: dict[str, tuple[str, int]] = {}
         self._failure_samples: dict[str, int] = {}
+        self._frame_probe_attempts: dict[str, float] = {}
+        self._frame_probe_retries: set[str] = set()
+        self._frame_probe_interval = max(0.0, frame_probe_interval)
+        self._frame_probe_batch_size = max(1, frame_probe_batch_size)
+        self._thumbnail_width = max(1, thumbnail_width)
+        self._thumbnail_cache_items = max(1, thumbnail_cache_items)
+        self._thumbnail_cache_max_bytes = max(1, thumbnail_cache_max_bytes)
+        self._frames: dict[str, CachedFrame] = {}
+        self._frame_lock = threading.Lock()
+
+    def cache_frame(self, camera_uuid: str, content: bytes) -> CachedFrame:
+        frame = CachedFrame(content=content, captured_at=time.time())
+        with self._frame_lock:
+            if len(content) > self._thumbnail_cache_max_bytes:
+                self._frames.pop(camera_uuid, None)
+                return frame
+            self._frames[camera_uuid] = frame
+            while (
+                len(self._frames) > self._thumbnail_cache_items
+                or sum(len(item.content) for item in self._frames.values())
+                > self._thumbnail_cache_max_bytes
+            ):
+                oldest = min(self._frames, key=lambda key: self._frames[key].captured_at)
+                self._frames.pop(oldest, None)
+        return frame
+
+    def cached_frame(self, camera_uuid: str) -> CachedFrame | None:
+        with self._frame_lock:
+            return self._frames.get(camera_uuid)
+
+    def _sample_periodic_sources(
+        self,
+        sources: list[dict[str, str]],
+        preferred_sources: list[dict[str, str]],
+    ) -> dict[str, ProbeResult]:
+        now = time.monotonic()
+        preferred = {str(source["camera_uuid"]): source for source in preferred_sources}
+        for source in sources:
+            preferred.setdefault(str(source["camera_uuid"]), source)
+        due = []
+        for camera_uuid, source in preferred.items():
+            previous = self._frame_probe_attempts.get(camera_uuid)
+            if (
+                previous is None
+                or camera_uuid in self._frame_probe_retries
+                or now - previous >= self._frame_probe_interval
+            ):
+                due.append(source)
+        due.sort(key=lambda source: (
+            str(source["camera_uuid"]) in self._frame_probe_attempts,
+            self._frame_probe_attempts.get(str(source["camera_uuid"]), -1.0),
+        ))
+        due = due[: self._frame_probe_batch_size]
+        for source in due:
+            camera_uuid = str(source["camera_uuid"])
+            self._frame_probe_attempts[camera_uuid] = now
+            self._frame_probe_retries.discard(camera_uuid)
+        if not due:
+            return {}
+
+        results: dict[str, ProbeResult] = {}
+        with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(due))) as executor:
+            pending = {
+                executor.submit(snapshot_frame, source["stream_key"], width=self._thumbnail_width): source
+                for source in due
+            }
+            submitted_at = {future: time.monotonic() for future in pending}
+            for future in as_completed(pending):
+                source = pending[future]
+                started = submitted_at[future]
+                try:
+                    content = future.result()
+                    self.cache_frame(str(source["camera_uuid"]), content)
+                    results[str(source["stream_uuid"])] = ProbeResult(
+                        "ready",
+                        round((time.monotonic() - started) * 1000),
+                    )
+                except Exception:
+                    results[str(source["stream_uuid"])] = ProbeResult(
+                        "unavailable",
+                        round((time.monotonic() - started) * 1000),
+                    )
+        return results
 
     @staticmethod
     def _active_video_sample(stream: object) -> tuple[str, int] | None:
@@ -73,12 +191,10 @@ class RelayHealthMonitor:
             include_auth_failed=False,
             role_bound_only=True,
         )
-        health_sources = repository.managed_stream_sources(
+        preferred_sources = repository.managed_stream_sources(
             include_auth_failed=False,
             bound_role="detect",
         )
-        expected_active = {str(source["stream_uuid"]): source for source in health_sources}
-        reconcile_preloads(health_sources)
         try:
             runtime = json.loads(_request("GET", "/api/streams"))
         except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
@@ -95,11 +211,7 @@ class RelayHealthMonitor:
             consumers = stream.get("consumers") if isinstance(stream, dict) else None
             if not consumers:
                 self._video_samples.pop(stream_uuid, None)
-                if stream_uuid in expected_active:
-                    restart_preload(str(source["stream_key"]))
-                    result = ProbeResult("unavailable", latency_ms)
-                else:
-                    result = ProbeResult("idle", latency_ms)
+                continue
             else:
                 current = self._active_video_sample(stream)
                 if current is None or current[1] <= 0:
@@ -114,30 +226,60 @@ class RelayHealthMonitor:
                         or current[1] > previous[1]
                     )
                     result = ProbeResult("ready" if advancing else "unavailable", latency_ms)
+            results[stream_uuid] = result
+        source_by_stream = {str(source["stream_uuid"]): source for source in sources}
+        sources_by_camera: dict[str, list[dict[str, str]]] = {}
+        for source in sources:
+            sources_by_camera.setdefault(str(source["camera_uuid"]), []).append(source)
+        active_results = dict(results)
+        periodic_results = self._sample_periodic_sources(sources, preferred_sources)
+        for stream_uuid, result in periodic_results.items():
+            camera_uuid = str(source_by_stream[stream_uuid]["camera_uuid"])
+            camera_sources = sources_by_camera[camera_uuid]
+            active_ready = any(
+                active_results.get(str(source["stream_uuid"]), ProbeResult("idle", 0)).status
+                == "ready"
+                for source in camera_sources
+            )
+            if result.status != "ready" and not active_ready:
+                self._frame_probe_retries.add(camera_uuid)
+            for source in camera_sources:
+                target_stream_uuid = str(source["stream_uuid"])
+                active_result = active_results.get(target_stream_uuid)
+                if active_result is None:
+                    results[target_stream_uuid] = result
+                elif target_stream_uuid == stream_uuid and result.status == "ready":
+                    results[target_stream_uuid] = result
+        for stream_uuid, result in results.items():
+            source = source_by_stream[stream_uuid]
             if result.status == "unavailable":
                 failures = self._failure_samples.get(stream_uuid, 0) + 1
                 self._failure_samples[stream_uuid] = failures
-                diagnostic_source = expected_active.get(stream_uuid)
-                if failures == 2 and diagnostic_source is not None:
+                if failures == 2:
                     diagnostic = probe_source(
-                        diagnostic_source["uri"],
-                        diagnostic_source["username"],
-                        diagnostic_source["password"],
+                        source["uri"],
+                        source["username"],
+                        source["password"],
                     )
                     if diagnostic.status == "auth_failed":
                         auth_failures[str(source["camera_uuid"])] = diagnostic
             else:
                 self._failure_samples.pop(stream_uuid, None)
-            results[stream_uuid] = result
         for stream_uuid in set(self._video_samples) - active_ids:
             self._video_samples.pop(stream_uuid, None)
         for stream_uuid in set(self._failure_samples) - active_ids:
             self._failure_samples.pop(stream_uuid, None)
+        active_camera_ids = {str(source["camera_uuid"]) for source in sources}
+        for camera_uuid in set(self._frame_probe_attempts) - active_camera_ids:
+            self._frame_probe_attempts.pop(camera_uuid, None)
+            self._frame_probe_retries.discard(camera_uuid)
+            with self._frame_lock:
+                self._frames.pop(camera_uuid, None)
         failed_camera_ids = set(auth_failures)
         repository.record_probe_results({
-            str(source["stream_uuid"]): results[str(source["stream_uuid"])]
-            for source in sources
-            if str(source["camera_uuid"]) not in failed_camera_ids
+            stream_uuid: result
+            for stream_uuid, result in results.items()
+            if str(source_by_stream[stream_uuid]["camera_uuid"]) not in failed_camera_ids
         })
         for camera_uuid, result in auth_failures.items():
             repository.record_camera_auth_failure(camera_uuid, result)
@@ -440,14 +582,10 @@ def probe_upstreams(repository: Any) -> dict[str, ProbeResult]:
 
 def reconcile_and_probe(repository: Any) -> dict[str, ProbeResult]:
     sources = repository.managed_stream_sources()
-    health_sources = repository.managed_stream_sources(
-        include_auth_failed=False,
-        bound_role="detect",
-    )
     revision_id, revision_status = repository.record_desired_media_revision(sources)
     try:
         reconcile_streams(sources)
-        reconcile_preloads(health_sources)
+        reconcile_preloads([])
         desired_keys = {source["stream_key"] for source in sources}
         if not desired_keys.issubset(runtime_stream_keys()):
             raise RuntimeError("go2rtc did not retain the desired stream set")

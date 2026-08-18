@@ -22,8 +22,13 @@ from camadmiral.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch("camadmiral.media.snapshot_frame", return_value=b"\xff\xd8\xffidle\xff\xd9")
     @patch("camadmiral.media._request")
-    def test_relay_health_uses_active_video_counters_without_opening_sources(self, request) -> None:
+    def test_relay_health_uses_active_counters_and_periodically_samples_each_camera(
+        self,
+        request,
+        frame,
+    ) -> None:
         runtime = {
             "stream_active": {
                 "producers": [{
@@ -41,9 +46,7 @@ class MediaTests(unittest.TestCase):
                 "consumers": [],
             },
         }
-        request.side_effect = lambda _method, path, _query=None: json.dumps(
-            {"stream_active": {}} if path == "/api/preload" else runtime
-        ).encode()
+        request.side_effect = lambda *_args: json.dumps(runtime).encode()
         repository = Mock()
         sources = [
             {
@@ -57,15 +60,8 @@ class MediaTests(unittest.TestCase):
                 "camera_uuid": "camera-idle",
             },
         ]
-        repository.managed_stream_sources.side_effect = [
-            sources,
-            [sources[0]],
-            sources,
-            [sources[0]],
-            sources,
-            [sources[0]],
-        ]
-        monitor = RelayHealthMonitor()
+        repository.managed_stream_sources.side_effect = [sources, [sources[1]]] * 3
+        monitor = RelayHealthMonitor(frame_probe_interval=60)
 
         first = monitor.probe(repository)
         second = monitor.probe(repository)
@@ -73,9 +69,16 @@ class MediaTests(unittest.TestCase):
         third = monitor.probe(repository)
 
         self.assertEqual(first["active"].status, "ready")
-        self.assertEqual(first["idle"].status, "idle")
+        self.assertEqual(first["idle"].status, "ready")
         self.assertEqual(second["active"].status, "unavailable")
+        self.assertNotIn("idle", second)
         self.assertEqual(third["active"].status, "ready")
+        self.assertCountEqual(
+            [call.args for call in frame.call_args_list],
+            [("stream_active",), ("stream_idle",)],
+        )
+        self.assertTrue(all(call.kwargs == {"width": 320} for call in frame.call_args_list))
+        self.assertEqual(monitor.cached_frame("camera-idle").content, b"\xff\xd8\xffidle\xff\xd9")
         repository.managed_stream_sources.assert_any_call(
             include_auth_failed=False,
             role_bound_only=True,
@@ -84,7 +87,210 @@ class MediaTests(unittest.TestCase):
             include_auth_failed=False,
             bound_role="detect",
         )
-        self.assertIn(("GET", "/api/streams"), [call.args for call in request.call_args_list])
+        self.assertEqual(request.call_args_list[0].args, ("GET", "/api/streams"))
+
+    @patch("camadmiral.media.snapshot_frame", return_value=b"\xff\xd8\xffframe\xff\xd9")
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_periodic_frame_batch_rotates_fairly_across_cameras(
+        self,
+        _request,
+        frame,
+    ) -> None:
+        sources = [
+            {
+                "stream_uuid": f"stream-{index}",
+                "stream_key": f"stream_{index}",
+                "camera_uuid": f"camera-{index}",
+                "uri": f"rtsp://192.0.2.{index + 1}/live",
+                "username": "",
+                "password": "",
+            }
+            for index in range(3)
+        ]
+        repository = Mock()
+        repository.managed_stream_sources.return_value = sources
+        monitor = RelayHealthMonitor(
+            frame_probe_interval=3600,
+            frame_probe_batch_size=1,
+        )
+
+        monitor.probe(repository)
+        monitor.probe(repository)
+        monitor.probe(repository)
+
+        self.assertEqual(
+            [call.args[0] for call in frame.call_args_list],
+            ["stream_0", "stream_1", "stream_2"],
+        )
+
+    @patch("camadmiral.media.time.monotonic", return_value=100)
+    @patch(
+        "camadmiral.media.snapshot_frame",
+        side_effect=[SnapshotError("synthetic outage"), b"\xff\xd8\xffrecovered\xff\xd9"],
+    )
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_failed_periodic_frame_retries_on_next_health_cycle(
+        self,
+        _request,
+        frame,
+        _monotonic,
+    ) -> None:
+        source = {
+            "stream_uuid": "stream-1",
+            "stream_key": "stream_1",
+            "camera_uuid": "camera-1",
+            "uri": "rtsp://192.0.2.1/live",
+            "username": "",
+            "password": "",
+        }
+        repository = Mock()
+        repository.managed_stream_sources.return_value = [source]
+        monitor = RelayHealthMonitor(frame_probe_interval=60)
+
+        first = monitor.probe(repository)
+        second = monitor.probe(repository)
+
+        self.assertEqual(first["stream-1"].status, "unavailable")
+        self.assertEqual(second["stream-1"].status, "ready")
+        self.assertEqual(frame.call_count, 2)
+
+    @patch("camadmiral.media.time.monotonic", return_value=100)
+    @patch(
+        "camadmiral.media.snapshot_frame",
+        side_effect=[
+            SnapshotError("synthetic outage"),
+            b"\xff\xd8\xffsecond\xff\xd9",
+            b"\xff\xd8\xffthird\xff\xd9",
+            b"\xff\xd8\xffrecovered\xff\xd9",
+        ],
+    )
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_failed_retry_does_not_starve_never_sampled_cameras(
+        self,
+        _request,
+        frame,
+        _monotonic,
+    ) -> None:
+        sources = [
+            {
+                "stream_uuid": f"stream-{index}",
+                "stream_key": f"stream_{index}",
+                "camera_uuid": f"camera-{index}",
+                "uri": f"rtsp://192.0.2.{index + 1}/live",
+                "username": "",
+                "password": "",
+            }
+            for index in range(3)
+        ]
+        repository = Mock()
+        repository.managed_stream_sources.return_value = sources
+        monitor = RelayHealthMonitor(
+            frame_probe_interval=60,
+            frame_probe_batch_size=1,
+        )
+
+        for _ in range(4):
+            monitor.probe(repository)
+
+        self.assertEqual(
+            [call.args[0] for call in frame.call_args_list],
+            ["stream_0", "stream_1", "stream_2", "stream_0"],
+        )
+
+    @patch(
+        "camadmiral.media.snapshot_frame",
+        side_effect=SnapshotError("synthetic camera outage"),
+    )
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_periodic_camera_failure_updates_all_idle_role_streams(
+        self,
+        _request,
+        _frame,
+    ) -> None:
+        sources = [
+            {
+                "stream_uuid": "detect",
+                "stream_key": "stream_detect",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.1/sub",
+                "username": "",
+                "password": "",
+            },
+            {
+                "stream_uuid": "record",
+                "stream_key": "stream_record",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.1/main",
+                "username": "",
+                "password": "",
+            },
+        ]
+        repository = Mock()
+        repository.managed_stream_sources.side_effect = [sources, [sources[0]]]
+        monitor = RelayHealthMonitor()
+
+        results = monitor.probe(repository)
+
+        self.assertEqual(results["detect"].status, "unavailable")
+        self.assertEqual(results["record"].status, "unavailable")
+        recorded = repository.record_probe_results.call_args.args[0]
+        self.assertEqual(recorded["detect"].status, "unavailable")
+        self.assertEqual(recorded["record"].status, "unavailable")
+
+    @patch(
+        "camadmiral.media.snapshot_frame",
+        side_effect=SnapshotError("synthetic substream failure"),
+    )
+    @patch("camadmiral.media._request")
+    def test_active_stream_counter_overrides_camera_level_frame_failure(
+        self,
+        request,
+        _frame,
+    ) -> None:
+        sources = [
+            {
+                "stream_uuid": "detect",
+                "stream_key": "stream_detect",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.1/sub",
+                "username": "",
+                "password": "",
+            },
+            {
+                "stream_uuid": "record",
+                "stream_key": "stream_record",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.1/main",
+                "username": "",
+                "password": "",
+            },
+        ]
+        runtime = {
+            "stream_record": {
+                "producers": [{
+                    "id": 7,
+                    "bytes_recv": 1000,
+                    "receivers": [{
+                        "codec": {"codec_name": "h264", "codec_type": "video"},
+                        "packets": 20,
+                    }],
+                }],
+                "consumers": [{"id": 9}],
+            }
+        }
+        request.return_value = json.dumps(runtime).encode()
+        repository = Mock()
+        repository.managed_stream_sources.side_effect = [sources, [sources[0]]]
+        monitor = RelayHealthMonitor()
+
+        results = monitor.probe(repository)
+
+        self.assertEqual(results["detect"].status, "unavailable")
+        self.assertEqual(results["record"].status, "ready")
+        recorded = repository.record_probe_results.call_args.args[0]
+        self.assertEqual(recorded["detect"].status, "unavailable")
+        self.assertEqual(recorded["record"].status, "ready")
+        self.assertNotIn("camera-1", monitor._frame_probe_retries)
 
     @patch("camadmiral.media.probe_source", return_value=ProbeResult("auth_failed", 20))
     @patch("camadmiral.media._request")
@@ -380,7 +586,7 @@ class MediaTests(unittest.TestCase):
         reconcile_and_probe(repository)
 
         reconcile.assert_called_once_with([source])
-        reconcile_preloads_mock.assert_called_once_with([source])
+        reconcile_preloads_mock.assert_called_once_with([])
         repository.complete_media_revision.assert_called_once_with(7, "applied")
 
     @patch("camadmiral.media.reconcile_streams", side_effect=RuntimeError("synthetic failure"))
