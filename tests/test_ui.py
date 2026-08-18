@@ -79,11 +79,20 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("availability-block", self.html)
         self.assertIn("availability_percent", self.html)
         self.assertIn("Unknown or disabled", self.html)
+        self.assertIn("cursor: default", self.html)
 
-    def test_runtime_health_uses_role_streams_and_shows_idle_without_alarm(self) -> None:
+    def test_runtime_health_uses_role_streams_without_ambiguous_table_idle(self) -> None:
         self.assertIn("const roleStreams = new Set", self.html)
-        self.assertIn('label: "idle"', self.html)
+        self.assertIn('label: "not observed"', self.html)
+        self.assertNotIn('label: "idle"', self.html)
         self.assertIn("Idle - waiting for a consumer", self.html)
+
+    def test_camera_rows_show_compact_recent_availability(self) -> None:
+        self.assertIn("ROW_AVAILABILITY_BLOCKS = 8", self.html)
+        self.assertIn("row-availability-strip", self.html)
+        self.assertIn("addRowAvailability(statusStack, device)", self.html)
+        self.assertIn("Recent camera availability", self.html)
+        self.assertIn(".row-availability-block:nth-child(-n+2)", self.html)
 
     def test_incidents_and_telegram_settings_use_compact_shared_modals(self) -> None:
         self.assertIn('id="show-incidents"', self.html)

@@ -146,6 +146,7 @@
     .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
     .adopted-label { color: #75f4e2; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
+    .status-stack { display: grid; gap: 7px; min-width: 0; }
     .device-status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; text-transform: capitalize; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
     .device-status.online, .device-status.healthy { color: #75f4e2; }
@@ -158,6 +159,12 @@
     .device-status.disabled .status-dot { background: #64748b; box-shadow: 0 0 0 4px rgba(100, 116, 139, .1); }
     .device-status.offline, .device-status.auth_failed { color: #fda4af; }
     .device-status.offline .status-dot, .device-status.auth_failed .status-dot { background: #fb7185; box-shadow: 0 0 0 4px rgba(251, 113, 133, .09); }
+    .row-availability-strip { display: flex; gap: 3px; width: 100%; max-width: 112px; height: 7px; }
+    .row-availability-block { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: #475569; }
+    .row-availability-block.healthy { background: #2dd4bf; }
+    .row-availability-block.degraded { background: #fbbf24; }
+    .row-availability-block.offline, .row-availability-block.auth_failed { background: #fb7185; }
+    .row-availability-block.unknown, .row-availability-block.disabled { background: #475569; }
     .service-note { margin-top: 5px; color: #fbbf24; font-size: 10px; line-height: 1.25; }
     tr.offline .camera-name { color: #a7b4bf; }
     .row-action {
@@ -208,7 +215,7 @@
     .availability-range button.selected { background: rgba(45, 212, 191, .13); color: #8ff8e8; }
     .availability-strip { display: flex; gap: 2px; width: 100%; height: 28px; }
     .availability-block {
-      min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0; cursor: help;
+      min-width: 2px; flex: 1 1 0; border: 0; border-radius: 3px; padding: 0; cursor: default;
       background: #475569;
     }
     .availability-block.healthy { background: #2dd4bf; }
@@ -402,6 +409,8 @@
       tbody tr.camera-row td:nth-child(7) { grid-area: action; align-self: center; }
       .cell-stack { max-height: 63px; }
       .camera-mobile-ip { display: block; }
+      .row-availability-strip { max-width: 94px; }
+      .row-availability-block:nth-child(-n+2) { display: none; }
       .action-stack { align-items: stretch; flex-direction: column; justify-content: center; gap: 6px; }
       .action-stack .row-action { min-width: 66px; padding: 7px 9px; }
       .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
@@ -605,6 +614,9 @@
     const adoptionProgress = new Map();
     const lifecycleErrors = new Map();
     const availabilityResults = new Map();
+    const rowAvailabilityResults = new Map();
+    const ROW_AVAILABILITY_BLOCKS = 8;
+    const ROW_AVAILABILITY_REFRESH_MS = 30000;
     let liveSocket = null;
     let liveReconnectTimer = null;
     let liveMediaSource = null;
@@ -1001,7 +1013,7 @@
       if (observed.length && observed.every(state => state === "healthy")) return {key: "healthy", label: "healthy"};
       if (observed.length && observed.every(state => state === "offline")) return {key: "offline", label: "offline"};
       if (observed.some(state => state === "degraded" || state === "offline")) return {key: "degraded", label: "degraded"};
-      if (streams.every(stream => stream.probe_status === "idle")) return {key: "checking", label: "idle"};
+      if (streams.every(stream => stream.probe_status === "idle")) return {key: "checking", label: "not observed"};
       return {key: "checking", label: "checking"};
     }
 
@@ -1062,6 +1074,58 @@
       })[state] || "Unknown";
     }
 
+    function availabilityDescription(bucket) {
+      const start = new Date(bucket.start).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      const end = new Date(bucket.end).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      return `${start} to ${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
+    }
+
+    function addAvailabilityBlocks(parent, buckets, className) {
+      buckets.forEach(bucket => {
+        const block = addText(parent, "span", `${className} ${bucket.state}`, "");
+        const description = availabilityDescription(bucket);
+        block.tabIndex = 0;
+        block.title = description;
+        block.setAttribute("aria-label", description);
+      });
+    }
+
+    async function loadRowAvailability(cameraUuid) {
+      const current = rowAvailabilityResults.get(cameraUuid);
+      const now = Date.now();
+      if (current?.status === "loading" || (current?.loadedAt && now - current.loadedAt < ROW_AVAILABILITY_REFRESH_MS)) return;
+      rowAvailabilityResults.set(cameraUuid, {status: "loading", loadedAt: current?.loadedAt || 0, data: current?.data});
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/availability?window=24h`, {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "Availability could not be loaded.");
+        rowAvailabilityResults.set(cameraUuid, {status: "ready", loadedAt: Date.now(), data});
+      } catch (error) {
+        rowAvailabilityResults.set(cameraUuid, {status: "error", loadedAt: Date.now()});
+      }
+      renderRows();
+    }
+
+    function addRowAvailability(parent, device) {
+      const cameraUuid = device.adoption?.camera_uuid;
+      if (!cameraUuid) return;
+      const strip = addText(parent, "div", "row-availability-strip", "");
+      strip.setAttribute("aria-label", "Recent camera availability");
+      const current = rowAvailabilityResults.get(cameraUuid);
+      const buckets = current?.status === "ready"
+        ? current.data.buckets.slice(-ROW_AVAILABILITY_BLOCKS)
+        : Array.from({length: ROW_AVAILABILITY_BLOCKS}, () => ({state: "unknown"}));
+      if (current?.status === "ready") {
+        addAvailabilityBlocks(strip, buckets, "row-availability-block");
+      } else {
+        buckets.forEach(() => {
+          const block = addText(strip, "span", "row-availability-block unknown", "");
+          block.title = current?.status === "error" ? "Recent availability unavailable" : "Loading recent availability";
+        });
+      }
+      void loadRowAvailability(cameraUuid);
+    }
+
     function addAvailability(parent, device, adoption) {
       const current = availabilityResults.get(adoption.camera_uuid);
       const windowName = current?.window || "24h";
@@ -1083,15 +1147,7 @@
       });
       if (current?.status === "ready") {
         const strip = addText(section, "div", "availability-strip", "");
-        current.data.buckets.forEach(bucket => {
-          const block = addText(strip, "button", `availability-block ${bucket.state}`, "");
-          block.type = "button";
-          const start = new Date(bucket.start).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-          const end = new Date(bucket.end).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-          const description = `${start} to ${end} · ${availabilityState(bucket.state)} · ${availabilityReason(bucket.reason)}`;
-          block.title = description;
-          block.setAttribute("aria-label", description);
-        });
+        addAvailabilityBlocks(strip, current.data.buckets, "availability-block");
         const legend = addText(section, "div", "availability-legend", "");
         addText(legend, "span", "availability-key healthy", "Healthy");
         addText(legend, "span", "availability-key degraded", "Degraded");
@@ -2085,9 +2141,11 @@
         if (identityMeta) addClippedText(identityStack, "div", `camera-model${device.adoption ? " adopted-label" : ""}`, identityMeta);
         addClippedText(identityStack, "div", "camera-mobile-ip", device.ip);
         const statusCell = addCell(row);
-        const statusLabel = addText(statusCell, "span", `device-status ${status.key}`, "");
+        const statusStack = addText(statusCell, "div", "status-stack", "");
+        const statusLabel = addText(statusStack, "span", `device-status ${status.key}`, "");
         addText(statusLabel, "span", "status-dot", "");
         addClippedText(statusLabel, "span", "", status.label);
+        addRowAvailability(statusStack, device);
         addClippedText(addCell(row, "mono"), "span", "", device.ip);
         addClippedText(addCell(row, "mono"), "span", "", device.mac || "-");
         const onvif = addCell(row);
