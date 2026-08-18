@@ -333,19 +333,22 @@ def wait_for_online(names: set[str]) -> dict[str, object]:
 
 
 def assert_stable(state: dict[str, object]) -> dict[str, object]:
-    def stable_media() -> dict[str, object] | None:
+    def stable_identities() -> dict[str, object] | None:
         directory = consumer_directory()
         cameras = {camera.get("name"): camera for camera in directory.get("cameras", [])}
         if not {OPEN_NAME, AUTH_NAME}.issubset(cameras):
             return None
-        if any(cameras[name].get("state") != "online" for name in {OPEN_NAME, AUTH_NAME}):
+        if any(not cameras[name].get("streams") for name in {OPEN_NAME, AUTH_NAME}):
             return None
         if directory_signature(directory) != state["signature"]:
             raise ScenarioFailure("Stable camera, stream, or downstream identity changed")
         return directory
 
-    directory = wait_for("stable downstream identities", stable_media, timeout=120)
+    directory = wait_for("stable downstream identities", stable_identities, timeout=120)
     assert_all_media(directory)
+    directory = wait_for_online({OPEN_NAME, AUTH_NAME})
+    if directory_signature(directory) != state["signature"]:
+        raise ScenarioFailure("Stable camera, stream, or downstream identity changed")
     return directory
 
 
