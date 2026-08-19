@@ -20,6 +20,8 @@ services:
       - ./fixtures/api-token:/run/secrets/camadmiral_api_token:ro
       - ./fixtures/admin-password:/run/secrets/camadmiral_admin_password:ro
       - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
+    ports:
+      - "127.0.0.1::18080"
     networks:
       lab:
         ipv4_address: 172.30.0.20

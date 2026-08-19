@@ -44,9 +44,9 @@ class DiscoveryUiTests(unittest.TestCase):
     def test_phone_layout_replaces_wide_rows_with_compact_cards(self) -> None:
         self.assertIn("tbody tr.camera-row", self.html)
         self.assertIn('grid-template-areas: "preview identity" "preview status" "action action"', self.html)
-        self.assertIn("grid-template-rows: 40px 30px 26px", self.html)
-        self.assertIn("height: 142px; min-height: 142px; max-height: 142px", self.html)
-        self.assertIn(".action-stack .row-action { flex: 1 1 0; min-width: 0", self.html)
+        self.assertIn("grid-template-rows: 40px 30px 32px", self.html)
+        self.assertIn("height: 150px; min-height: 150px; max-height: 150px", self.html)
+        self.assertIn(".action-stack .row-action { flex: 1 1 0; min-width: 0; min-height: 32px", self.html)
         self.assertIn("camera-mobile-ip", self.html)
         self.assertIn(".preview-cell { width: 78px; height: 58px; }", self.html)
         self.assertIn(".camera-model { display: none; }", self.html)

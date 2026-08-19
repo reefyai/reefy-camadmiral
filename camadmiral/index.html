@@ -469,9 +469,9 @@
       tbody { display: grid; gap: 10px; }
       tbody tr.camera-row {
         display: grid; grid-template-columns: 78px minmax(0, 1fr);
-        grid-template-rows: 40px 30px 26px;
+        grid-template-rows: 40px 30px 32px;
         grid-template-areas: "preview identity" "preview status" "action action";
-        align-content: center; height: 142px; min-height: 142px; max-height: 142px; overflow: hidden;
+        align-content: center; height: 150px; min-height: 150px; max-height: 150px; overflow: hidden;
         column-gap: 10px; row-gap: 6px; border: 1px solid rgba(148, 163, 184, .15);
         border-radius: 12px; padding: 13px 14px; background: rgba(12, 26, 42, .76);
         box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
@@ -490,7 +490,7 @@
       .row-availability-strip { max-width: 94px; }
       .row-availability-block:nth-child(-n+2) { display: none; }
       .action-stack { width: 100%; align-items: stretch; flex-direction: row; justify-content: stretch; gap: 6px; }
-      .action-stack .row-action { flex: 1 1 0; min-width: 0; padding: 5px 4px; }
+      .action-stack .row-action { flex: 1 1 0; min-width: 0; min-height: 32px; padding: 5px 4px; }
       .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
       .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }

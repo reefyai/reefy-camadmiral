@@ -62,6 +62,20 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn("last observation=", scenarios)
 
+    def test_e2e_checks_mobile_actions_in_webkit(self) -> None:
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        browser = (ROOT / "e2e" / "ui.py").read_text()
+        gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
+
+        self.assertIn('"127.0.0.1::18080"', compose)
+        self.assertIn("ui_scenario()", runner)
+        self.assertIn('playwright.webkit.launch(headless=True)', browser)
+        self.assertIn('viewport={"width": 390, "height": 844}', browser)
+        self.assertIn("bottom(button_box) > bottom(cell_box) + 0.5", browser)
+        self.assertIn("document.elementFromPoint", browser)
+        self.assertIn("python -m playwright install --with-deps webkit", gate)
+
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {
             "roles": {"detect": "detect-stream", "record": "record-stream"},
