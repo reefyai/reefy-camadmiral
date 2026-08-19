@@ -178,6 +178,51 @@ def _repository(*, required: bool = False) -> CameraRepository | None:
     return repository
 
 
+def _camera_connectivity_status(device: dict[str, object]) -> str:
+    """Resolve current camera connectivity without trusting a stale LAN scan.
+
+    Discovery remains authoritative for unadopted cameras and cameras whose
+    media has not yet been observed. Once an adopted role stream is observed,
+    its current media result is newer and more useful than the last scan.
+    """
+    discovered = "online" if device.get("status") == "online" else "offline"
+    adoption = device.get("adoption")
+    if not isinstance(adoption, dict) or adoption.get("enabled") is False:
+        return discovered
+
+    all_streams = adoption.get("streams") or []
+    if not isinstance(all_streams, list):
+        return discovered
+    role_streams = {
+        str(stream_uuid)
+        for stream_uuid in (adoption.get("roles") or {}).values()
+        if stream_uuid
+    }
+    streams = (
+        [
+            stream
+            for stream in all_streams
+            if isinstance(stream, dict)
+            and str(stream.get("stream_uuid")) in role_streams
+        ]
+        if role_streams
+        else [stream for stream in all_streams if isinstance(stream, dict)]
+    )
+    if not streams:
+        return discovered
+
+    observed = [
+        str(stream.get("health_status") or "unknown")
+        for stream in streams
+        if stream.get("health_status") not in {None, "", "unknown"}
+    ]
+    if not observed:
+        return discovered
+    if all(status == "offline" for status in observed):
+        return "offline"
+    return "online"
+
+
 def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     repository = _repository()
     if repository is None:
@@ -212,6 +257,22 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
                 adoption["frigate"].append(target_status)
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
+    devices = state.get("devices", [])
+    for device in devices:
+        device["connectivity_status"] = _camera_connectivity_status(device)
+    summary = dict(state.get("summary") or {})
+    summary.update(
+        {
+            "devices": len(devices),
+            "online": sum(
+                device["connectivity_status"] == "online" for device in devices
+            ),
+            "offline": sum(
+                device["connectivity_status"] == "offline" for device in devices
+            ),
+        }
+    )
+    state["summary"] = summary
     return state
 
 

@@ -653,6 +653,41 @@ def camera_recovery() -> None:
     wait_for_open_camera_sources()
     state = load_state()
     assert_stable(state)
+
+    def recovered_summary() -> bool:
+        current = discovery()
+        devices = current.get("devices") or []
+        open_device = next(
+            (
+                device
+                for device in devices
+                if device.get("candidate_uuid") == "candidate-open"
+            ),
+            None,
+        )
+        if open_device is None:
+            return False
+        streams = (open_device.get("adoption") or {}).get("streams") or []
+        if not streams or not all(
+            stream.get("health_status") == "healthy" for stream in streams
+        ):
+            return False
+        summary = current.get("summary") or {}
+        expected_online = sum(
+            device.get("connectivity_status") == "online" for device in devices
+        )
+        return (
+            open_device.get("status") == "offline"
+            and open_device.get("connectivity_status") == "online"
+            and summary.get("online") == expected_online
+            and summary.get("offline") == 0
+        )
+
+    wait_for(
+        "recovered media overriding stale scan summary",
+        recovered_summary,
+        timeout=120,
+    )
     timeline = availability(str(state["open_camera_uuid"]))
     if timeline.get("availability_percent") is None or timeline["availability_percent"] >= 100:
         raise ScenarioFailure("Recovered camera availability did not retain outage history")
@@ -678,7 +713,7 @@ def camera_recovery() -> None:
     )
     if recovered is None or recovered.get("resolution_reason") != "recovered":
         raise ScenarioFailure("Recovered camera did not retain its resolved incident")
-    print("camera-recovery: synthetic camera reboot recovered without user action")
+    print("camera-recovery: media, availability, and stale scan summary recovered without user action")
 
 
 def container_restart() -> None:

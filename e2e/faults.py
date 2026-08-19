@@ -4,9 +4,11 @@ import json
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 GO2RTC_URL = "http://127.0.0.1:1984"
+INVENTORY_PATH = Path("/var/lib/camadmiral/inventory.json")
 
 
 def streams() -> dict[str, object]:
@@ -34,11 +36,44 @@ def delete_managed_stream() -> None:
     print(f"deleted managed stream: {stream_key}")
 
 
+def mark_open_camera_scan_offline() -> None:
+    inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+    devices = inventory.get("devices") or []
+    camera = next(
+        (
+            device
+            for device in devices
+            if device.get("candidate_uuid") == "candidate-open"
+        ),
+        None,
+    )
+    if camera is None:
+        raise RuntimeError("Synthetic open camera is missing from inventory")
+    camera["status"] = "offline"
+    inventory["summary"] = {
+        **(inventory.get("summary") or {}),
+        "devices": len(devices),
+        "online": sum(device.get("status") == "online" for device in devices),
+        "offline": sum(device.get("status") == "offline" for device in devices),
+    }
+    temporary = INVENTORY_PATH.with_suffix(".e2e.tmp")
+    temporary.write_text(json.dumps(inventory), encoding="utf-8")
+    temporary.replace(INVENTORY_PATH)
+    print("marked synthetic open camera offline in stale scan inventory")
+
+
 def main() -> int:
-    if sys.argv[1:] != ["delete-managed-stream"]:
-        print("usage: faults.py delete-managed-stream", file=sys.stderr)
+    action = sys.argv[1:]
+    if action == ["delete-managed-stream"]:
+        delete_managed_stream()
+    elif action == ["mark-open-camera-scan-offline"]:
+        mark_open_camera_scan_offline()
+    else:
+        print(
+            "usage: faults.py delete-managed-stream|mark-open-camera-scan-offline",
+            file=sys.stderr,
+        )
         return 2
-    delete_managed_stream()
     return 0
 
 

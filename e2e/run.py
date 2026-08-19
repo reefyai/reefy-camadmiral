@@ -66,6 +66,10 @@ def main() -> int:
         run("stop", "camera-open")
         run("restart", "camadmiral")
         scenario("camera-outage")
+        run(
+            "exec", "-T", "camadmiral", "python", "/e2e/faults.py",
+            "mark-open-camera-scan-offline",
+        )
         run("start", "camera-open")
         scenario("camera-recovery")
 

@@ -16,6 +16,7 @@ The isolated Docker Compose lab covers:
 - out-of-band managed-stream deletion and automatic runtime-drift repair
 - go2rtc child failure without a CamAdmiral container restart
 - synthetic camera outage across a CamAdmiral restart and recovery without user action
+- recovered media overriding stale offline scan state in camera summary counts
 - persisted availability buckets across camera outage and recovery
 - complete CamAdmiral container restart with stable IDs, paths, and secrets
 - real Frigate 0.17 camera injection, runtime creation, and frame processing
