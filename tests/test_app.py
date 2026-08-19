@@ -92,6 +92,30 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
         self.assertEqual(decorated["devices"][0]["display_name"], "Operator name")
 
+    def test_discovery_reports_only_an_available_cached_thumbnail(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "display_name": "Operator name",
+                "streams": [],
+            }
+        }
+        state = {"devices": [{"candidate_uuid": "candidate-1"}]}
+        frame = Mock(captured_at=1234.5)
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module.RELAY_HEALTH_MONITOR, "cached_frame", return_value=frame),
+            patch.object(app_module, "load_frigate_targets", return_value=[]),
+        ):
+            decorated = app_module._decorate_adoptions(state)
+
+        self.assertEqual(
+            decorated["devices"][0]["adoption"]["thumbnail_captured_at"],
+            1234.5,
+        )
+
     def test_each_synced_frigate_target_has_an_independent_status(self) -> None:
         repository = Mock()
         repository.adoption_map.return_value = {

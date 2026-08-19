@@ -28,6 +28,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('class="scan-actions"', self.html)
         self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
         self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", self.html)
+        self.assertIn("justify-content: stretch", self.html)
+        self.assertIn(".utility-actions { display: grid; width: 100%", self.html)
+        self.assertIn("display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto", self.html)
 
     def test_pasted_rtsp_credentials_are_removed_from_visible_source(self) -> None:
         self.assertIn('source.username = ""', self.html)
@@ -40,7 +43,10 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_phone_layout_replaces_wide_rows_with_compact_cards(self) -> None:
         self.assertIn("tbody tr.camera-row", self.html)
-        self.assertIn('grid-template-areas: "preview identity action" "preview status action"', self.html)
+        self.assertIn('grid-template-areas: "preview identity" "preview status" "action action"', self.html)
+        self.assertIn("grid-template-rows: 40px 30px 26px", self.html)
+        self.assertIn("height: 142px; min-height: 142px; max-height: 142px", self.html)
+        self.assertIn(".action-stack .row-action { flex: 1 1 0; min-width: 0", self.html)
         self.assertIn("camera-mobile-ip", self.html)
         self.assertIn(".preview-cell { width: 78px; height: 58px; }", self.html)
         self.assertIn(".camera-model { display: none; }", self.html)
@@ -55,6 +61,19 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("text-overflow: ellipsis", self.html)
         self.assertIn("node.title = value", self.html)
         self.assertIn('row.className = `camera-row ${status.key}`', self.html)
+
+    def test_desktop_camera_columns_size_from_their_content(self) -> None:
+        self.assertIn("table-layout: auto", self.html)
+        self.assertNotIn("<colgroup>", self.html)
+
+    def test_summary_counts_filter_camera_rows(self) -> None:
+        self.assertIn('data-camera-filter="all"', self.html)
+        self.assertIn('data-camera-filter="online"', self.html)
+        self.assertIn('data-camera-filter="offline"', self.html)
+        self.assertIn("let cameraFilter = null", self.html)
+        self.assertIn("!cameraFilter || device.status === cameraFilter", self.html)
+        self.assertIn('cameraFilter = requested === "all" || cameraFilter === requested ? null : requested', self.html)
+        self.assertIn('button.classList.toggle("selected", selected)', self.html)
 
     def test_camera_details_render_in_a_modal_not_in_table_rows(self) -> None:
         self.assertIn('id="app-modal" role="dialog"', self.html)
@@ -71,13 +90,15 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('"connectivity-cell"', self.html)
         self.assertIn('["IP", device.ip || "-", false]', self.html)
         self.assertIn('["MAC", device.mac || "-", false]', self.html)
-        self.assertIn('["ONVIF", device.onvif?.service_urls?.length ? "Available"', self.html)
-        self.assertIn('["RTSP", device.rtsp?.length ? "Available"', self.html)
+        self.assertNotIn('["ONVIF", device.onvif?.service_urls?.length ? "Available"', self.html)
+        self.assertNotIn('["RTSP", device.rtsp?.length ? "Available"', self.html)
 
     def test_table_recent_view_uses_only_the_cached_thumbnail_endpoint(self) -> None:
         self.assertIn("<th>Recent view</th>", self.html)
         self.assertIn('"preview-cell"', self.html)
-        self.assertIn("/thumbnail.jpg`;", self.html)
+        self.assertIn("/thumbnail.jpg?captured=", self.html)
+        self.assertIn("device.adoption?.camera_uuid && device.adoption.thumbnail_captured_at", self.html)
+        self.assertIn("device.adoption?.thumbnail_captured_at", self.html)
         self.assertNotIn("/snapshot.jpg`;\n          previewCell", self.html)
         self.assertIn('image.loading = "lazy"', self.html)
         self.assertNotIn("image.hidden = true", self.html)
@@ -122,6 +143,14 @@ class DiscoveryUiTests(unittest.TestCase):
         )
         self.assertNotIn("function addLiveViewAction", self.html)
 
+    def test_streams_have_a_separate_table_action_and_modal(self) -> None:
+        self.assertIn('addText(actionStack, "button", "row-action", "Streams")', self.html)
+        self.assertIn("function openCameraStreams(device, trigger = null)", self.html)
+        self.assertIn('openAppModal("streams", title, streamDetails(device), trigger, "wide")', self.html)
+        self.assertIn('appModalKind === "streams"', self.html)
+        self.assertIn("function streamDetails(device)", self.html)
+        self.assertIn("addAvailability(wrapper, device, adoption)", self.html)
+
     def test_live_view_has_no_jumping_native_timeline(self) -> None:
         self.assertIn('id="live-video" aria-label="Live camera view" autoplay muted playsinline>', self.html)
         self.assertNotIn('playsinline controls', self.html)
@@ -135,6 +164,21 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('addDetailSection(wrapper, "Integrations"', self.html)
         self.assertIn("connection-details", self.html)
         self.assertNotIn("camera-facts", self.html)
+
+    def test_downstream_urls_are_selectable_single_line_scrollers(self) -> None:
+        self.assertIn('const urlText = addText(row, "div", "downstream-url", value)', self.html)
+        self.assertIn("urlText.title = url", self.html)
+        self.assertIn("urlText.tabIndex = 0", self.html)
+        self.assertIn(".stream-access { min-width: 0; }", self.html)
+        self.assertIn("overflow-x: auto; overflow-y: hidden", self.html)
+        self.assertIn("user-select: text; white-space: nowrap", self.html)
+
+    def test_camera_source_and_health_are_grouped_under_stream_specs(self) -> None:
+        self.assertIn('const metadata = addText(row, "div", "profile-metadata", "")', self.html)
+        self.assertIn('addText(metadata, "div", "profile-specs", specifications)', self.html)
+        self.assertIn("metadata.append(source)", self.html)
+        self.assertIn('addText(metadata, "div", `media-state', self.html)
+        self.assertNotIn('addText(endpoint, "div", `media-state', self.html)
 
     def test_frigate_status_explains_automatic_retry(self) -> None:
         self.assertIn("Waiting for camera process", self.html)
@@ -154,6 +198,16 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("availabilitySegmentSummary(bucket)", self.html)
         self.assertIn("Ended ${availabilityState(bucket.state).toLowerCase()}", self.html)
         self.assertNotIn("block.title = description", self.html)
+
+    def test_open_camera_availability_refreshes_without_page_reload(self) -> None:
+        self.assertIn("CAMERA_AVAILABILITY_REFRESH_MS = 30000", self.html)
+        self.assertIn("function refreshOpenCameraAvailability()", self.html)
+        self.assertIn("setInterval(refreshOpenCameraAvailability, CAMERA_AVAILABILITY_REFRESH_MS)", self.html)
+        self.assertIn("loadedAt: Date.now()", self.html)
+
+    def test_camera_name_does_not_repeat_adoption_state(self) -> None:
+        self.assertNotIn('"Adopted · Disabled" : "Adopted"', self.html)
+        self.assertNotIn("adopted-label", self.html)
 
     def test_runtime_health_uses_role_streams_without_ambiguous_table_idle(self) -> None:
         self.assertIn("const roleStreams = new Set", self.html)
