@@ -38,6 +38,26 @@ def scenario(name: str) -> None:
     run("run", "--rm", "test-driver", name)
 
 
+def ui_scenario() -> None:
+    published = run("port", "camadmiral", "18080", capture=True)
+    if not published:
+        raise RuntimeError("CamAdmiral E2E web port was not published")
+    address = published.splitlines()[0].replace("0.0.0.0:", "127.0.0.1:")
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "CAMADMIRAL_E2E_WEB_URL": f"http://{address}",
+            "CAMADMIRAL_E2E_ADMIN_PASSWORD": "synthetic-e2e-admin-password",
+        }
+    )
+    subprocess.run(
+        [sys.executable, str(ROOT / "e2e" / "ui.py")],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+    )
+
+
 def main() -> int:
     keep = os.environ.get("CAMADMIRAL_E2E_KEEP") == "1"
     started = time.monotonic()
@@ -49,6 +69,7 @@ def main() -> int:
             "camera-onvif",
         )
         scenario("baseline")
+        ui_scenario()
         run("up", "--detach", "frigate", "frigate-api-proxy")
         scenario("frigate")
         run("stop", "frigate-api-proxy", "frigate")

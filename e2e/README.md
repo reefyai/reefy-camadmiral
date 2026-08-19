@@ -1,7 +1,7 @@
 # CamAdmiral E2E lab
 
 This suite exercises the built CamAdmiral container only through its HTTP,
-RTSP, process, and persistent-volume boundaries. It does not import
+RTSP, browser, process, and persistent-volume boundaries. It does not import
 CamAdmiral application modules.
 
 The isolated Docker Compose lab covers:
@@ -24,17 +24,22 @@ The isolated Docker Compose lab covers:
 - camera IP change with validated upstream replacement and stable downstream
   identities
 - camera credential rotation, failed repair preservation, and successful repair
+- WebKit phone-viewport rendering with every camera action button fully visible
+  and clickable inside its card
 
 Run from the repository root:
 
 ```console
+python -m pip install -r e2e/requirements.txt
+python -m playwright install webkit
 python3 e2e/run.py
 ```
 
-Docker with Compose v2 is the only host dependency. The runner builds the
-current source, creates a private bridge network and disposable volumes, and
-removes them when complete. It does not publish ports, scan the host LAN, mount
-the Docker socket into a container, or use host network capabilities.
+Docker with Compose v2 and Playwright WebKit are the host dependencies. The
+runner builds the current source, creates a private bridge network and
+disposable volumes, and removes them when complete. It publishes only an
+ephemeral loopback port for the browser check. It does not scan the host LAN,
+mount the Docker socket into a container, or use host network capabilities.
 
 Set `CAMADMIRAL_E2E_KEEP=1` to retain a failed lab for manual inspection. Remove
 it afterward with:

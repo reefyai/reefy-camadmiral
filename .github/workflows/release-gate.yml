@@ -16,7 +16,7 @@ jobs:
   release-gate:
     name: Unit, component, and E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -29,13 +29,24 @@ jobs:
         run: python3 scripts/validate-release.py
 
       - name: Install test dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt -r e2e/requirements.txt
+
+      - name: Install browser for UI E2E
+        run: python -m playwright install --with-deps webkit
 
       - name: Run unit and component tests
         run: python -m unittest discover -s tests -v
 
       - name: Run isolated E2E lab
         run: python3 e2e/run.py
+
+      - name: Upload UI E2E failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: camadmiral-ui-e2e-failure
+          path: e2e-artifacts/
+          if-no-files-found: ignore
 
       - name: Remove E2E resources
         if: always()
