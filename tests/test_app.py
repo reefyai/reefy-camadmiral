@@ -92,6 +92,52 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
         self.assertEqual(decorated["devices"][0]["display_name"], "Operator name")
 
+    def test_recovered_media_overrides_stale_offline_scan_in_summary(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "display_name": "Recovered camera",
+                "enabled": True,
+                "roles": {"record": "stream-1", "detect": "stream-1"},
+                "streams": [
+                    {
+                        "stream_uuid": "stream-1",
+                        "health_status": "healthy",
+                    }
+                ],
+            }
+        }
+        state = {
+            "devices": [
+                {
+                    "candidate_uuid": "candidate-1",
+                    "display_name": "Recovered camera",
+                    "status": "offline",
+                }
+            ],
+            "summary": {"devices": 1, "online": 0, "offline": 1},
+        }
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[]),
+            patch.object(
+                app_module.RELAY_HEALTH_MONITOR,
+                "cached_frame",
+                return_value=None,
+            ),
+        ):
+            decorated = app_module._decorate_adoptions(state)
+
+        device = decorated["devices"][0]
+        self.assertEqual(device["status"], "offline")
+        self.assertEqual(device["connectivity_status"], "online")
+        self.assertEqual(
+            decorated["summary"],
+            {"devices": 1, "online": 1, "offline": 0},
+        )
+
     def test_discovery_reports_only_an_available_cached_thumbnail(self) -> None:
         repository = Mock()
         repository.adoption_map.return_value = {

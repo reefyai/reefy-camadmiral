@@ -1090,6 +1090,26 @@
       return {key: "checking", label: "checking"};
     }
 
+    function cameraConnectivity(device) {
+      if (["online", "offline"].includes(device.connectivity_status)) {
+        return device.connectivity_status;
+      }
+      const health = cameraHealth(device).key;
+      if (health === "offline") return "offline";
+      if (["healthy", "degraded", "auth_failed"].includes(health)) return "online";
+      return device.status === "online" ? "online" : "offline";
+    }
+
+    function updateSummaryCounts() {
+      const counts = devices.reduce((result, device) => {
+        result[cameraConnectivity(device)] += 1;
+        return result;
+      }, {online: 0, offline: 0});
+      setText(document.querySelector("#device-count"), devices.length);
+      setText(document.querySelector("#online-count"), counts.online);
+      setText(document.querySelector("#offline-count"), counts.offline);
+    }
+
     function addCameraSummary(parent, device) {
       const summary = addText(parent, "section", "camera-summary", "");
       const top = addText(summary, "div", "camera-summary-top", "");
@@ -2448,7 +2468,7 @@
       dismissAvailabilityTooltip();
       const query = searchInput.value.trim().toLocaleLowerCase();
       const visible = devices.filter(device => (
-        matchesSearch(device, query) && (!cameraFilter || device.status === cameraFilter)
+        matchesSearch(device, query) && (!cameraFilter || cameraConnectivity(device) === cameraFilter)
       ));
       visible.sort((left, right) => {
         const a = sortValue(left, sortKey);
@@ -2585,6 +2605,7 @@
         const healthSignature = JSON.stringify((data.devices || []).map(device => [
           device.candidate_uuid,
           device.display_name,
+          device.connectivity_status,
           device.adoption?.enabled,
           device.adoption?.thumbnail_captured_at,
           ...(device.adoption?.frigate || []).map(status => [status.target, status.status, status.error_code]),
@@ -2597,9 +2618,7 @@
           for (const candidateId of inspections.keys()) {
             if (candidateId !== expandedCandidate) inspections.delete(candidateId);
           }
-          setText(document.querySelector("#device-count"), data.summary?.devices ?? devices.length);
-          setText(document.querySelector("#online-count"), data.summary?.online ?? 0);
-          setText(document.querySelector("#offline-count"), data.summary?.offline ?? 0);
+          updateSummaryCounts();
           renderRows();
         }
       }

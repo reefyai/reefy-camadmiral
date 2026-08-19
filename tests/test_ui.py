@@ -71,7 +71,11 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('data-camera-filter="online"', self.html)
         self.assertIn('data-camera-filter="offline"', self.html)
         self.assertIn("let cameraFilter = null", self.html)
-        self.assertIn("!cameraFilter || device.status === cameraFilter", self.html)
+        self.assertIn("function cameraConnectivity(device)", self.html)
+        self.assertIn("result[cameraConnectivity(device)] += 1", self.html)
+        self.assertIn("!cameraFilter || cameraConnectivity(device) === cameraFilter", self.html)
+        self.assertNotIn("!cameraFilter || device.status === cameraFilter", self.html)
+        self.assertIn("updateSummaryCounts();", self.html)
         self.assertIn('cameraFilter = requested === "all" || cameraFilter === requested ? null : requested', self.html)
         self.assertIn('button.classList.toggle("selected", selected)', self.html)
 
