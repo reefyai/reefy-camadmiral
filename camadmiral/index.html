@@ -116,9 +116,12 @@
     .summary { display: flex; gap: 9px; }
     .pill {
       border: 1px solid rgba(148, 163, 184, .15); background: rgba(12, 26, 42, .65);
-      border-radius: 999px; padding: 7px 11px; color: #9db0c0; font-size: 13px;
+      border-radius: 999px; padding: 7px 11px; color: #9db0c0; font: inherit; font-size: 13px; cursor: pointer;
     }
     .pill strong { color: #f0f7fa; }
+    .pill:hover { border-color: rgba(45, 212, 191, .38); color: #d7e5ec; }
+    .pill.selected { border-color: rgba(45, 212, 191, .55); background: rgba(45, 212, 191, .13); color: #b9fff5; }
+    .pill:focus-visible { outline: 2px solid rgba(45, 212, 191, .55); outline-offset: 2px; }
     .search { position: relative; width: min(280px, 100%); }
     .search span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
     .search input {
@@ -131,7 +134,7 @@
       overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
     }
-    table { width: 100%; min-width: 720px; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; min-width: 720px; table-layout: auto; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 13px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid rgba(148, 163, 184, .11); }
     th { color: #7890a4; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     tbody tr:last-child td { border-bottom: 0; }
@@ -153,7 +156,6 @@
     .camera-model { margin-top: 3px; color: #6e8496; font-size: 12px; }
     .camera-mobile-ip { display: none; margin-top: 5px; color: #91a5b5; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
     .conflict-note { margin-top: 4px; color: #fcd34d; font-size: 11px; font-weight: 700; }
-    .adopted-label { color: #75f4e2; }
     .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9c8d2; white-space: nowrap; }
     .connectivity-cell { display: grid; gap: 1px; min-width: 0; }
     .connectivity-line {
@@ -398,12 +400,25 @@
     }
     .stream-identity { min-width: 0; }
     .profile-name { color: #e0eaf0; font-weight: 700; }
+    .profile-metadata { min-width: 0; }
     .profile-specs { color: #91a5b5; line-height: 1.45; }
     .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
     .endpoint + .endpoint { margin-top: 5px; }
+    .stream-access { min-width: 0; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-    .downstream-row { display: flex; align-items: flex-start; gap: 7px; }
-    .downstream-url { color: #b9fff5; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .downstream-row {
+      display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px 5px 8px;
+      border: 1px solid rgba(148, 163, 184, .12); border-radius: 7px; background: rgba(12, 26, 42, .55);
+    }
+    .downstream-url {
+      flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; color: #b9fff5; cursor: text;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      scrollbar-color: rgba(148, 163, 184, .35) transparent; scrollbar-width: thin;
+      user-select: text; white-space: nowrap;
+    }
+    .downstream-url::-webkit-scrollbar { height: 4px; }
+    .downstream-url::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(148, 163, 184, .35); }
+    .downstream-url:focus-visible { outline: 1px solid rgba(45, 212, 191, .55); outline-offset: 2px; }
     .copy-button {
       flex: none; width: 28px; height: 28px; border: 1px solid rgba(45, 212, 191, .25); border-radius: 6px;
       background: rgba(45, 212, 191, .07); color: #8ff8e8; cursor: pointer; font-size: 15px; line-height: 1;
@@ -412,7 +427,7 @@
     .camera-source { margin-top: 7px; }
     .camera-source summary { color: #7890a4; cursor: pointer; font-size: 11px; }
     .camera-source summary:hover { color: #b9fff5; }
-    .camera-source .endpoint { margin-top: 5px; color: #91a5b5; }
+    .camera-source .endpoint { max-width: 100%; margin-top: 5px; color: #91a5b5; }
     .rtsp-available { color: #86efac; font-weight: 700; }
     .empty {
       padding: 76px 24px; border: 1px dashed rgba(148, 163, 184, .2); border-radius: 15px;
@@ -428,11 +443,11 @@
       main { padding-bottom: 28px; }
       header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 22px 0 16px; }
       h1 { font-size: 32px; }
-      .header-actions { display: grid; width: 100%; gap: 8px; }
-      .utility-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+      .header-actions { display: grid; width: 100%; gap: 8px; justify-content: stretch; }
+      .utility-actions { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
       .utility-actions > button { width: 100%; min-width: 0; padding: 8px 5px; font-size: 11px; }
       .scan-actions {
-        display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px;
+        display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto; gap: 7px;
         padding: 0; border: 0;
       }
       .scan-details-trigger { justify-content: flex-start; width: 100%; min-height: 34px; padding: 7px 8px; }
@@ -453,10 +468,11 @@
       thead { display: none; }
       tbody { display: grid; gap: 10px; }
       tbody tr.camera-row {
-        display: grid; grid-template-columns: 78px minmax(0, 1fr) auto;
-        grid-template-areas: "preview identity action" "preview status action";
-        height: 112px; min-height: 112px; max-height: 112px; overflow: hidden;
-        column-gap: 10px; row-gap: 8px; border: 1px solid rgba(148, 163, 184, .15);
+        display: grid; grid-template-columns: 78px minmax(0, 1fr);
+        grid-template-rows: 40px 30px 26px;
+        grid-template-areas: "preview identity" "preview status" "action action";
+        align-content: center; height: 142px; min-height: 142px; max-height: 142px; overflow: hidden;
+        column-gap: 10px; row-gap: 6px; border: 1px solid rgba(148, 163, 184, .15);
         border-radius: 12px; padding: 13px 14px; background: rgba(12, 26, 42, .76);
         box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
       }
@@ -466,15 +482,15 @@
       tbody tr.camera-row td:nth-child(2) { grid-area: status; }
       tbody tr.camera-row td:nth-child(3) { display: block; grid-area: preview; align-self: center; }
       tbody tr.camera-row td:nth-child(4) { display: none; }
-      tbody tr.camera-row td:nth-child(5) { grid-area: action; align-self: center; }
+      tbody tr.camera-row td:nth-child(5) { grid-area: action; align-self: stretch; min-width: 0; }
       .preview-cell { width: 78px; height: 58px; }
       .camera-model { display: none; }
       .cell-stack { max-height: 63px; }
       .camera-mobile-ip { display: block; }
       .row-availability-strip { max-width: 94px; }
       .row-availability-block:nth-child(-n+2) { display: none; }
-      .action-stack { align-items: stretch; flex-direction: column; justify-content: center; gap: 6px; }
-      .action-stack .row-action { min-width: 66px; padding: 7px 9px; }
+      .action-stack { width: 100%; align-items: stretch; flex-direction: row; justify-content: stretch; gap: 6px; }
+      .action-stack .row-action { flex: 1 1 0; min-width: 0; padding: 5px 4px; }
       .setup-form, .rtsp-credentials, .rtsp-actions { align-items: stretch; flex-direction: column; }
       .setup-field, .setup-field input, .rtsp-credentials .setup-field input { width: 100%; }
       .setup-form > .row-action, .rtsp-actions .row-action { width: 100%; padding: 8px 10px; }
@@ -536,9 +552,9 @@
       <div class="errorbox" id="error" hidden></div>
       <div class="toolbar" id="toolbar" hidden>
         <div class="summary">
-          <div class="pill"><strong id="device-count">0</strong> devices</div>
-          <div class="pill"><strong id="online-count">0</strong> online</div>
-          <div class="pill"><strong id="offline-count">0</strong> offline</div>
+          <button class="pill summary-filter" data-camera-filter="all" type="button"><strong id="device-count">0</strong> devices</button>
+          <button class="pill summary-filter" data-camera-filter="online" type="button" aria-pressed="false"><strong id="online-count">0</strong> online</button>
+          <button class="pill summary-filter" data-camera-filter="offline" type="button" aria-pressed="false"><strong id="offline-count">0</strong> offline</button>
         </div>
         <div class="toolbar-controls">
           <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
@@ -546,10 +562,6 @@
       </div>
       <div class="table-wrap" id="table-wrap" hidden>
         <table id="camera-table">
-          <colgroup>
-            <col style="width: 22%"><col style="width: 16%"><col style="width: 17%">
-            <col style="width: 27%"><col style="width: 18%">
-          </colgroup>
           <thead>
             <tr>
               <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
@@ -665,6 +677,7 @@
     let lastResultId = null;
     let sortKey = "name";
     let sortDirection = 1;
+    let cameraFilter = null;
     let scannerSignature = "";
     let scanDetailsSignature = "";
     let expandedCandidate = null;
@@ -688,6 +701,7 @@
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
+    const CAMERA_AVAILABILITY_REFRESH_MS = 30000;
     let pinnedAvailabilityBlock = null;
     let liveSocket = null;
     let liveReconnectTimer = null;
@@ -1337,26 +1351,41 @@
       }
     }
 
-    async function loadCameraAvailability(device, window = "24h") {
+    async function loadCameraAvailability(device, window = "24h", force = false) {
       const cameraUuid = device.adoption?.camera_uuid;
       if (!cameraUuid) return;
       const current = availabilityResults.get(cameraUuid);
-      if (current?.status === "loading" && current.window === window) return;
-      if (current?.status === "ready" && current.window === window) return;
+      const now = Date.now();
+      if (current?.requestId && current.window === window) return;
+      if (!force && current?.status === "ready" && current.window === window
+          && current.loadedAt && now - current.loadedAt < CAMERA_AVAILABILITY_REFRESH_MS) return;
       const requestId = Symbol("availability");
-      availabilityResults.set(cameraUuid, {status: "loading", window, requestId});
-      renderActiveCameraModal();
+      const refreshing = current?.status === "ready" && current.window === window;
+      availabilityResults.set(cameraUuid, refreshing
+        ? {...current, requestId}
+        : {status: "loading", window, requestId});
+      if (!refreshing) renderActiveCameraModal();
       try {
         const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/availability?window=${encodeURIComponent(window)}`, {cache: "no-store"});
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || "Availability could not be loaded.");
         if (availabilityResults.get(cameraUuid)?.requestId !== requestId) return;
-        availabilityResults.set(cameraUuid, {status: "ready", window, data});
+        availabilityResults.set(cameraUuid, {status: "ready", window, data, loadedAt: Date.now()});
       } catch (error) {
         if (availabilityResults.get(cameraUuid)?.requestId !== requestId) return;
-        availabilityResults.set(cameraUuid, {status: "error", window});
+        availabilityResults.set(cameraUuid, refreshing
+          ? {...current, requestId: null}
+          : {status: "error", window, loadedAt: Date.now()});
       }
       renderActiveCameraModal();
+    }
+
+    function refreshOpenCameraAvailability() {
+      if (appModal.hidden || appModalKind !== "camera" || !expandedCandidate) return;
+      const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
+      if (!device?.adoption?.camera_uuid) return;
+      const current = availabilityResults.get(device.adoption.camera_uuid);
+      void loadCameraAvailability(device, current?.window || "24h", true);
     }
 
     function matchesSearch(device, query) {
@@ -1415,27 +1444,24 @@
       window.setTimeout(() => { button.textContent = "⧉"; }, 1200);
     }
 
-    function addStreamAccess(parent, profile, managed, roles, enabled = true) {
+    function addStreamAccess(parent, managed, enabled = true) {
       const url = managed && enabled ? downstreamUrl(managed.stream_key) : null;
       addText(parent, "div", "downstream-label", "Downstream URL");
       const row = addText(parent, "div", "downstream-row", "");
       const value = !enabled
         ? "Disabled"
         : url || (managed ? mediaAccessFailed ? "Media access unavailable" : "Loading secure media access..." : "Available after adoption");
-      addText(row, "div", "downstream-url", value);
+      const urlText = addText(row, "div", "downstream-url", value);
       if (url) {
+        urlText.title = url;
+        urlText.tabIndex = 0;
+        urlText.setAttribute("aria-label", `Downstream URL: ${url}`);
         const copy = addText(row, "button", "copy-button", "⧉");
         copy.type = "button";
         copy.title = "Copy downstream URL";
         copy.setAttribute("aria-label", "Copy downstream URL");
         copy.addEventListener("click", () => copyText(url, copy));
       }
-      if (roles.length) addText(parent, "div", "role-label", roles.join(" · "));
-      const source = document.createElement("details");
-      source.className = "camera-source";
-      addText(source, "summary", "", "Show camera source");
-      addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
-      parent.append(source);
     }
 
     function addAdoptionProgress(parent, message) {
@@ -1939,10 +1965,27 @@
           addCredentialRepair(credentials, device, adoption);
         }
         addAvailability(wrapper, device, adoption);
-        if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
-        if (!result || !["ok", "adopted"].includes(result.status)) {
-          result = savedAdoptionInspection(adoption);
+        if (adoption.frigate?.length) {
+          const count = adoption.frigate.length;
+          const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
+          addFrigateStatus(integrations, adoption);
         }
+      }
+      return wrapper;
+    }
+
+    function streamDetails(device) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "camera-details stream-details";
+      const adoption = device.adoption;
+      if (!adoption) {
+        addText(wrapper, "div", "detail-message", "Adopt this camera before accessing its streams.");
+        return wrapper;
+      }
+      if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
+      let result = inspections.get(device.candidate_uuid);
+      if (!result || !["ok", "adopted"].includes(result.status)) {
+        result = savedAdoptionInspection(adoption);
       }
       const rtspOnly = result.profiles.some(profile => ["manual_rtsp", "catalog_rtsp"].includes(profile.source_kind));
       const streamCount = `${result.profiles.length} ${rtspOnly ? "RTSP stream" : "ONVIF profile"}${result.profiles.length === 1 ? "" : "s"}`;
@@ -1968,23 +2011,24 @@
           codec ? String(codec).toUpperCase() : null,
           fps ? `${Number(fps).toFixed(Number(fps) % 1 ? 1 : 0)} fps` : null
         ].filter(Boolean).join(" · ") || "Media details unavailable";
-        addText(row, "div", "profile-specs", specifications);
+        const metadata = addText(row, "div", "profile-metadata", "");
+        addText(metadata, "div", "profile-specs", specifications);
+        const source = document.createElement("details");
+        source.className = "camera-source";
+        addText(source, "summary", "", "Show camera source");
+        addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
+        metadata.append(source);
         const endpoint = addText(row, "div", "stream-access", "");
-        addStreamAccess(endpoint, profile, managed, [], adoption?.enabled !== false);
+        addStreamAccess(endpoint, managed, adoption?.enabled !== false);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
           const labels = {healthy: "Healthy", degraded: "Degraded", offline: "Offline", auth_failed: "Authentication failed", unknown: "Media check pending", idle: "Idle - waiting for a consumer"};
           const health = managed.probe_status === "idle" ? "idle" : managed.health_status || "unknown";
           if (managed.consecutive_failures) facts.push(`${managed.consecutive_failures} consecutive failure${managed.consecutive_failures === 1 ? "" : "s"}`);
-          addText(endpoint, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
+          addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
-      if (adoption?.frigate?.length) {
-        const count = adoption.frigate.length;
-        const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
-        addFrigateStatus(integrations, adoption);
-      }
       return wrapper;
     }
 
@@ -2344,21 +2388,24 @@
     }
 
     function renderActiveCameraModal() {
-      if (!["camera", "adopt"].includes(appModalKind) || !expandedCandidate) return;
+      if (!["camera", "streams", "adopt"].includes(appModalKind) || !expandedCandidate) return;
       const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
       if (!device) {
         closeAppModal(false);
         return;
       }
+      const cameraName = device.display_name || device.ip;
       const title = appModalKind === "adopt"
-        ? `Adopt ${device.display_name || device.ip}`
-        : (device.display_name || device.ip);
+        ? `Adopt ${cameraName}`
+        : appModalKind === "streams" ? `${cameraName} streams` : cameraName;
       appModalTitle.textContent = title;
       appModalTitle.title = title;
       appModalBody.replaceChildren(
         appModalKind === "adopt"
           ? adoptionDetails(device)
-          : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
+          : appModalKind === "streams"
+            ? streamDetails(device)
+            : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
       );
     }
 
@@ -2370,6 +2417,14 @@
       const content = device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device);
       openAppModal("camera", title, content, trigger, "wide");
       if (device.adoption?.camera_uuid) loadCameraAvailability(device);
+    }
+
+    function openCameraStreams(device, trigger = null) {
+      const candidateId = device.candidate_uuid;
+      if (!candidateId || !device.adoption) return;
+      expandedCandidate = candidateId;
+      const title = `${device.display_name || device.ip} streams`;
+      openAppModal("streams", title, streamDetails(device), trigger, "wide");
     }
 
     async function openCameraAdoption(device, trigger = null) {
@@ -2392,7 +2447,9 @@
     function renderRows() {
       dismissAvailabilityTooltip();
       const query = searchInput.value.trim().toLocaleLowerCase();
-      const visible = devices.filter(device => matchesSearch(device, query));
+      const visible = devices.filter(device => (
+        matchesSearch(device, query) && (!cameraFilter || device.status === cameraFilter)
+      ));
       visible.sort((left, right) => {
         const a = sortValue(left, sortKey);
         const b = sortValue(right, sortKey);
@@ -2409,10 +2466,9 @@
         addClippedText(identityStack, "div", "camera-name", device.display_name || device.ip);
         const identityMeta = [
           device.onvif?.model && device.onvif.model !== device.display_name ? device.onvif.model : null,
-          device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null,
-          device.adoption ? (device.adoption.enabled === false ? "Adopted · Disabled" : "Adopted") : null
+          device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null
         ].filter(Boolean).join(" · ");
-        if (identityMeta) addClippedText(identityStack, "div", `camera-model${device.adoption ? " adopted-label" : ""}`, identityMeta);
+        if (identityMeta) addClippedText(identityStack, "div", "camera-model", identityMeta);
         addClippedText(identityStack, "div", "camera-mobile-ip", device.ip);
         const statusCell = addCell(row);
         const statusStack = addText(statusCell, "div", "status-stack", "");
@@ -2431,7 +2487,7 @@
           previewCell.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
         }
         const previewPlaceholder = addText(previewCell, "span", "preview-placeholder", device.adoption ? "Waiting for video" : "Not adopted");
-        if (device.adoption?.camera_uuid) {
+        if (device.adoption?.camera_uuid && device.adoption.thumbnail_captured_at) {
           const image = document.createElement("img");
           image.alt = `Recent view from ${device.display_name || "camera"}`;
           image.loading = "lazy";
@@ -2443,16 +2499,14 @@
             image.classList.remove("ready");
             previewPlaceholder.hidden = false;
           });
-          image.src = `/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/thumbnail.jpg`;
+          image.src = `/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/thumbnail.jpg?captured=${encodeURIComponent(device.adoption.thumbnail_captured_at)}`;
           previewCell.append(image);
         }
         const connectivity = addCell(row);
         const connectivityCell = addText(connectivity, "div", "connectivity-cell", "");
         [
           ["IP", device.ip || "-", false],
-          ["MAC", device.mac || "-", false],
-          ["ONVIF", device.onvif?.service_urls?.length ? "Available" : "-", Boolean(device.onvif?.service_urls?.length)],
-          ["RTSP", device.rtsp?.length ? "Available" : "-", Boolean(device.rtsp?.length)]
+          ["MAC", device.mac || "-", false]
         ].forEach(([label, value, available]) => {
           const line = addText(connectivityCell, "div", "connectivity-line", "");
           addText(line, "span", "connectivity-label", label);
@@ -2465,6 +2519,12 @@
         details.setAttribute("aria-haspopup", "dialog");
         details.disabled = !device.candidate_uuid;
         details.addEventListener("click", () => openCameraDetails(device, details));
+        if (device.adoption?.camera_uuid) {
+          const streams = addText(actionStack, "button", "row-action", "Streams");
+          streams.type = "button";
+          streams.setAttribute("aria-haspopup", "dialog");
+          streams.addEventListener("click", () => openCameraStreams(device, streams));
+        }
         if (device.adoption?.camera_uuid && device.adoption.enabled !== false) {
           const live = addText(actionStack, "button", "row-action", "Live");
           live.type = "button";
@@ -2484,7 +2544,14 @@
       });
       tableWrap.hidden = visible.length === 0;
       empty.hidden = visible.length > 0;
-      setText(empty, devices.length ? "No matching cameras." : "No ONVIF or RTSP cameras found.");
+      const filterLabel = cameraFilter ? `${cameraFilter} ` : "";
+      setText(empty, devices.length ? `No matching ${filterLabel}cameras.` : "No ONVIF or RTSP cameras found.");
+
+      document.querySelectorAll(".summary-filter").forEach(button => {
+        const selected = button.dataset.cameraFilter === cameraFilter;
+        button.classList.toggle("selected", selected);
+        if (button.dataset.cameraFilter !== "all") button.setAttribute("aria-pressed", String(selected));
+      });
 
       document.querySelectorAll(".sort").forEach(button => {
         const arrow = button.querySelector(".sort-arrow");
@@ -2519,6 +2586,7 @@
           device.candidate_uuid,
           device.display_name,
           device.adoption?.enabled,
+          device.adoption?.thumbnail_captured_at,
           ...(device.adoption?.frigate || []).map(status => [status.target, status.status, status.error_code]),
           ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
         ]));
@@ -2613,6 +2681,13 @@
     });
 
     searchInput.addEventListener("input", renderRows);
+    document.querySelectorAll(".summary-filter").forEach(button => {
+      button.addEventListener("click", () => {
+        const requested = button.dataset.cameraFilter;
+        cameraFilter = requested === "all" || cameraFilter === requested ? null : requested;
+        renderRows();
+      });
+    });
     appModalClose.addEventListener("click", () => closeAppModal());
     appModal.addEventListener("click", event => {
       if (event.target === appModal) closeAppModal();
@@ -2676,6 +2751,7 @@
     refresh();
     setInterval(refresh, 1000);
     setInterval(loadIncidentCount, 10000);
+    setInterval(refreshOpenCameraAvailability, CAMERA_AVAILABILITY_REFRESH_MS);
   </script>
 </body>
 </html>

@@ -197,6 +197,9 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         candidate_uuid = device.get("candidate_uuid")
         if candidate_uuid in adoptions:
             adoption = adoptions[candidate_uuid]
+            camera_uuid = adoption.get("camera_uuid")
+            frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
+            adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
             adoption["frigate"] = []
             for target, bindings_by_camera in frigate_bindings:
                 binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
