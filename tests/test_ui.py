@@ -94,6 +94,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('"connectivity-cell"', self.html)
         self.assertIn('["IP", device.ip || "-", false]', self.html)
         self.assertIn('["MAC", device.mac || "-", false]', self.html)
+        self.assertIn('"connectivity-protocols"', self.html)
+        self.assertIn('addText(protocols, "span", "protocol-badge", "ONVIF")', self.html)
+        self.assertIn('addText(protocols, "span", "protocol-badge", "RTSP")', self.html)
         self.assertNotIn('["ONVIF", device.onvif?.service_urls?.length ? "Available"', self.html)
         self.assertNotIn('["RTSP", device.rtsp?.length ? "Available"', self.html)
 

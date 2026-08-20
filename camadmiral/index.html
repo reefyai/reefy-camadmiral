@@ -164,6 +164,8 @@
     .connectivity-label { flex: none; color: #60798e; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
     .connectivity-value { flex: 0 1 auto; color: #a9bac6; }
     .connectivity-value.available { color: #86efac; font-weight: 700; }
+    .connectivity-protocols { display: flex; gap: 4px; margin-top: 3px; flex-wrap: nowrap; }
+    .connectivity-protocols .protocol-badge { padding: 2px 6px; font-size: 9px; line-height: 1; }
     .preview-cell {
       position: relative; width: 96px; height: 50px; overflow: hidden;
       border: 1px solid rgba(148, 163, 184, .14); border-radius: 7px; background: #050b12;
@@ -2532,6 +2534,11 @@
           addText(line, "span", "connectivity-label", label);
           addClippedText(line, "span", `connectivity-value${available ? " available" : ""}`, value);
         });
+        if (device.onvif?.service_urls?.length || device.rtsp?.length) {
+          const protocols = addText(connectivityCell, "div", "connectivity-protocols", "");
+          if (device.onvif?.service_urls?.length) addText(protocols, "span", "protocol-badge", "ONVIF");
+          if (device.rtsp?.length) addText(protocols, "span", "protocol-badge", "RTSP");
+        }
         const actions = addCell(row);
         const actionStack = addText(actions, "div", "action-stack", "");
         const details = addText(actionStack, "button", "row-action", "Details");

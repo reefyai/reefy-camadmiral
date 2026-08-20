@@ -26,6 +26,14 @@ def assert_mobile_camera_actions(page: Page) -> None:
         timeout=30_000,
     )
 
+    protocol_badges = set(
+        page.locator("#camera-rows .connectivity-protocols .protocol-badge").all_inner_texts()
+    )
+    missing_protocols = {"ONVIF", "RTSP"} - protocol_badges
+    if missing_protocols:
+        missing = ", ".join(sorted(missing_protocols))
+        raise UiScenarioFailure(f"Connectivity is missing protocol badges: {missing}")
+
     failures: list[str] = page.locator("#camera-rows tr.camera-row").evaluate_all(
         """
         cards => {
