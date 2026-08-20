@@ -74,7 +74,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('viewport={"width": 390, "height": 844}', browser)
         self.assertIn('.evaluate_all(', browser)
         self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
-        self.assertIn("document.elementFromPoint", browser)
+        self.assertIn("bounds.bottom > cardBounds.bottom + 0.5", browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:

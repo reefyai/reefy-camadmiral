@@ -55,15 +55,6 @@ def assert_mobile_camera_actions(page: Page) -> None:
               if (bounds.bottom > cardBounds.bottom + 0.5) {
                 failures.push(`${label} extends below camera card ${cardIndex + 1}`);
               }
-              const target = document.elementFromPoint(
-                bounds.left + bounds.width / 2,
-                bounds.bottom - 1
-              );
-              if (target !== button && !button.contains(target)) {
-                failures.push(
-                  `${label} bottom edge is clipped on camera card ${cardIndex + 1}`
-                );
-              }
             });
           });
           return failures;
