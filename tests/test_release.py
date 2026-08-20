@@ -82,6 +82,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
 
         self.assertIn("172.31.0.87", compose)
+        self.assertIn("gw_priority: 1", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
         self.assertIn("manual discovery on a non-default connected subnet", scenarios)
         self.assertIn("full discovery across every connected subnet", scenarios)
