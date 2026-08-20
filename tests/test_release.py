@@ -72,7 +72,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("ui_scenario()", runner)
         self.assertIn('playwright.webkit.launch(headless=True)', browser)
         self.assertIn('viewport={"width": 390, "height": 844}', browser)
-        self.assertIn("bottom(button_box) > bottom(cell_box) + 0.5", browser)
+        self.assertIn('.evaluate_all(', browser)
+        self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
         self.assertIn("document.elementFromPoint", browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 

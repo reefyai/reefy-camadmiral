@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from playwright.sync_api import Locator, Page, sync_playwright
+from playwright.sync_api import Page, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,17 +19,6 @@ class UiScenarioFailure(RuntimeError):
     pass
 
 
-def box(locator: Locator, description: str) -> dict[str, float]:
-    bounds = locator.bounding_box()
-    if bounds is None:
-        raise UiScenarioFailure(f"{description} has no rendered bounds")
-    return bounds
-
-
-def bottom(bounds: dict[str, float]) -> float:
-    return bounds["y"] + bounds["height"]
-
-
 def assert_mobile_camera_actions(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
     page.wait_for_function(
@@ -37,45 +26,52 @@ def assert_mobile_camera_actions(page: Page) -> None:
         timeout=30_000,
     )
 
-    cards = page.locator("#camera-rows tr.camera-row")
-    for card_index in range(cards.count()):
-        card = cards.nth(card_index)
-        card.scroll_into_view_if_needed()
-        action_cell = card.locator("td").nth(4)
-        card_box = box(card, f"camera card {card_index + 1}")
-        cell_box = box(action_cell, f"camera action cell {card_index + 1}")
-        buttons = action_cell.locator("button.row-action")
-        if buttons.count() == 0:
-            raise UiScenarioFailure(f"camera card {card_index + 1} has no action buttons")
-
-        for button_index in range(buttons.count()):
-            button = buttons.nth(button_index)
-            label = button.inner_text().strip() or f"button {button_index + 1}"
-            button_box = box(button, f"{label} on camera card {card_index + 1}")
-            if bottom(button_box) > bottom(cell_box) + 0.5:
-                raise UiScenarioFailure(
-                    f"{label} extends below its action row on camera card {card_index + 1}"
-                )
-            if bottom(button_box) > bottom(card_box) + 0.5:
-                raise UiScenarioFailure(
-                    f"{label} extends below camera card {card_index + 1}"
-                )
-            bottom_edge_is_clickable = button.evaluate(
-                """
-                element => {
-                  const bounds = element.getBoundingClientRect();
-                  const target = document.elementFromPoint(
-                    bounds.left + bounds.width / 2,
-                    bounds.bottom - 1
-                  );
-                  return target === element || element.contains(target);
-                }
-                """
-            )
-            if not bottom_edge_is_clickable:
-                raise UiScenarioFailure(
-                    f"{label} bottom edge is clipped on camera card {card_index + 1}"
-                )
+    failures: list[str] = page.locator("#camera-rows tr.camera-row").evaluate_all(
+        """
+        cards => {
+          const failures = [];
+          cards.forEach((card, cardIndex) => {
+            card.scrollIntoView({block: "center"});
+            const actionCell = card.querySelectorAll("td")[4];
+            if (!actionCell) {
+              failures.push(`camera card ${cardIndex + 1} has no action cell`);
+              return;
+            }
+            const cardBounds = card.getBoundingClientRect();
+            const cellBounds = actionCell.getBoundingClientRect();
+            const buttons = actionCell.querySelectorAll("button.row-action");
+            if (!buttons.length) {
+              failures.push(`camera card ${cardIndex + 1} has no action buttons`);
+              return;
+            }
+            buttons.forEach((button, buttonIndex) => {
+              const label = button.innerText.trim() || `button ${buttonIndex + 1}`;
+              const bounds = button.getBoundingClientRect();
+              if (bounds.bottom > cellBounds.bottom + 0.5) {
+                failures.push(
+                  `${label} extends below its action row on camera card ${cardIndex + 1}`
+                );
+              }
+              if (bounds.bottom > cardBounds.bottom + 0.5) {
+                failures.push(`${label} extends below camera card ${cardIndex + 1}`);
+              }
+              const target = document.elementFromPoint(
+                bounds.left + bounds.width / 2,
+                bounds.bottom - 1
+              );
+              if (target !== button && !button.contains(target)) {
+                failures.push(
+                  `${label} bottom edge is clipped on camera card ${cardIndex + 1}`
+                );
+              }
+            });
+          });
+          return failures;
+        }
+        """
+    )
+    if failures:
+        raise UiScenarioFailure("; ".join(failures))
 
 
 def main() -> int:
