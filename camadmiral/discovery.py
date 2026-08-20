@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import ctypes
 import fcntl
 import ipaddress
 import os
@@ -28,6 +29,7 @@ REACHABILITY_WORKERS = int(os.environ.get("CAMADMIRAL_REACHABILITY_WORKERS", "32
 RTSP_CONNECT_TIMEOUT = float(os.environ.get("CAMADMIRAL_RTSP_TIMEOUT", "0.4"))
 ONVIF_TIMEOUT = float(os.environ.get("CAMADMIRAL_ONVIF_TIMEOUT", "2.5"))
 MAX_SCAN_LOG_LINES = 5000
+VIRTUAL_INTERFACE_PREFIXES = ("docker", "veth", "br-", "virbr", "tailscale", "tun", "tap")
 
 
 class DiscoveryScanError(RuntimeError):
@@ -51,6 +53,34 @@ class LanInterface:
         }
 
 
+class _Sockaddr(ctypes.Structure):
+    _fields_ = [("family", ctypes.c_ushort), ("data", ctypes.c_char * 14)]
+
+
+class _SockaddrIn(ctypes.Structure):
+    _fields_ = [
+        ("family", ctypes.c_ushort),
+        ("port", ctypes.c_ushort),
+        ("address", ctypes.c_ubyte * 4),
+        ("padding", ctypes.c_ubyte * 8),
+    ]
+
+
+class _IfAddrs(ctypes.Structure):
+    pass
+
+
+_IfAddrs._fields_ = [
+    ("next", ctypes.POINTER(_IfAddrs)),
+    ("name", ctypes.c_char_p),
+    ("flags", ctypes.c_uint),
+    ("address", ctypes.POINTER(_Sockaddr)),
+    ("netmask", ctypes.POINTER(_Sockaddr)),
+    ("broadcast", ctypes.POINTER(_Sockaddr)),
+    ("data", ctypes.c_void_p),
+]
+
+
 def _interface_ipv4(name: str, request: int) -> ipaddress.IPv4Address:
     packed_name = struct.pack("256s", name.encode("utf-8")[:15])
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -58,8 +88,51 @@ def _interface_ipv4(name: str, request: int) -> ipaddress.IPv4Address:
     return ipaddress.IPv4Address(result[20:24])
 
 
-def default_lan_interface(route_text: str | None = None) -> LanInterface:
-    route_text = ROUTE_TABLE.read_text(encoding="utf-8") if route_text is None else route_text
+def _interface_ipv4_lans() -> list[LanInterface]:
+    """Return every active IPv4 address without depending on external tools."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    head = ctypes.POINTER(_IfAddrs)()
+    libc.getifaddrs.argtypes = [ctypes.POINTER(ctypes.POINTER(_IfAddrs))]
+    libc.getifaddrs.restype = ctypes.c_int
+    libc.freeifaddrs.argtypes = [ctypes.POINTER(_IfAddrs)]
+    if libc.getifaddrs(ctypes.byref(head)) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    results: list[LanInterface] = []
+    try:
+        current = head
+        while current:
+            entry = current.contents
+            if (
+                entry.address
+                and entry.netmask
+                and entry.address.contents.family == socket.AF_INET
+                and entry.flags & 0x1  # IFF_UP
+            ):
+                address_struct = ctypes.cast(
+                    entry.address, ctypes.POINTER(_SockaddrIn)
+                ).contents
+                netmask_struct = ctypes.cast(
+                    entry.netmask, ctypes.POINTER(_SockaddrIn)
+                ).contents
+                address = ipaddress.IPv4Address(bytes(address_struct.address))
+                netmask = ipaddress.IPv4Address(bytes(netmask_struct.address))
+                results.append(
+                    LanInterface(
+                        name=entry.name.decode("utf-8", errors="replace"),
+                        address=address,
+                        network=ipaddress.IPv4Network(
+                            f"{address}/{netmask}", strict=False
+                        ),
+                    )
+                )
+            current = entry.next
+    finally:
+        libc.freeifaddrs(head)
+    return results
+
+
+def _default_interface_name(route_text: str) -> str:
     candidates: list[tuple[int, str]] = []
     for line in route_text.splitlines()[1:]:
         fields = line.split()
@@ -71,19 +144,67 @@ def default_lan_interface(route_text: str | None = None) -> LanInterface:
         candidates.append((int(metric), name))
     if not candidates:
         raise RuntimeError("No default LAN interface found")
+    return min(candidates)[1]
 
-    name = min(candidates)[1]
-    address = _interface_ipv4(name, 0x8915)  # SIOCGIFADDR
-    netmask = _interface_ipv4(name, 0x891B)  # SIOCGIFNETMASK
-    network = ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
-    if not address.is_private:
-        raise RuntimeError(f"Default interface {name} is not on a private IPv4 network")
-    host_count = max(0, network.num_addresses - 2)
-    if host_count > MAX_SCAN_HOSTS:
-        raise RuntimeError(
-            f"LAN subnet {network} has {host_count} hosts; safety limit is {MAX_SCAN_HOSTS}"
+
+def private_lan_interfaces(
+    route_text: str | None = None,
+    candidates: Iterable[LanInterface] | None = None,
+) -> list[LanInterface]:
+    """Select safe private subnets, ordered with the default LAN first."""
+    route_text = ROUTE_TABLE.read_text(encoding="utf-8") if route_text is None else route_text
+    default_name = _default_interface_name(route_text)
+    found = list(_interface_ipv4_lans() if candidates is None else candidates)
+    try:
+        default_address = _interface_ipv4(default_name, 0x8915)
+    except OSError:
+        default_address = None
+    eligible: list[LanInterface] = []
+    rejected_large: list[LanInterface] = []
+    for interface in found:
+        if interface.name == "lo" or interface.name.startswith(VIRTUAL_INTERFACE_PREFIXES):
+            continue
+        if (
+            not interface.address.is_private
+            or interface.address.is_loopback
+            or interface.address.is_link_local
+            or interface.address.is_multicast
+            or interface.address.is_unspecified
+        ):
+            continue
+        if max(0, interface.network.num_addresses - 2) > MAX_SCAN_HOSTS:
+            rejected_large.append(interface)
+            continue
+        eligible.append(interface)
+    eligible.sort(
+        key=lambda interface: (
+            interface.name != default_name,
+            interface.address != default_address,
+            interface.name,
+            int(interface.network.network_address),
+            int(interface.address),
         )
-    return LanInterface(name=name, address=address, network=network)
+    )
+    deduplicated: list[LanInterface] = []
+    seen_networks: set[ipaddress.IPv4Network] = set()
+    for interface in eligible:
+        if interface.network in seen_networks:
+            continue
+        seen_networks.add(interface.network)
+        deduplicated.append(interface)
+    if deduplicated:
+        return deduplicated
+    if rejected_large:
+        interface = rejected_large[0]
+        hosts = max(0, interface.network.num_addresses - 2)
+        raise RuntimeError(
+            f"LAN subnet {interface.network} has {hosts} hosts; safety limit is {MAX_SCAN_HOSTS}"
+        )
+    raise RuntimeError("No eligible private IPv4 LAN found")
+
+
+def default_lan_interface(route_text: str | None = None) -> LanInterface:
+    return private_lan_interfaces(route_text)[0]
 
 
 def _probe_message(
@@ -413,11 +534,20 @@ def scan_explicit_address(
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
         raw_log.append(f"{timestamp} {' '.join(str(message).splitlines())}")
 
-    interface = default_lan_interface()
     target = ipaddress.IPv4Address(address)
-    if not target.is_private or target not in interface.network or target == interface.address:
+    interfaces = private_lan_interfaces()
+    interface = next(
+        (
+            candidate
+            for candidate in interfaces
+            if target in candidate.network and target != candidate.address
+        ),
+        None,
+    )
+    if not target.is_private or interface is None:
+        subnets = ", ".join(str(candidate.network) for candidate in interfaces)
         raise DiscoveryScanError(
-            f"Address must be a camera address inside {interface.network}", raw_log
+            f"Address must be a camera address inside a connected LAN ({subnets})", raw_log
         )
     scanners = {"onvif": "running", "rtsp": "running"}
     if progress:
@@ -559,7 +689,12 @@ def discover_targeted(
             onvif_by_endpoint[endpoint].append(device)
     addresses_by_mac: dict[str, list[str]] = defaultdict(list)
     for address, mac in arp_entries.items():
-        addresses_by_mac[str(mac).lower()].append(address)
+        try:
+            parsed_address = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if parsed_address in interface.network:
+            addresses_by_mac[str(mac).lower()].append(address)
 
     matches: dict[str, str] = {}
     for target in targets:
@@ -614,14 +749,40 @@ def scan_targeted_lan(
         if len(raw_log) < MAX_SCAN_LOG_LINES:
             raw_log.append(f"{timestamp} {clean}")
 
-    log("RECOVERY: selecting the default private LAN interface")
-    interface = default_lan_interface()
+    log("RECOVERY: selecting connected private LAN interfaces")
+    interfaces = private_lan_interfaces()
+    primary_interface = interfaces[0]
+    log(
+        "RECOVERY: selected "
+        + ", ".join(
+            f"{interface.name} {interface.address} ({interface.network})"
+            for interface in interfaces
+        )
+    )
     targets = list(targets)
     if progress:
-        progress("recovery", "running", interface)
-    devices = discover_targeted(interface, targets, log)
+        progress("recovery", "running", primary_interface)
+    devices: list[dict[str, Any]] = []
+    errors: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(interfaces)) as pool:
+        futures = {
+            pool.submit(discover_targeted, interface, targets, log): interface
+            for interface in interfaces
+        }
+        for future in concurrent.futures.as_completed(futures):
+            interface = futures[future]
+            try:
+                devices.extend(future.result())
+            except Exception as exc:
+                errors.append(f"{interface.network}: {str(exc)[:160]}")
+                log(
+                    f"RECOVERY: {interface.network} failed; "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+    if errors and len(errors) == len(interfaces):
+        raise DiscoveryScanError("Recovery failed on every connected LAN", raw_log)
     if progress:
-        progress("recovery", "complete", interface)
+        progress("recovery", "complete", primary_interface)
     completed_at = datetime.now(timezone.utc).isoformat()
     duration_ms = round((time.monotonic() - started) * 1000)
     log(f"RECOVERY: complete in {duration_ms}ms")
@@ -629,9 +790,9 @@ def scan_targeted_lan(
         "started_at": started_at,
         "completed_at": completed_at,
         "duration_ms": duration_ms,
-        "network": interface.as_dict(),
+        "network": primary_interface.as_dict(),
         "scanners": {"recovery": "complete"},
-        "scanner_errors": {},
+        "scanner_errors": {"recovery": "; ".join(errors)} if errors else {},
         "devices": devices,
         "raw_log": raw_log,
     }
@@ -653,41 +814,58 @@ def scan_lan(
             if len(raw_log) < MAX_SCAN_LOG_LINES:
                 raw_log.append(f"{timestamp} {clean}")
 
-    log("SCAN: selecting the default private LAN interface")
+    log("SCAN: selecting connected private LAN interfaces")
     try:
-        interface = default_lan_interface()
+        interfaces = private_lan_interfaces()
     except Exception as exc:
         log(f"SCAN: interface selection failed; {type(exc).__name__}: {str(exc)[:200]}")
         raise DiscoveryScanError(str(exc), raw_log) from exc
-    log(
-        f"SCAN: start; interface={interface.name}; address={interface.address}; "
-        f"subnet={interface.network}; hosts={max(0, interface.network.num_addresses - 2)}"
-    )
+    primary_interface = interfaces[0]
+    for interface in interfaces:
+        log(
+            f"SCAN: network; interface={interface.name}; address={interface.address}; "
+            f"subnet={interface.network}; hosts={max(0, interface.network.num_addresses - 2)}"
+        )
+    log(f"SCAN: start; networks={len(interfaces)}")
     known_devices = list(known_devices)
     scanners = {"onvif": "running", "rtsp": "running", "reachability": "running"}
     errors: dict[str, str] = {}
     if progress:
         for scanner in scanners:
-            progress(scanner, "running", interface)
+            progress(scanner, "running", primary_interface)
     results: dict[str, Any] = {"onvif": [], "rtsp": [], "reachability": []}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {
-            pool.submit(discover_onvif, interface, log): "onvif",
-            pool.submit(discover_rtsp, interface, log): "rtsp",
-            pool.submit(discover_reachable_known, interface, known_devices, log): "reachability",
-        }
+    scanner_failures: dict[str, list[str]] = defaultdict(list)
+    scanner_successes: Counter[str] = Counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(interfaces) * 3) as pool:
+        futures: dict[concurrent.futures.Future[Any], tuple[str, LanInterface]] = {}
+        for interface in interfaces:
+            futures[pool.submit(discover_onvif, interface, log)] = ("onvif", interface)
+            futures[pool.submit(discover_rtsp, interface, log)] = ("rtsp", interface)
+            futures[
+                pool.submit(discover_reachable_known, interface, known_devices, log)
+            ] = ("reachability", interface)
         for future in concurrent.futures.as_completed(futures):
-            scanner = futures[future]
+            scanner, interface = futures[future]
             try:
-                results[scanner] = future.result()
+                results[scanner].extend(future.result())
             except Exception as exc:
-                scanners[scanner] = "error"
-                errors[scanner] = str(exc)[:200]
-                log(f"{scanner.upper()}: error; {type(exc).__name__}: {str(exc)[:200]}")
+                scanner_failures[scanner].append(
+                    f"{interface.network}: {str(exc)[:160]}"
+                )
+                log(
+                    f"{scanner.upper()}: {interface.network} error; "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
             else:
-                scanners[scanner] = "complete"
-            if progress:
-                progress(scanner, scanners[scanner], interface)
+                scanner_successes[scanner] += 1
+    for scanner in scanners:
+        if scanner_successes[scanner]:
+            scanners[scanner] = "complete"
+        else:
+            scanners[scanner] = "error"
+            errors[scanner] = "; ".join(scanner_failures[scanner])[:200]
+        if progress:
+            progress(scanner, scanners[scanner], primary_interface)
     if "onvif" in errors and "rtsp" in errors:
         log("SCAN: failed; ONVIF and RTSP discovery both failed")
         raise DiscoveryScanError("ONVIF and RTSP discovery both failed", raw_log)
@@ -718,7 +896,7 @@ def scan_lan(
         "started_at": started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "duration_ms": duration_ms,
-        "network": interface.as_dict(),
+        "network": primary_interface.as_dict(),
         "scanners": scanners,
         "scanner_errors": errors,
         "devices": devices,

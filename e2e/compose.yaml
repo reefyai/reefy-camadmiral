@@ -25,6 +25,8 @@ services:
     networks:
       lab:
         ipv4_address: 172.30.0.20
+      secondary:
+        ipv4_address: 172.31.0.20
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -126,6 +128,21 @@ services:
     healthcheck:
       disable: true
 
+  camera-secondary:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-secondary.yaml"]
+    volumes:
+      - ./fixtures/camera-secondary.yaml:/e2e/camera-secondary.yaml:ro
+    networks:
+      secondary:
+        ipv4_address: 172.31.0.87
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
   camera-auth-rotated:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth-rotated.yaml"]
@@ -149,7 +166,7 @@ services:
     volumes:
       - .:/e2e:ro
       - e2e-state:/state
-    networks: [lab]
+    networks: [lab, secondary]
     environment:
       CAMADMIRAL_E2E_ADMIN_PASSWORD: synthetic-e2e-admin-password
     read_only: true
@@ -162,6 +179,10 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+  secondary:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
 
 volumes:
   camadmiral-data:

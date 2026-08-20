@@ -597,6 +597,77 @@ def baseline() -> None:
     print("baseline: adoption, roles, auth rejection, lifecycle, media, cached views, fan-out, and alert contracts passed")
 
 
+def multi_subnet_discovery() -> None:
+    wait_for_health()
+    wait_for_camera_sources(
+        "secondary-subnet synthetic camera source readiness",
+        {"rtsp://camera-secondary:554/live": (640, 360)},
+    )
+
+    request_json(
+        "/internal/discovery/address",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan-address"},
+        payload={"address": "172.31.0.87"},
+        expected=202,
+    )
+
+    def secondary_explicitly_found() -> dict[str, object] | None:
+        state = discovery()
+        if state.get("status") in {"queued", "running"}:
+            return None
+        camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.31.0.87" and device.get("rtsp")
+            ),
+            None,
+        )
+        return state if camera else None
+
+    explicit = wait_for(
+        "manual discovery on a non-default connected subnet",
+        secondary_explicitly_found,
+        timeout=60,
+    )
+    if explicit.get("network", {}).get("subnet") != "172.31.0.0/24":
+        raise ScenarioFailure("Manual discovery selected the wrong connected subnet")
+
+    request_json(
+        "/internal/discovery/scan",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan"},
+        expected=202,
+    )
+
+    def secondary_found_by_full_scan() -> dict[str, object] | None:
+        state = discovery()
+        if state.get("status") in {"queued", "running"}:
+            return None
+        camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.31.0.87" and device.get("rtsp")
+            ),
+            None,
+        )
+        return state if camera else None
+
+    scanned = wait_for(
+        "full discovery across every connected subnet",
+        secondary_found_by_full_scan,
+        timeout=90,
+    )
+    if scanned.get("network", {}).get("subnet") != "172.30.0.0/24":
+        raise ScenarioFailure("Full discovery did not preserve the default LAN as primary")
+    raw_log = "\n".join(str(line) for line in scanned.get("raw_log", []))
+    if "subnet=172.30.0.0/24" not in raw_log or "subnet=172.31.0.0/24" not in raw_log:
+        raise ScenarioFailure("Full discovery did not report both connected subnets")
+    print("multi-subnet-discovery: manual and full RTSP discovery passed on a non-default LAN")
+
+
 def load_state() -> dict[str, object]:
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -921,6 +992,7 @@ def frigate() -> None:
 
 SCENARIOS = {
     "baseline": baseline,
+    "multi-subnet-discovery": multi_subnet_discovery,
     "runtime-drift": runtime_drift,
     "runtime-recovery": runtime_recovery,
     "camera-outage": camera_outage,

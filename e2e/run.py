@@ -66,8 +66,9 @@ def main() -> int:
         run("build", "camadmiral")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
-            "camera-onvif",
+            "camera-onvif", "camera-secondary",
         )
+        scenario("multi-subnet-discovery")
         scenario("baseline")
         ui_scenario()
         run("up", "--detach", "frigate", "frigate-api-proxy")

@@ -76,6 +76,16 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("document.elementFromPoint", browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 
+    def test_e2e_scans_every_connected_private_subnet(self) -> None:
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+
+        self.assertIn("172.31.0.87", compose)
+        self.assertIn('scenario("multi-subnet-discovery")', runner)
+        self.assertIn("manual discovery on a non-default connected subnet", scenarios)
+        self.assertIn("full discovery across every connected subnet", scenarios)
+
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {
             "roles": {"detect": "detect-stream", "record": "record-stream"},

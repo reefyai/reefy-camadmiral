@@ -1,0 +1,11 @@
+api:
+  listen: "0.0.0.0:1984"
+
+rtsp:
+  listen: "0.0.0.0:554"
+
+webrtc:
+  listen: ""
+
+streams:
+  live: "ffmpeg:virtual?video=&size=640x360&rate=10#video=h264"
