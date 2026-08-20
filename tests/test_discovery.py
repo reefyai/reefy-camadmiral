@@ -67,43 +67,136 @@ eth0 0028A8C0 00000000 0001 0 0 100 00FFFFFF 0 0 0
 """
 
     def test_default_private_lan_is_selected(self) -> None:
+        candidate = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.236"),
+            network=ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+
         def address(_name: str, request: int) -> ipaddress.IPv4Address:
             return ipaddress.IPv4Address("192.168.40.236" if request == 0x8915 else "255.255.255.0")
 
         with patch.object(discovery, "_interface_ipv4", side_effect=address):
-            interface = discovery.default_lan_interface(self.ROUTES)
+            interfaces = discovery.private_lan_interfaces(self.ROUTES, [candidate])
 
-        self.assertEqual(interface.name, "eth0")
-        self.assertEqual(str(interface.network), "192.168.40.0/24")
+        self.assertEqual(interfaces, [candidate])
+
+    def test_all_safe_private_subnets_are_selected_with_default_first(self) -> None:
+        default = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.236"),
+            network=ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+        secondary = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.10.1"),
+            network=ipaddress.IPv4Network("192.168.10.0/24"),
+        )
+        other_lan = discovery.LanInterface(
+            name="eth1",
+            address=ipaddress.IPv4Address("10.20.30.1"),
+            network=ipaddress.IPv4Network("10.20.30.0/24"),
+        )
+        docker_bridge = discovery.LanInterface(
+            name="docker0",
+            address=ipaddress.IPv4Address("172.17.0.1"),
+            network=ipaddress.IPv4Network("172.17.0.0/16"),
+        )
+
+        with patch.object(discovery, "_interface_ipv4", return_value=default.address):
+            interfaces = discovery.private_lan_interfaces(
+                self.ROUTES,
+                [secondary, docker_bridge, other_lan, default],
+            )
+
+        self.assertEqual(interfaces, [default, secondary, other_lan])
 
     def test_large_subnet_is_rejected(self) -> None:
-        def address(_name: str, request: int) -> ipaddress.IPv4Address:
-            return ipaddress.IPv4Address("10.1.2.3" if request == 0x8915 else "255.0.0.0")
+        candidate = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.1.2.3"),
+            network=ipaddress.IPv4Network("10.0.0.0/8"),
+        )
 
-        with patch.object(discovery, "_interface_ipv4", side_effect=address):
+        with patch.object(discovery, "_interface_ipv4", return_value=candidate.address):
             with self.assertRaisesRegex(RuntimeError, "safety limit"):
-                discovery.default_lan_interface(self.ROUTES)
+                discovery.private_lan_interfaces(self.ROUTES, [candidate])
 
 
 class ResultTests(unittest.TestCase):
-    def test_explicit_address_scan_stays_inside_selected_lan(self) -> None:
-        interface = discovery.LanInterface(
+    def test_explicit_address_scan_accepts_any_connected_lan(self) -> None:
+        primary = discovery.LanInterface(
             name="eth0",
             address=ipaddress.IPv4Address("192.168.10.2"),
             network=ipaddress.IPv4Network("192.168.10.0/24"),
         )
+        secondary = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.2"),
+            network=ipaddress.IPv4Network("192.168.40.0/24"),
+        )
         with (
-            patch.object(discovery, "default_lan_interface", return_value=interface),
+            patch.object(
+                discovery,
+                "private_lan_interfaces",
+                return_value=[primary, secondary],
+            ),
             patch.object(discovery, "discover_onvif_address", return_value=[]),
             patch.object(discovery, "discover_rtsp_address", return_value=[]),
             patch.object(discovery, "read_arp_table", return_value={}),
         ):
-            result = discovery.scan_explicit_address("192.168.10.20")
-            with self.assertRaisesRegex(discovery.DiscoveryScanError, "inside"):
+            primary_result = discovery.scan_explicit_address("192.168.10.20")
+            secondary_result = discovery.scan_explicit_address("192.168.40.87")
+            with self.assertRaisesRegex(discovery.DiscoveryScanError, "connected LAN"):
                 discovery.scan_explicit_address("10.0.0.20")
 
-        self.assertEqual(result["devices"], [])
-        self.assertEqual(result["scanners"], {"onvif": "complete", "rtsp": "complete"})
+        self.assertEqual(primary_result["network"]["subnet"], "192.168.10.0/24")
+        self.assertEqual(secondary_result["network"]["subnet"], "192.168.40.0/24")
+        self.assertEqual(
+            secondary_result["scanners"], {"onvif": "complete", "rtsp": "complete"}
+        )
+
+    def test_full_scan_combines_devices_from_every_connected_lan(self) -> None:
+        primary = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.2"),
+            network=ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+        secondary = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.10.1"),
+            network=ipaddress.IPv4Network("192.168.10.0/24"),
+        )
+
+        def rtsp(interface, _log=None):
+            camera_address = (
+                "192.168.40.20"
+                if interface == primary
+                else "192.168.10.87"
+            )
+            return [{"ip": camera_address, "endpoints": [{"port": 554}]}]
+
+        with (
+            patch.object(
+                discovery,
+                "private_lan_interfaces",
+                return_value=[primary, secondary],
+            ),
+            patch.object(discovery, "discover_onvif", return_value=[]),
+            patch.object(discovery, "discover_rtsp", side_effect=rtsp),
+            patch.object(discovery, "discover_reachable_known", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            result = discovery.scan_lan()
+
+        self.assertEqual(
+            [device["ip"] for device in result["devices"]],
+            ["192.168.10.87", "192.168.40.20"],
+        )
+        self.assertEqual(result["network"]["subnet"], "192.168.40.0/24")
+        self.assertTrue(
+            any("subnet=192.168.10.0/24" in line for line in result["raw_log"])
+        )
 
     def test_onvif_and_rtsp_scanners_run_in_parallel(self) -> None:
         interface = discovery.LanInterface(
@@ -123,7 +216,7 @@ class ResultTests(unittest.TestCase):
             return [{"ip": "192.168.10.20", "endpoints": []}]
 
         with (
-            patch.object(discovery, "default_lan_interface", return_value=interface),
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
             patch.object(discovery, "discover_onvif", side_effect=onvif),
             patch.object(discovery, "discover_rtsp", side_effect=rtsp),
             patch.object(discovery, "read_arp_table", return_value={}),
@@ -169,7 +262,7 @@ class ResultTests(unittest.TestCase):
         )
         known = [{"ip": "192.168.10.20", "mac": "02:00:00:00:00:20"}]
         with (
-            patch.object(discovery, "default_lan_interface", return_value=interface),
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
             patch.object(discovery, "discover_onvif", return_value=[]),
             patch.object(discovery, "discover_rtsp", return_value=[]),
             patch.object(discovery, "discover_reachable_known", return_value=["192.168.10.20"]),
@@ -182,7 +275,7 @@ class ResultTests(unittest.TestCase):
             matched = discovery.scan_lan(known_devices=known)
 
         with (
-            patch.object(discovery, "default_lan_interface", return_value=interface),
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
             patch.object(discovery, "discover_onvif", return_value=[]),
             patch.object(discovery, "discover_rtsp", return_value=[]),
             patch.object(discovery, "discover_reachable_known", return_value=["192.168.10.20"]),

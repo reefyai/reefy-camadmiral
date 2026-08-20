@@ -72,9 +72,38 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("ui_scenario()", runner)
         self.assertIn('playwright.webkit.launch(headless=True)', browser)
         self.assertIn('viewport={"width": 390, "height": 844}', browser)
-        self.assertIn("bottom(button_box) > bottom(cell_box) + 0.5", browser)
-        self.assertIn("document.elementFromPoint", browser)
+        self.assertIn('.evaluate_all(', browser)
+        self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
+        self.assertIn("bounds.bottom > cardBounds.bottom + 0.5", browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
+
+    def test_e2e_scans_every_connected_private_subnet(self) -> None:
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+        multi_subnet_scenario = scenarios.split("def multi_subnet_discovery()", 1)[1].split(
+            "def load_state()", 1
+        )[0]
+
+        self.assertIn("172.31.0.87", compose)
+        self.assertIn("gw_priority: 1", compose)
+        self.assertIn('scenario("multi-subnet-discovery")', runner)
+        multi_subnet_position = runner.index('scenario("multi-subnet-discovery")')
+        reset_position = runner.index(
+            'run("down", "--volumes", "--remove-orphans")',
+            multi_subnet_position,
+        )
+        baseline_position = runner.index('scenario("baseline")')
+        self.assertLess(multi_subnet_position, reset_position)
+        self.assertLess(reset_position, baseline_position)
+        self.assertIn(
+            "manual discovery on a non-default connected subnet",
+            multi_subnet_scenario,
+        )
+        self.assertIn("full discovery across every connected subnet", multi_subnet_scenario)
+        self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
+        self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
+        self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {

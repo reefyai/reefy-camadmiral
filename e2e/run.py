@@ -66,6 +66,12 @@ def main() -> int:
         run("build", "camadmiral")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
+            "camera-onvif", "camera-secondary",
+        )
+        scenario("multi-subnet-discovery")
+        run("down", "--volumes", "--remove-orphans")
+        run(
+            "up", "--detach", "camadmiral", "camera-open", "camera-auth",
             "camera-onvif",
         )
         scenario("baseline")
