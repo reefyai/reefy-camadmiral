@@ -466,7 +466,7 @@ def baseline() -> None:
         raise ScenarioFailure("Consumer API accepted a missing bearer token")
     consumer_directory(token="invalid-synthetic-token", expected=401)
 
-    request_json(
+    explicit_request = request_json(
         "/internal/discovery/address",
         method="POST",
         headers={"X-CamAdmiral-Action": "scan-address"},
@@ -611,10 +611,16 @@ def multi_subnet_discovery() -> None:
         payload={"address": "172.31.0.87"},
         expected=202,
     )
+    explicit_scan_id = explicit_request.get("scan_id")
+    if not explicit_scan_id:
+        raise ScenarioFailure("Manual discovery did not return a scan identity")
 
     def secondary_explicitly_found() -> dict[str, object] | None:
         state = discovery()
-        if state.get("status") in {"queued", "running"}:
+        if (
+            state.get("scan_id") != explicit_scan_id
+            or state.get("status") in {"queued", "running"}
+        ):
             return None
         camera = next(
             (
@@ -634,16 +640,22 @@ def multi_subnet_discovery() -> None:
     if explicit.get("network", {}).get("subnet") != "172.31.0.0/24":
         raise ScenarioFailure("Manual discovery selected the wrong connected subnet")
 
-    request_json(
+    full_request = request_json(
         "/internal/discovery/scan",
         method="POST",
         headers={"X-CamAdmiral-Action": "scan"},
         expected=202,
     )
+    full_scan_id = full_request.get("scan_id")
+    if not full_scan_id:
+        raise ScenarioFailure("Full discovery did not return a scan identity")
 
     def secondary_found_by_full_scan() -> dict[str, object] | None:
         state = discovery()
-        if state.get("status") in {"queued", "running"}:
+        if (
+            state.get("scan_id") != full_scan_id
+            or state.get("status") in {"queued", "running"}
+        ):
             return None
         camera = next(
             (

@@ -86,6 +86,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('scenario("multi-subnet-discovery")', runner)
         self.assertIn("manual discovery on a non-default connected subnet", scenarios)
         self.assertIn("full discovery across every connected subnet", scenarios)
+        self.assertIn('state.get("scan_id") != explicit_scan_id', scenarios)
+        self.assertIn('state.get("scan_id") != full_scan_id', scenarios)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {
