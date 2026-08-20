@@ -87,6 +87,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("172.31.0.87", compose)
         self.assertIn("gw_priority: 1", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
+        multi_subnet_position = runner.index('scenario("multi-subnet-discovery")')
+        reset_position = runner.index(
+            'run("down", "--volumes", "--remove-orphans")',
+            multi_subnet_position,
+        )
+        baseline_position = runner.index('scenario("baseline")')
+        self.assertLess(multi_subnet_position, reset_position)
+        self.assertLess(reset_position, baseline_position)
         self.assertIn(
             "manual discovery on a non-default connected subnet",
             multi_subnet_scenario,

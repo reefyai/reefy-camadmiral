@@ -69,6 +69,11 @@ def main() -> int:
             "camera-onvif", "camera-secondary",
         )
         scenario("multi-subnet-discovery")
+        run("down", "--volumes", "--remove-orphans")
+        run(
+            "up", "--detach", "camadmiral", "camera-open", "camera-auth",
+            "camera-onvif",
+        )
         scenario("baseline")
         ui_scenario()
         run("up", "--detach", "frigate", "frigate-api-proxy")
