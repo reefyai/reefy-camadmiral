@@ -466,7 +466,7 @@ def baseline() -> None:
         raise ScenarioFailure("Consumer API accepted a missing bearer token")
     consumer_directory(token="invalid-synthetic-token", expected=401)
 
-    explicit_request = request_json(
+    request_json(
         "/internal/discovery/address",
         method="POST",
         headers={"X-CamAdmiral-Action": "scan-address"},
@@ -604,7 +604,7 @@ def multi_subnet_discovery() -> None:
         {"rtsp://camera-secondary:554/live": (640, 360)},
     )
 
-    request_json(
+    explicit_request = request_json(
         "/internal/discovery/address",
         method="POST",
         headers={"X-CamAdmiral-Action": "scan-address"},

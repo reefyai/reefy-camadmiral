@@ -80,14 +80,21 @@ class ReleaseMetadataTests(unittest.TestCase):
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+        multi_subnet_scenario = scenarios.split("def multi_subnet_discovery()", 1)[1].split(
+            "def load_state()", 1
+        )[0]
 
         self.assertIn("172.31.0.87", compose)
         self.assertIn("gw_priority: 1", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
-        self.assertIn("manual discovery on a non-default connected subnet", scenarios)
-        self.assertIn("full discovery across every connected subnet", scenarios)
-        self.assertIn('state.get("scan_id") != explicit_scan_id', scenarios)
-        self.assertIn('state.get("scan_id") != full_scan_id', scenarios)
+        self.assertIn(
+            "manual discovery on a non-default connected subnet",
+            multi_subnet_scenario,
+        )
+        self.assertIn("full discovery across every connected subnet", multi_subnet_scenario)
+        self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
+        self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
+        self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {
