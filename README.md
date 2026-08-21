@@ -73,6 +73,10 @@ with `@BotFather`, paste its token, then use the generated **Open Telegram** lin
 you do not need to find or enter a numeric chat ID. Alerts are enabled automatically when
 the bot is configured and paired.
 
+<p align="center">
+  <img src="docs/images/camadmiral-telegram-alerts.png" alt="CamAdmiral Telegram offline and recovery alerts" width="420">
+</p>
+
 Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already connected
 to another application and never changes their webhook configuration. The bot token and
 temporary pairing secret are encrypted with CamAdmiral's master key and are never returned
