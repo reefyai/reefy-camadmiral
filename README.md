@@ -5,6 +5,13 @@ downstream streams for consumers such as Frigate.
 
 ![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
 
+## Availability timeline
+
+Each camera includes a seven-day availability timeline. Red blocks show periods when the
+camera was offline.
+
+![CamAdmiral camera availability timeline showing offline periods](docs/images/camadmiral-availability-timeline.png)
+
 ## Run with Docker
 
 Build the image and create one named volume for all persistent CamAdmiral state:
