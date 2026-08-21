@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import http.server
+import os
 import signal
 import socket
 import subprocess
 import threading
+import urllib.parse
 
 
-ADDRESS = "172.30.0.13"
+ADDRESS = os.environ.get("ONVIF_ADDRESS", "172.30.0.13")
+CAMERA_UUID = os.environ.get("ONVIF_UUID", "synthetic-onvif-camera")
+CAMERA_NAME = os.environ.get("ONVIF_NAME", "Synthetic ONVIF")
+ONVIF_MULTICAST_GROUP = "239.255.255.250"
 DEVICE_URL = f"http://{ADDRESS}:8080/onvif/device_service"
 MEDIA_URL = f"http://{ADDRESS}:8080/onvif/media_service"
 SOAP_START = '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
@@ -66,14 +71,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def discovery_responder(stop: threading.Event) -> None:
     response = envelope(
         'xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"',
-        '<d:ProbeMatches><d:ProbeMatch><a:EndpointReference><a:Address>urn:uuid:synthetic-onvif-camera</a:Address>'
+        f'<d:ProbeMatches><d:ProbeMatch><a:EndpointReference><a:Address>urn:uuid:{CAMERA_UUID}</a:Address>'
         '</a:EndpointReference><d:Types>dn:NetworkVideoTransmitter tds:Device</d:Types>'
-        '<d:Scopes>onvif://www.onvif.org/name/Synthetic%20ONVIF onvif://www.onvif.org/hardware/LabCam</d:Scopes>'
+        f'<d:Scopes>onvif://www.onvif.org/name/{urllib.parse.quote(CAMERA_NAME)} onvif://www.onvif.org/hardware/LabCam</d:Scopes>'
         f'<d:XAddrs>{DEVICE_URL}</d:XAddrs></d:ProbeMatch></d:ProbeMatches>',
     )
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", 3702))
+        # Real ONVIF cameras join the WS-Discovery group; without membership the
+        # kernel drops multicast probes and only unicast probes are answered.
+        server.setsockopt(
+            socket.IPPROTO_IP,
+            socket.IP_ADD_MEMBERSHIP,
+            socket.inet_aton(ONVIF_MULTICAST_GROUP) + socket.inet_aton(ADDRESS),
+        )
         server.settimeout(0.5)
         while not stop.is_set():
             try:

@@ -1,4 +1,5 @@
 import ipaddress
+import socket
 import threading
 import unittest
 from unittest.mock import patch
@@ -111,16 +112,92 @@ eth0 0028A8C0 00000000 0001 0 0 100 00FFFFFF 0 0 0
 
         self.assertEqual(interfaces, [default, secondary, other_lan])
 
-    def test_large_subnet_is_rejected(self) -> None:
+    def test_large_subnet_is_selected_for_multicast_only_discovery(self) -> None:
         candidate = discovery.LanInterface(
             name="eth0",
             address=ipaddress.IPv4Address("10.1.2.3"),
-            network=ipaddress.IPv4Network("10.0.0.0/8"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
         )
 
         with patch.object(discovery, "_interface_ipv4", return_value=candidate.address):
-            with self.assertRaisesRegex(RuntimeError, "safety limit"):
-                discovery.private_lan_interfaces(self.ROUTES, [candidate])
+            interfaces = discovery.private_lan_interfaces(self.ROUTES, [candidate])
+
+        self.assertEqual(interfaces, [candidate])
+        self.assertFalse(discovery.sweep_allowed(candidate.network))
+        self.assertTrue(discovery.sweep_allowed(ipaddress.IPv4Network("10.0.0.0/24")))
+
+    def test_rtsp_sweep_is_skipped_on_large_subnet(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.1.2.3"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+        lines: list[str] = []
+
+        with patch.object(discovery, "_probe_rtsp") as probe:
+            result = discovery.discover_rtsp(interface, lines.append)
+
+        self.assertEqual(result, [])
+        probe.assert_not_called()
+        self.assertTrue(any("sweep limit" in line for line in lines))
+
+
+class _FakeUdpSocket:
+    """Capture sendto destinations; recvfrom immediately times out."""
+
+    def __init__(self, *_args, **_kwargs):
+        self.destinations: list[tuple[str, int]] = []
+        _FakeUdpSocket.last = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def setsockopt(self, *_args):
+        pass
+
+    def bind(self, _address):
+        pass
+
+    def settimeout(self, _value):
+        pass
+
+    def sendto(self, _payload, destination):
+        self.destinations.append(destination)
+
+    def recvfrom(self, _size):
+        raise socket.timeout
+
+
+class OnvifSweepFallbackTests(unittest.TestCase):
+    def _run(self, network: str) -> list[tuple[str, int]]:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.0.2"),
+            network=ipaddress.IPv4Network(network),
+        )
+        with patch.object(discovery.socket, "socket", _FakeUdpSocket):
+            discovery.discover_onvif(interface)
+        return _FakeUdpSocket.last.destinations
+
+    def test_small_subnet_sends_multicast_first_then_unicast_fallback(self) -> None:
+        destinations = self._run("10.0.0.0/29")
+
+        multicast = [d for d in destinations if d == discovery.ONVIF_MULTICAST]
+        unicast = [d for d in destinations if d != discovery.ONVIF_MULTICAST]
+        self.assertEqual(len(multicast), 4)
+        self.assertEqual(destinations[:4], multicast)
+        self.assertEqual(
+            sorted(d[0] for d in unicast),
+            ["10.0.0.1", "10.0.0.3", "10.0.0.4", "10.0.0.5", "10.0.0.6"],
+        )
+
+    def test_large_subnet_uses_multicast_only(self) -> None:
+        destinations = self._run("10.0.0.0/16")
+
+        self.assertEqual(destinations, [discovery.ONVIF_MULTICAST] * 4)
 
 
 class ResultTests(unittest.TestCase):
@@ -197,6 +274,62 @@ class ResultTests(unittest.TestCase):
         self.assertTrue(
             any("subnet=192.168.10.0/24" in line for line in result["raw_log"])
         )
+
+    def test_full_scan_on_large_subnet_skips_rtsp_and_keeps_multicast_results(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.0.2"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+        camera = {
+            "ip": "10.0.3.20",
+            "endpoint_reference": "urn:uuid:camera-1",
+            "service_urls": ["http://10.0.3.20/onvif/device_service"],
+            "scopes": [],
+            "types": [],
+            "name": "Warehouse",
+            "model": None,
+        }
+        progress = []
+
+        with (
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
+            patch.object(discovery, "discover_onvif", return_value=[camera]),
+            patch.object(discovery, "discover_rtsp") as rtsp,
+            patch.object(discovery, "discover_reachable_known", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            result = discovery.scan_lan(
+                progress=lambda scanner, state, _interface: progress.append((scanner, state))
+            )
+
+        rtsp.assert_not_called()
+        self.assertEqual(
+            result["scanners"],
+            {"onvif": "complete", "rtsp": "skipped", "reachability": "complete"},
+        )
+        self.assertEqual([device["ip"] for device in result["devices"]], ["10.0.3.20"])
+        self.assertIn(("rtsp", "skipped"), progress)
+        self.assertTrue(any("sweep limit" in line for line in result["raw_log"]))
+
+    def test_full_scan_fails_when_onvif_errors_and_rtsp_is_skipped(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.0.2"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+
+        with (
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
+            patch.object(discovery, "discover_onvif", side_effect=OSError("multicast failed")),
+            patch.object(discovery, "discover_rtsp") as rtsp,
+            patch.object(discovery, "discover_reachable_known", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            with self.assertRaisesRegex(discovery.DiscoveryScanError, "no RTSP sweep"):
+                discovery.scan_lan()
+
+        rtsp.assert_not_called()
 
     def test_onvif_and_rtsp_scanners_run_in_parallel(self) -> None:
         interface = discovery.LanInterface(

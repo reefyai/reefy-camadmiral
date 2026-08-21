@@ -32,6 +32,14 @@ MAX_SCAN_LOG_LINES = 5000
 VIRTUAL_INTERFACE_PREFIXES = ("docker", "veth", "br-", "virbr", "tailscale", "tun", "tap")
 
 
+def sweep_allowed(network: ipaddress.IPv4Network) -> bool:
+    """Whether per-address sweeps (unicast ONVIF, RTSP ports) fit the safety limit.
+
+    Multicast ONVIF discovery is independent of subnet size and always runs.
+    """
+    return max(0, network.num_addresses - 2) <= MAX_SCAN_HOSTS
+
+
 class DiscoveryScanError(RuntimeError):
     def __init__(self, message: str, raw_log: list[str]):
         super().__init__(message)
@@ -160,7 +168,6 @@ def private_lan_interfaces(
     except OSError:
         default_address = None
     eligible: list[LanInterface] = []
-    rejected_large: list[LanInterface] = []
     for interface in found:
         if interface.name == "lo" or interface.name.startswith(VIRTUAL_INTERFACE_PREFIXES):
             continue
@@ -171,9 +178,6 @@ def private_lan_interfaces(
             or interface.address.is_multicast
             or interface.address.is_unspecified
         ):
-            continue
-        if max(0, interface.network.num_addresses - 2) > MAX_SCAN_HOSTS:
-            rejected_large.append(interface)
             continue
         eligible.append(interface)
     eligible.sort(
@@ -194,12 +198,6 @@ def private_lan_interfaces(
         deduplicated.append(interface)
     if deduplicated:
         return deduplicated
-    if rejected_large:
-        interface = rejected_large[0]
-        hosts = max(0, interface.network.num_addresses - 2)
-        raise RuntimeError(
-            f"LAN subnet {interface.network} has {hosts} hosts; safety limit is {MAX_SCAN_HOSTS}"
-        )
     raise RuntimeError("No eligible private IPv4 LAN found")
 
 
@@ -352,10 +350,16 @@ def discover_onvif(
             sock.sendto(message, ONVIF_MULTICAST)
             emit(f"ONVIF: sent multicast probe {index}/{len(messages)} ({len(message)} bytes)")
         # A bounded unicast probe helps cameras with broken or disabled multicast.
-        for host in interface.network.hosts():
-            if host != interface.address:
-                sock.sendto(messages[0], (str(host), ONVIF_MULTICAST[1]))
-                emit(f"ONVIF: sent unicast probe to {host}:{ONVIF_MULTICAST[1]}")
+        if sweep_allowed(interface.network):
+            for host in interface.network.hosts():
+                if host != interface.address:
+                    sock.sendto(messages[0], (str(host), ONVIF_MULTICAST[1]))
+                    emit(f"ONVIF: sent unicast probe to {host}:{ONVIF_MULTICAST[1]}")
+        else:
+            emit(
+                f"ONVIF: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
+                "sweep limit; relying on multicast only, unicast fallback skipped"
+            )
         deadline = time.monotonic() + ONVIF_TIMEOUT
         while True:
             remaining = deadline - time.monotonic()
@@ -466,6 +470,12 @@ def discover_rtsp(
     log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     emit = log or (lambda _message: None)
+    if not sweep_allowed(interface.network):
+        emit(
+            f"RTSP: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
+            "sweep limit; RTSP port sweep skipped"
+        )
+        return []
     targets = [str(host) for host in interface.network.hosts() if host != interface.address]
     emit(
         f"RTSP: probing {len(targets)} host(s), ports "
@@ -828,11 +838,22 @@ def scan_lan(
         )
     log(f"SCAN: start; networks={len(interfaces)}")
     known_devices = list(known_devices)
-    scanners = {"onvif": "running", "rtsp": "running", "reachability": "running"}
+    sweepable = [interface for interface in interfaces if sweep_allowed(interface.network)]
+    for interface in interfaces:
+        if interface not in sweepable:
+            log(
+                f"SCAN: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
+                "sweep limit; RTSP port sweep skipped, ONVIF multicast only"
+            )
+    scanners = {
+        "onvif": "running",
+        "rtsp": "running" if sweepable else "skipped",
+        "reachability": "running",
+    }
     errors: dict[str, str] = {}
     if progress:
-        for scanner in scanners:
-            progress(scanner, "running", primary_interface)
+        for scanner, state in scanners.items():
+            progress(scanner, state, primary_interface)
     results: dict[str, Any] = {"onvif": [], "rtsp": [], "reachability": []}
     scanner_failures: dict[str, list[str]] = defaultdict(list)
     scanner_successes: Counter[str] = Counter()
@@ -840,7 +861,8 @@ def scan_lan(
         futures: dict[concurrent.futures.Future[Any], tuple[str, LanInterface]] = {}
         for interface in interfaces:
             futures[pool.submit(discover_onvif, interface, log)] = ("onvif", interface)
-            futures[pool.submit(discover_rtsp, interface, log)] = ("rtsp", interface)
+            if interface in sweepable:
+                futures[pool.submit(discover_rtsp, interface, log)] = ("rtsp", interface)
             futures[
                 pool.submit(discover_reachable_known, interface, known_devices, log)
             ] = ("reachability", interface)
@@ -859,16 +881,18 @@ def scan_lan(
             else:
                 scanner_successes[scanner] += 1
     for scanner in scanners:
-        if scanner_successes[scanner]:
+        if scanners[scanner] == "skipped":
+            pass
+        elif scanner_successes[scanner]:
             scanners[scanner] = "complete"
         else:
             scanners[scanner] = "error"
             errors[scanner] = "; ".join(scanner_failures[scanner])[:200]
         if progress:
             progress(scanner, scanners[scanner], primary_interface)
-    if "onvif" in errors and "rtsp" in errors:
-        log("SCAN: failed; ONVIF and RTSP discovery both failed")
-        raise DiscoveryScanError("ONVIF and RTSP discovery both failed", raw_log)
+    if "onvif" in errors and scanners["rtsp"] != "complete":
+        log("SCAN: failed; ONVIF discovery failed and no RTSP sweep completed")
+        raise DiscoveryScanError("ONVIF discovery failed and no RTSP sweep completed", raw_log)
     onvif_devices = results["onvif"]
     rtsp_devices = results["rtsp"]
     arp_entries = read_arp_table()
