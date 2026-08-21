@@ -3,6 +3,8 @@
 CamAdmiral discovers ONVIF and RTSP cameras, validates their streams, and exposes stable
 downstream streams for consumers such as Frigate.
 
+![CamAdmiral solution architecture](docs/images/camadmiral-solution.svg)
+
 ![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
 
 ## Discover and adopt cameras
