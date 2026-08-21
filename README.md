@@ -3,6 +3,8 @@
 CamAdmiral discovers ONVIF and RTSP cameras, validates their streams, and exposes stable
 downstream streams for consumers such as Frigate.
 
+![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
+
 ## Run with Docker
 
 Build the image and create one named volume for all persistent CamAdmiral state:
