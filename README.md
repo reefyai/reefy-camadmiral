@@ -10,10 +10,9 @@ downstream streams for consumers such as Frigate.
 - **Stable camera URLs.** Cameras on a local network can receive new IP addresses.
   CamAdmiral tracks adopted cameras by MAC and ONVIF identity and keeps their downstream
   URLs stable, so consumers do not need reconfiguration after an IP change.
-- **Shared camera connections.** While a stream is in use, CamAdmiral shares one upstream
-  connection to that camera stream across all downstream consumers. This reduces Wi-Fi
-  traffic and avoids exhausting cameras that support only a small number of simultaneous
-  clients.
+- **Shared camera connections.** CamAdmiral shares one upstream connection per camera
+  stream across all consumers, reducing load on slow links such as Wi-Fi and on cameras
+  with limited client capacity.
 - **Health monitoring and alerts.** CamAdmiral monitors video availability, retains an
   availability history, and sends Telegram notifications when a camera goes offline or
   recovers.
