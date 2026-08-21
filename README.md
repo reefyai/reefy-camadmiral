@@ -3,6 +3,17 @@
 CamAdmiral discovers ONVIF and RTSP cameras, validates their streams, and exposes stable
 downstream streams for consumers such as Frigate.
 
+![CamAdmiral solution architecture](docs/images/camadmiral-solution.png)
+
+## Why CamAdmiral?
+
+- **Stable camera URLs.** Cameras on a local network can receive new IP addresses.
+  CamAdmiral tracks adopted cameras by MAC and ONVIF identity and keeps their downstream
+  URLs stable, so consumers do not need reconfiguration after an IP change.
+- **Health monitoring and alerts.** CamAdmiral monitors video availability, retains an
+  availability history, and sends Telegram notifications when a camera goes offline or
+  recovers.
+
 ![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
 
 ## Discover and adopt cameras
