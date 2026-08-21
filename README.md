@@ -5,6 +5,38 @@ downstream streams for consumers such as Frigate.
 
 ![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
 
+## Discover and adopt cameras
+
+CamAdmiral scans the local network for ONVIF and RTSP cameras. It includes an embedded,
+independently maintained compatibility database of RTSP URL paths sourced from public
+first-party vendor documentation. This lets CamAdmiral automatically try a bounded set of
+likely stream paths after the operator supplies the camera username and password.
+
+![CamAdmiral ONVIF and RTSP network scan details](docs/images/camadmiral-network-scan.png)
+
+Adoption validates the credentials and discovered streams before storing anything. ONVIF
+cameras expose their media profiles directly; RTSP-only cameras use the compatibility
+database to find working paths without asking the operator to construct URLs manually.
+
+![CamAdmiral camera adoption dialog](docs/images/camadmiral-adopt-camera.png)
+
+## Live view
+
+Open a camera's live view directly from the dashboard to confirm its framing without leaving
+CamAdmiral. The browser consumes CamAdmiral's managed downstream instead of opening another
+connection to the camera.
+
+![CamAdmiral live camera view](docs/images/camadmiral-live-view.png)
+
+## Stable downstream streams
+
+CamAdmiral validates each source, reports its codec, resolution, frame rate, and health, then
+exposes stable RTSP URLs for record and detection consumers. Camera credentials and source
+paths remain hidden unless an operator explicitly reveals them. Downstream credentials in
+the screenshot are intentionally masked.
+
+![CamAdmiral validated downstream streams](docs/images/camadmiral-downstream-streams.png)
+
 ## Availability timeline
 
 Each camera includes a seven-day availability timeline. Red blocks show periods when the
