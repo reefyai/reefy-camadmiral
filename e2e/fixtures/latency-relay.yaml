@@ -1,0 +1,11 @@
+api:
+  listen: "0.0.0.0:1984"
+
+rtsp:
+  listen: "0.0.0.0:8554"
+
+webrtc:
+  listen: ""
+
+streams:
+  relayed: "rtsp://camera-open:8554/main"

@@ -40,6 +40,20 @@ python -m playwright install webkit
 python3 e2e/run.py
 ```
 
+Measure the steady-state delay added by one go2rtc RTSP relay with matched
+decoded H.264 frames:
+
+```console
+python3 e2e/latency.py
+```
+
+The benchmark runs equal low-buffer FFmpeg consumers against a direct camera
+stream and the same stream through one additional go2rtc hop. It reports the
+signed arrival-time difference for matching frames as median, p95, minimum,
+and maximum. Run it on an otherwise idle host. It is intentionally not a hard
+release gate because host scheduling and media-pipeline startup add timing
+noise that is unrelated to CamAdmiral correctness.
+
 Docker with Compose v2 and Playwright WebKit are the host dependencies. The
 runner builds the current source, creates a private bridge network and
 disposable volumes, and removes them when complete. It publishes only an

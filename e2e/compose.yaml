@@ -87,6 +87,21 @@ services:
     healthcheck:
       disable: true
 
+  latency-relay:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/latency-relay.yaml"]
+    volumes:
+      - ./fixtures/latency-relay.yaml:/e2e/latency-relay.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.14
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
   camera-open-moved:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]

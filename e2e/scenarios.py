@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
+import hashlib
 import json
 import os
 import re
 import socket
+import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -28,6 +32,145 @@ ADMIN_PASSWORD = os.environ.get("CAMADMIRAL_E2E_ADMIN_PASSWORD", "")
 
 class ScenarioFailure(RuntimeError):
     pass
+
+
+def _read_exact(stream, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _collect_decoded_frames(
+    url: str,
+    barrier: threading.Barrier,
+    stop_at: float,
+    arrivals: list[tuple[bytes, int]],
+    errors: list[str],
+) -> None:
+    process = None
+    try:
+        barrier.wait(timeout=5)
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-avioflags",
+                "direct",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                url,
+                "-map",
+                "0:v:0",
+                "-an",
+                "-vf",
+                "scale=64:36,format=gray",
+                "-fps_mode",
+                "passthrough",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.stdout is None:
+            raise RuntimeError("FFmpeg did not expose decoded video")
+        frame_size = 64 * 36
+        while time.monotonic() < stop_at:
+            frame = _read_exact(process.stdout, frame_size)
+            if len(frame) != frame_size:
+                break
+            arrivals.append((hashlib.sha256(frame).digest(), time.monotonic_ns()))
+    except Exception as exc:
+        errors.append(str(exc))
+    finally:
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    ordered = sorted(values)
+    index = round((len(ordered) - 1) * percentile)
+    return ordered[index]
+
+
+def _matched_relay_delays(
+    direct: list[tuple[bytes, int]],
+    relayed: list[tuple[bytes, int]],
+) -> list[float]:
+    relay_times: dict[bytes, deque[int]] = {}
+    for digest, observed_at in relayed:
+        relay_times.setdefault(digest, deque()).append(observed_at)
+    matched: list[float] = []
+    for digest, direct_at in direct:
+        observations = relay_times.get(digest)
+        if observations:
+            matched.append((observations.popleft() - direct_at) / 1_000_000)
+    return matched
+
+
+def relay_latency() -> None:
+    direct: list[tuple[bytes, int]] = []
+    relayed: list[tuple[bytes, int]] = []
+    errors: list[str] = []
+    barrier = threading.Barrier(3)
+    stop_at = time.monotonic() + 12
+    workers = [
+        threading.Thread(
+            target=_collect_decoded_frames,
+            args=("rtsp://camera-open:8554/main", barrier, stop_at, direct, errors),
+        ),
+        threading.Thread(
+            target=_collect_decoded_frames,
+            args=("rtsp://latency-relay:8554/relayed", barrier, stop_at, relayed, errors),
+        ),
+    ]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=20)
+    if any(worker.is_alive() for worker in workers):
+        raise ScenarioFailure("Timed out collecting latency benchmark frames")
+    if errors:
+        raise ScenarioFailure(f"Unable to collect latency benchmark frames: {errors[0]}")
+
+    matched = _matched_relay_delays(direct, relayed)
+    warmup = min(15, len(matched) // 4)
+    steady = matched[warmup:]
+    if len(steady) < 30:
+        raise ScenarioFailure(
+            "Too few identical decoded frames crossed both paths "
+            f"(direct={len(direct)}, relayed={len(relayed)}, matched={len(matched)})"
+        )
+
+    median_ms = statistics.median(steady)
+    p95_ms = _percentile(steady, 0.95)
+    minimum_ms = min(steady)
+    maximum_ms = max(steady)
+    print(
+        "relay-latency: "
+        f"matched={len(steady)} median={median_ms:.2f}ms p95={p95_ms:.2f}ms "
+        f"min={minimum_ms:.2f}ms max={maximum_ms:.2f}ms"
+    )
 
 
 def frigate_saved_config() -> dict[str, object]:
@@ -1315,6 +1458,7 @@ SCENARIOS = {
     "frigate": frigate,
     "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
     "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
+    "relay-latency": relay_latency,
 }
 
 
