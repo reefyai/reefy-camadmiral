@@ -27,9 +27,10 @@ The isolated Docker Compose lab covers:
 - camera IP change with validated upstream replacement and stable downstream
   identities
 - camera credential rotation, failed repair preservation, and successful repair
-- WebKit phone-viewport rendering with every camera action button fully visible
-  and clickable inside its card, downstream passwords masked in the modal, and
-  plaintext credentials preserved only for Copy
+- WebKit phone-viewport rendering with a stable dashboard action bar, 44px scan
+  and add-camera targets, every camera action fully visible inside its card,
+  downstream passwords masked in the modal, and plaintext credentials preserved
+  only for Copy
 
 Run from the repository root:
 

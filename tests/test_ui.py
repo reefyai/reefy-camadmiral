@@ -24,14 +24,20 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('class="app-brand" href="/" aria-label="CamAdmiral dashboard"', self.html)
         self.assertIn('<img src="/app-icon.png" alt=""', self.html)
 
-    def test_header_actions_are_grouped_into_compact_utility_and_scan_controls(self) -> None:
+    def test_dashboard_uses_one_primary_action_and_quiet_scan_status(self) -> None:
         self.assertIn('class="primary-nav"', self.html)
         self.assertIn('class="dashboard-controls"', self.html)
-        self.assertIn('class="utility-actions"', self.html)
-        self.assertIn('class="scan-actions"', self.html)
+        self.assertIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
+        self.assertIn('class="dashboard-actions"', self.html)
+        self.assertIn('class="scan-status"', self.html)
         self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
+        self.assertIn('<button id="scan" type="button">Scan network</button>', self.html)
+        self.assertIn('class="scan-details-link">View details</span>', self.html)
+        self.assertIn('function scanStatusLabel(data, active)', self.html)
+        self.assertIn('`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`', self.html)
+        self.assertNotIn('complete: "Scan complete"', self.html)
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
-        self.assertIn(".dashboard-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn("display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
 
     def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
         self.assertIn("function frigateFailureDetail(result, fallback)", self.html)

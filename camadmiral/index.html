@@ -50,9 +50,12 @@
       position: absolute; right: 10px; bottom: 2px; left: 10px; height: 2px; border-radius: 2px;
       background: #2dd4bf; content: "";
     }
-    .dashboard-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 16px; }
-    .utility-actions, .scan-actions { display: flex; align-items: center; gap: 6px; }
-    .scan-actions { padding-left: 10px; border-left: 1px solid rgba(148, 163, 184, .14); }
+    .dashboard-controls {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 18px;
+      align-items: center; margin-bottom: 16px;
+    }
+    .dashboard-title { margin: 0; font-size: 21px; letter-spacing: -.025em; }
+    .dashboard-actions { display: flex; align-items: center; gap: 8px; }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
       background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
@@ -134,7 +137,7 @@
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
     }
     .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
-    .scan-state { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+    .scan-status { min-width: 0; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
     .dot.ready { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
@@ -150,11 +153,13 @@
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
     .scan-details-trigger {
-      display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px;
-      border: 0; border-radius: 8px; padding: 7px 8px;
-      background: transparent; color: #7890a4; font-size: 11px; font-weight: 750; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; min-height: 30px;
+      border: 0; border-radius: 7px; padding: 5px 7px 5px 4px;
+      background: transparent; color: #7890a4; font-size: 12px; font-weight: 650; cursor: pointer;
     }
-    .scan-details-trigger:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
+    .scan-details-trigger:hover { color: #b9fff5; background: rgba(45, 212, 191, .05); }
+    .scan-details-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scan-details-link { color: #75d9ce; font-weight: 750; white-space: nowrap; }
     .scan-dialog-content { min-width: 0; }
     .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
     .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
@@ -498,16 +503,14 @@
       h1 { font-size: 32px; }
       .primary-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(148, 163, 184, .1); }
       .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
-      .dashboard-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
-      .utility-actions { display: contents; }
-      .utility-actions > button { min-width: 0; padding: 8px 9px; font-size: 11px; }
-      .scan-actions {
-        display: contents;
-      }
-      .scan-details-trigger { grid-column: 1; grid-row: 2; justify-content: flex-start; width: 100%; min-height: 34px; padding: 7px 8px; }
+      .dashboard-controls { grid-template-columns: 1fr; gap: 10px; }
+      .dashboard-title { font-size: 19px; }
+      .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; grid-row: 2; }
+      .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
-      #scan { grid-column: 2; grid-row: 1 / span 2; }
-      #scan { padding: 9px 13px; font-size: 12px; }
+      #scan { grid-column: 2; grid-row: 1; }
+      .scan-status { grid-row: 3; min-width: 0; }
+      .scan-details-trigger { width: 100%; min-height: 34px; padding: 5px 4px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
       .scanner-progress { flex-wrap: wrap; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
@@ -600,12 +603,13 @@
     </header>
     <main id="dashboard-view">
       <div class="dashboard-controls">
-        <div class="utility-actions">
+        <h2 class="dashboard-title">Cameras</h2>
+        <div class="dashboard-actions">
           <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
-        </div>
-        <div class="scan-actions">
-          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
           <button id="scan" type="button">Scan network</button>
+        </div>
+        <div class="scan-status">
+          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog" aria-label="Open scan details"><span class="dot" id="dot"></span><span class="scan-details-label" id="state">Starting</span><span class="scan-details-link">View details</span></button>
         </div>
       </div>
       <form class="address-panel" id="address-panel" hidden>
@@ -922,6 +926,32 @@
       scanDetailsSignature = signature;
       setText(scanMetadata, metadata || "No scan has completed yet.");
       setText(scanLog, log.length ? log.join("\n") : available ? "No raw scan log is available for this earlier scan." : "Scan diagnostics will appear here.");
+    }
+
+    function relativeScanTime(value) {
+      const timestamp = Date.parse(value || "");
+      if (!Number.isFinite(timestamp)) return "";
+      const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+      if (seconds < 60) return "just now";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      return `${Math.floor(hours / 24)}d ago`;
+    }
+
+    function scanStatusLabel(data, active) {
+      const phases = {
+        queued: "Starting scan", starting: "Starting scan", scanning: "Scanning network",
+        onvif: "Finding ONVIF cameras", rtsp: "Checking RTSP cameras"
+      };
+      if (active) return phases[data.phase] || "Scanning network";
+      if (data.status === "error" || data.phase === "error") return "Scan failed";
+      if (!data.completed_at) return "Ready to scan";
+      const parts = [`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`];
+      if (Array.isArray(data.devices)) parts.push(`${data.devices.length} camera${data.devices.length === 1 ? "" : "s"}`);
+      if (Number.isFinite(data.duration_ms)) parts.push(`${(data.duration_ms / 1000).toFixed(1)}s`);
+      return parts.join(" · ");
     }
 
     function manualCameraTarget(value) {
@@ -2946,12 +2976,7 @@
       scanButton.disabled = active;
       setText(scanButton, active ? "Scanning..." : "Scan network");
       stateDot.className = `dot ${active ? "busy" : data.status === "error" ? "error" : "ready"}`;
-      const labels = {
-        idle: "Ready", queued: "Starting scan", starting: "Starting", scanning: "Scanning network",
-        onvif: "Finding ONVIF cameras", rtsp: "Checking RTSP ports",
-        complete: "Scan complete", error: "Scan failed"
-      };
-      setText(stateLabel, labels[data.phase] || labels[data.status] || "Ready");
+      setText(stateLabel, scanStatusLabel(data, active));
       if (data.network?.address) mediaHost = data.network.address;
       setText(networkLabel, data.network?.subnet || "");
       renderScannerProgress(data.scanners);
