@@ -28,7 +28,6 @@ class ConfigurationTests(unittest.TestCase):
                 configured = settings()
 
         self.assertEqual(configured, CamAdmiralSettings())
-        self.assertEqual(configured.integrations.frigate.targets, ())
 
     def test_empty_explicit_file_uses_safe_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -61,25 +60,6 @@ class ConfigurationTests(unittest.TestCase):
                     "api_token_file": "/secrets/api",
                     "admin_password_file": "/secrets/admin",
                 },
-                "integrations": {
-                    "frigate": {
-                        "targets": [
-                            {
-                                "id": "frigate-primary",
-                                "name": "Primary Frigate",
-                                "api_url": "http://127.0.0.1:20001/",
-                                "sync_cameras": True,
-                            },
-                            {
-                                "id": "frigate-secondary",
-                                "name": "Secondary Frigate",
-                                "api_url": "http://localhost:20007",
-                                "sync_cameras": False,
-                            },
-                        ],
-                        "default_target": "frigate-primary",
-                    }
-                },
             }
         )
 
@@ -89,44 +69,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configured.secrets.master_key_file, Path("/secrets/master"))
         self.assertTrue(configured.secrets.master_key_file_explicit)
         self.assertEqual(configured.secrets.admin_password_file, Path("/secrets/admin"))
-        self.assertEqual(len(configured.integrations.frigate.targets), 2)
-        self.assertTrue(configured.integrations.frigate.targets[0].sync_cameras)
-        self.assertEqual(
-            configured.integrations.frigate.targets[0].api_url,
-            "http://127.0.0.1:20001",
-        )
-
-    def test_non_loopback_frigate_target_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ConfigurationError, "loopback"):
-            parse_settings(
-                {
-                    "version": 1,
-                    "integrations": {
-                        "frigate": {
-                            "targets": [
-                                {
-                                    "id": "frigate-primary",
-                                    "name": "Primary Frigate",
-                                    "api_url": "http://192.0.2.10:5000",
-                                }
-                            ]
-                        }
-                    },
-                }
-            )
-
-    def test_multiple_targets_require_explicit_default(self) -> None:
-        targets = [
-            {"id": "one", "name": "One", "api_url": "http://127.0.0.1:20001"},
-            {"id": "two", "name": "Two", "api_url": "http://127.0.0.1:20002"},
-        ]
-        with self.assertRaisesRegex(ConfigurationError, "require default_target"):
-            parse_settings(
-                {
-                    "version": 1,
-                    "integrations": {"frigate": {"targets": targets}},
-                }
-            )
+    def test_frigate_is_not_a_file_configuration_setting(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "Unknown top-level setting: integrations"):
+            parse_settings({"version": 1, "integrations": {"frigate": {}}})
 
     def test_unknown_settings_are_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "Unknown server setting"):

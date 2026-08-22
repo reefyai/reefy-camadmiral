@@ -212,6 +212,20 @@ MIGRATIONS: tuple[str, ...] = (
     SET enabled = 1
     WHERE bot_token_ciphertext IS NOT NULL;
     """,
+    """
+    CREATE TABLE frigate_targets (
+        target_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        api_url TEXT NOT NULL UNIQUE,
+        sync_cameras INTEGER NOT NULL DEFAULT 1 CHECK(sync_cameras IN (0, 1)),
+        connection_status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(connection_status IN ('pending', 'connected', 'error')),
+        last_error_code TEXT,
+        last_checked_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 )
 
 
@@ -1061,6 +1075,87 @@ class CameraRepository:
             )
             connection.commit()
             return password
+
+    def frigate_targets(self, *, sync_only: bool = False) -> list[dict[str, Any]]:
+        where = "WHERE sync_cameras = 1" if sync_only else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT target_id, name, api_url, sync_cameras, connection_status, "
+                "last_error_code, last_checked_at, created_at, updated_at "
+                f"FROM frigate_targets {where} ORDER BY name COLLATE NOCASE, target_id"
+            ).fetchall()
+        result = [dict(row) for row in rows]
+        for target in result:
+            target["sync_cameras"] = bool(target["sync_cameras"])
+        return result
+
+    def save_frigate_target(
+        self,
+        target_id: str,
+        name: str,
+        api_url: str,
+        *,
+        sync_cameras: bool,
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO frigate_targets(target_id, name, api_url, sync_cameras, "
+                "connection_status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?, ?) "
+                "ON CONFLICT(target_id) DO UPDATE SET name=excluded.name, "
+                "api_url=excluded.api_url, sync_cameras=excluded.sync_cameras, "
+                "connection_status=CASE WHEN frigate_targets.api_url != excluded.api_url "
+                "THEN 'pending' ELSE frigate_targets.connection_status END, "
+                "last_error_code=CASE WHEN frigate_targets.api_url != excluded.api_url "
+                "THEN NULL ELSE frigate_targets.last_error_code END, "
+                "last_checked_at=CASE WHEN frigate_targets.api_url != excluded.api_url "
+                "THEN NULL ELSE frigate_targets.last_checked_at END, "
+                "updated_at=excluded.updated_at",
+                (target_id, name, api_url, int(sync_cameras), timestamp, timestamp),
+            )
+            connection.commit()
+
+    def frigate_target(self, target_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT target_id, name, api_url, sync_cameras, connection_status, "
+                "last_error_code, last_checked_at, created_at, updated_at "
+                "FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["sync_cameras"] = bool(result["sync_cameras"])
+        return result
+
+    def remove_frigate_target(self, target_id: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def record_frigate_target_check(
+        self,
+        target_id: str,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> None:
+        if status not in {"connected", "error"}:
+            raise ValueError("Frigate target status is invalid")
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_targets SET connection_status=?, last_error_code=?, "
+                "last_checked_at=?, updated_at=? WHERE target_id=?",
+                (status, error_code, timestamp, timestamp, target_id),
+            )
+            connection.commit()
 
     def frigate_binding(self, target_id: str, camera_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:

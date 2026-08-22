@@ -129,6 +129,25 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
 
 
+def assert_mobile_settings(page: Page) -> None:
+    page.goto(f"{BASE_URL}/settings", wait_until="domcontentloaded")
+    expect(page.locator("#settings-view")).to_be_visible(timeout=15_000)
+    expect(page.locator("#dashboard-view")).to_be_hidden()
+    expect(page.get_by_role("heading", name="Telegram notifications")).to_be_visible()
+    expect(page.get_by_role("heading", name="Frigate integrations")).to_be_visible()
+    expect(page.locator("a.app-brand")).to_have_attribute("href", "/")
+    overflow = page.locator("#settings-view .settings-section").evaluate_all(
+        "sections => sections.filter(section => section.getBoundingClientRect().right > window.innerWidth + 0.5).length"
+    )
+    if overflow:
+        raise UiScenarioFailure("Settings section extends beyond the mobile viewport")
+    add = page.get_by_role("button", name="Add Frigate")
+    add.click()
+    expect(page.get_by_role("heading", name="Add Frigate")).to_be_visible()
+    expect(page.get_by_label("Frigate API URL")).to_be_visible()
+    page.locator("#app-modal-close").click()
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     with sync_playwright() as playwright:
@@ -144,6 +163,7 @@ def main() -> int:
         try:
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
+            assert_mobile_settings(page)
         except Exception:
             page.screenshot(
                 path=str(ARTIFACT_DIR / "mobile-camera-actions.png"),

@@ -26,8 +26,11 @@ from .crypto import load_master_key
 from .diagnostics import snapshot
 from .frigate import (
     FrigateApiError,
+    FrigateClient,
+    FrigateTarget,
     load_frigate_targets,
     media_host_from_inventory,
+    normalize_frigate_api_url,
     reconcile_frigate,
 )
 from .media import (
@@ -142,6 +145,18 @@ class NotificationSettingsRequest(BaseModel):
     telegram_bot_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
+class FrigateTargetRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    api_url: str = Field(min_length=1, max_length=512)
+    sync_cameras: bool = True
+
+
+class FrigateTargetUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    api_url: str | None = Field(default=None, min_length=1, max_length=512)
+    sync_cameras: bool | None = None
+
+
 FACTORY_ONVIF_USERNAME = "admin"
 FACTORY_ONVIF_PASSWORD = "admin"
 
@@ -236,7 +251,7 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
                 for binding in repository.frigate_bindings(target.target_id)
             },
         )
-        for target in load_frigate_targets()
+        for target in load_frigate_targets(repository)
     ]
     for device in state.get("devices", []):
         candidate_uuid = device.get("candidate_uuid")
@@ -333,7 +348,7 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
     if repository is None or not FRIGATE_LOCK.acquire(blocking=wait):
         return
     try:
-        targets = load_frigate_targets()
+        targets = load_frigate_targets(repository)
         if not targets:
             return
         media_host = media_host_from_inventory(INVENTORY)
@@ -341,10 +356,17 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
             try:
                 reconcile_frigate(repository, target, media_host=media_host)
             except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target.target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
                 print(
                     f"frigate[{target.target_id}]: reconciliation deferred ({exc.code})",
                     flush=True,
                 )
+            else:
+                repository.record_frigate_target_check(target.target_id, status="connected")
     except Exception as exc:
         print(f"frigate: reconciliation failed ({type(exc).__name__})", flush=True)
     finally:
@@ -836,6 +858,173 @@ def notification_settings() -> JSONResponse:
     return _secured_json(_notification_settings_payload(repository))
 
 
+def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
+    messages = {
+        "invalid_target_url": "Enter a loopback HTTP URL with a port, such as http://127.0.0.1:20001.",
+        "target_unavailable": "CamAdmiral could not reach Frigate at that URL.",
+        "authorization_required": "Frigate requires authorization on that endpoint.",
+        "capability_unavailable": "This Frigate endpoint does not provide the required camera configuration API.",
+        "invalid_response": "Frigate returned an unexpected response.",
+    }
+    status_code = 422 if exc.code in {"invalid_target_url", "capability_unavailable"} else 503
+    return _secured_json(
+        {"status": exc.code, "message": messages.get(exc.code, "Frigate connection failed.")},
+        status_code=status_code,
+    )
+
+
+def _check_frigate_target(target: FrigateTarget) -> None:
+    FrigateClient(target).capabilities()
+
+
+@app.get("/internal/frigate-targets", include_in_schema=False)
+def frigate_targets() -> JSONResponse:
+    repository = _repository(required=True)
+    assert repository is not None
+    return _secured_json({"targets": repository.frigate_targets()})
+
+
+@app.post("/internal/frigate-targets", include_in_schema=False)
+def add_frigate_target(
+    request: FrigateTargetRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "add-frigate-target":
+        raise HTTPException(status_code=400, detail="Missing Frigate target action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    targets = repository.frigate_targets()
+    if len(targets) >= 8:
+        return _secured_json(
+            {"status": "target_limit_reached", "message": "CamAdmiral supports up to eight Frigate instances."},
+            status_code=409,
+        )
+    try:
+        api_url = normalize_frigate_api_url(request.api_url)
+    except FrigateApiError as exc:
+        return _frigate_target_error(exc)
+    if any(target["api_url"] == api_url for target in targets):
+        return _secured_json(
+            {"status": "target_exists", "message": "That Frigate instance is already connected."},
+            status_code=409,
+        )
+    name = request.name.strip()
+    if not name:
+        return _secured_json(
+            {"status": "invalid_name", "message": "Enter a name for this Frigate instance."},
+            status_code=422,
+        )
+    target_id = f"frigate_{hashlib.sha256(api_url.encode('utf-8')).hexdigest()[:16]}"
+    target = FrigateTarget(target_id, name, api_url)
+    try:
+        _check_frigate_target(target)
+    except FrigateApiError as exc:
+        return _frigate_target_error(exc)
+    repository.save_frigate_target(
+        target_id,
+        target.name,
+        api_url,
+        sync_cameras=request.sync_cameras,
+    )
+    repository.record_frigate_target_check(target_id, status="connected")
+    _queue_frigate_reconciliation()
+    return _secured_json(
+        {"status": "connected", "target": repository.frigate_target(target_id)},
+        status_code=201,
+    )
+
+
+@app.put("/internal/frigate-targets/{target_id}", include_in_schema=False)
+def update_frigate_target(
+    target_id: str,
+    request: FrigateTargetUpdateRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "update-frigate-target":
+        raise HTTPException(status_code=400, detail="Missing Frigate target action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    current = repository.frigate_target(target_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    try:
+        api_url = normalize_frigate_api_url(request.api_url or current["api_url"])
+    except FrigateApiError as exc:
+        return _frigate_target_error(exc)
+    if any(
+        target["target_id"] != target_id and target["api_url"] == api_url
+        for target in repository.frigate_targets()
+    ):
+        return _secured_json(
+            {"status": "target_exists", "message": "That Frigate instance is already connected."},
+            status_code=409,
+        )
+    name = request.name.strip() if request.name is not None else str(current["name"])
+    if not name:
+        return _secured_json(
+            {"status": "invalid_name", "message": "Enter a name for this Frigate instance."},
+            status_code=422,
+        )
+    sync_cameras = request.sync_cameras if request.sync_cameras is not None else bool(current["sync_cameras"])
+    should_check = api_url != current["api_url"] or (sync_cameras and not current["sync_cameras"])
+    if should_check:
+        try:
+            _check_frigate_target(FrigateTarget(target_id, name, api_url))
+        except FrigateApiError as exc:
+            return _frigate_target_error(exc)
+    repository.save_frigate_target(
+        target_id,
+        name,
+        api_url,
+        sync_cameras=sync_cameras,
+    )
+    if should_check:
+        repository.record_frigate_target_check(target_id, status="connected")
+    _queue_frigate_reconciliation()
+    return _secured_json({"status": "updated", "target": repository.frigate_target(target_id)})
+
+
+@app.post("/internal/frigate-targets/{target_id}/test", include_in_schema=False)
+def test_frigate_target(
+    target_id: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "test-frigate-target":
+        raise HTTPException(status_code=400, detail="Missing Frigate test action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    current = repository.frigate_target(target_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
+    try:
+        _check_frigate_target(target)
+    except FrigateApiError as exc:
+        repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
+        return _frigate_target_error(exc)
+    repository.record_frigate_target_check(target_id, status="connected")
+    return _secured_json({"status": "connected", "target": repository.frigate_target(target_id)})
+
+
+@app.delete("/internal/frigate-targets/{target_id}", include_in_schema=False)
+def remove_frigate_target(
+    target_id: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "remove-frigate-target":
+        raise HTTPException(status_code=400, detail="Missing Frigate removal action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.remove_frigate_target(target_id):
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    return _secured_json(
+        {
+            "status": "removed",
+            "message": "Frigate integration removed. Existing Frigate cameras were left unchanged.",
+        }
+    )
+
+
 @app.post("/internal/notification-settings", include_in_schema=False)
 def update_notification_settings(
     request: NotificationSettingsRequest,
@@ -1037,6 +1226,7 @@ def update_camera_credentials(
     )
 
 
+@app.get("/settings", include_in_schema=False)
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(
