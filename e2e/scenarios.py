@@ -14,6 +14,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 
 BASE_URL = "http://camadmiral:18080"
 API_TOKEN = "synthetic-e2e-api-token"
@@ -26,6 +28,15 @@ ADMIN_PASSWORD = os.environ.get("CAMADMIRAL_E2E_ADMIN_PASSWORD", "")
 
 class ScenarioFailure(RuntimeError):
     pass
+
+
+def frigate_saved_config() -> dict[str, object]:
+    with urllib.request.urlopen("http://camadmiral:5000/api/config/raw", timeout=8) as response:
+        raw = json.load(response)
+    parsed = yaml.safe_load(raw) if isinstance(raw, str) else None
+    if not isinstance(parsed, dict):
+        raise ScenarioFailure("Frigate returned an invalid saved configuration")
+    return parsed
 
 
 def request(
@@ -1137,13 +1148,13 @@ def frigate() -> None:
     )
     if result.get("removed_cameras") != 1 or result.get("removed_streams") != 2:
         raise ScenarioFailure(f"Full sync returned unexpected counts: {result}")
-    cleaned_paths = frigate_json("/api/config/raw_paths")
-    cleaned_cameras = cleaned_paths.get("cameras", {})
+    cleaned_config = frigate_saved_config()
+    cleaned_cameras = cleaned_config.get("cameras", {})
     if stale_camera in cleaned_cameras:
         raise ScenarioFailure("Full sync left the stale CamAdmiral camera in Frigate")
     if operator_camera not in cleaned_cameras:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate camera")
-    cleaned_streams = cleaned_paths.get("go2rtc", {}).get("streams", {})
+    cleaned_streams = cleaned_config.get("go2rtc", {}).get("streams", {})
     if stale_streams.intersection(cleaned_streams):
         raise ScenarioFailure("Full sync left stale CamAdmiral streams in Frigate")
     if "operator_stream" not in cleaned_streams:
@@ -1270,11 +1281,7 @@ def frigate_ambiguous_delete_verify() -> None:
         runtime = json.load(response)
     if AMBIGUOUS_DELETE_STREAM in runtime:
         raise ScenarioFailure("Ambiguous-delete stream remained in live go2rtc state")
-    with urllib.request.urlopen(
-        "http://camadmiral:5000/api/config/raw_paths", timeout=8
-    ) as response:
-        raw_paths = json.load(response)
-    saved_streams = raw_paths.get("go2rtc", {}).get("streams", {})
+    saved_streams = frigate_saved_config().get("go2rtc", {}).get("streams", {})
     if AMBIGUOUS_DELETE_STREAM in saved_streams:
         raise ScenarioFailure("Ambiguous-delete stream remained in saved Frigate config")
     print("frigate: ambiguous partial-success deletion recovered")
