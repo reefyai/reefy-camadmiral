@@ -25,7 +25,7 @@
       padding: 17px 0 24px; border-top: 1px solid rgba(148, 163, 184, .1);
       color: #60798e; font-size: 12px; text-align: center;
     }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 34px 0 24px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 28px 0 18px; }
     .app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
     .app-brand img {
       width: 48px; height: 48px; flex: none; border-radius: 11px; background: #fff;
@@ -39,14 +39,24 @@
     }
     #scan:hover { background: #5eead4; }
     #scan:disabled { cursor: wait; opacity: .6; }
-    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+    .primary-nav { display: flex; align-items: center; gap: 4px; }
+    .primary-nav a {
+      position: relative; padding: 10px 12px; color: #8ea2b3; font-size: 13px; font-weight: 750;
+      text-decoration: none;
+    }
+    .primary-nav a:hover { color: #dff7f4; }
+    .primary-nav a[aria-current="page"] { color: #8ff8e8; }
+    .primary-nav a[aria-current="page"]::after {
+      position: absolute; right: 10px; bottom: 2px; left: 10px; height: 2px; border-radius: 2px;
+      background: #2dd4bf; content: "";
+    }
+    .dashboard-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 16px; }
     .utility-actions, .scan-actions { display: flex; align-items: center; gap: 6px; }
     .scan-actions { padding-left: 10px; border-left: 1px solid rgba(148, 163, 184, .14); }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
       background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
     }
-    a.header-secondary { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
     .header-secondary:hover { color: #b9fff5; border-color: rgba(45, 212, 191, .3); }
     .incident-count {
       display: inline-grid; min-width: 19px; height: 19px; margin-left: 6px; padding: 0 5px;
@@ -66,9 +76,22 @@
       display: grid; gap: 10px; padding: 13px; border: 1px solid rgba(45, 212, 191, .2);
       border-radius: 10px; background: rgba(45, 212, 191, .05);
     }
-    .settings-page { display: grid; gap: 18px; }
+    .settings-page, .incidents-page { display: grid; align-content: start; gap: 18px; }
     .settings-heading h2 { margin: 0 0 5px; font-size: 24px; letter-spacing: -.025em; }
     .settings-heading p { margin: 0; color: #7890a4; font-size: 13px; }
+    .settings-nav {
+      display: flex; gap: 6px; border-bottom: 1px solid rgba(148, 163, 184, .13); overflow-x: auto;
+    }
+    .settings-nav a {
+      position: relative; flex: none; padding: 10px 12px 12px; color: #7890a4; font-size: 13px;
+      font-weight: 750; text-decoration: none;
+    }
+    .settings-nav a:hover { color: #dff7f4; }
+    .settings-nav a[aria-current="page"] { color: #8ff8e8; }
+    .settings-nav a[aria-current="page"]::after {
+      position: absolute; right: 10px; bottom: -1px; left: 10px; height: 2px; border-radius: 2px;
+      background: #2dd4bf; content: "";
+    }
     .settings-section {
       padding: 18px; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .7); box-shadow: 0 18px 42px rgba(0, 0, 0, .12);
@@ -89,10 +112,10 @@
     .frigate-target-meta { display: flex; gap: 7px 12px; margin-top: 6px; color: #7890a4; font-size: 11px; flex-wrap: wrap; }
     .frigate-target-state.connected { color: #86efac; }
     .frigate-target-state.error { color: #fda4af; }
+    .frigate-target-error { margin-top: 6px; color: #fda4af; font-size: 11px; overflow-wrap: anywhere; }
     .frigate-target-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
     .toggle-label { display: inline-flex; align-items: center; gap: 6px; color: #a9bac6; font-size: 11px; }
     .settings-empty { color: #7890a4; font-size: 12px; }
-    body.settings-view .dashboard-action, body.settings-view .scan-actions { display: none; }
     .incident-list { display: grid; gap: 9px; }
     .incident-item {
       display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 14px; padding: 12px;
@@ -471,16 +494,19 @@
     @media (max-width: 700px) {
       .shell { width: min(100% - 20px, 560px); }
       main { padding-bottom: 28px; }
-      header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 22px 0 16px; }
+      header { align-items: flex-start; flex-direction: column; gap: 12px; padding: 18px 0 14px; }
       h1 { font-size: 32px; }
-      .header-actions { display: grid; width: 100%; gap: 8px; justify-content: stretch; }
-      .utility-actions { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-      .utility-actions > button { width: 100%; min-width: 0; padding: 8px 5px; font-size: 11px; }
+      .primary-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(148, 163, 184, .1); }
+      .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
+      .dashboard-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+      .utility-actions { display: contents; }
+      .utility-actions > button { min-width: 0; padding: 8px 9px; font-size: 11px; }
       .scan-actions {
-        display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto; gap: 7px;
-        padding: 0; border: 0;
+        display: contents;
       }
-      .scan-details-trigger { justify-content: flex-start; width: 100%; min-height: 34px; padding: 7px 8px; }
+      .scan-details-trigger { grid-column: 1; grid-row: 2; justify-content: flex-start; width: 100%; min-height: 34px; padding: 7px 8px; }
+      #show-add-address { grid-column: 1; grid-row: 1; }
+      #scan { grid-column: 2; grid-row: 1 / span 2; }
       #scan { padding: 9px 13px; font-size: 12px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
       .scanner-progress { flex-wrap: wrap; }
@@ -566,19 +592,22 @@
         <img src="/app-icon.png" alt="" width="48" height="48" aria-hidden="true">
         <h1>CamAdmiral</h1>
       </a>
-      <div class="header-actions">
+      <nav class="primary-nav" aria-label="Primary navigation">
+        <a id="nav-dashboard" href="/">Dashboard</a>
+        <a id="nav-incidents" href="/incidents">Incidents<span class="incident-count" id="incident-count" hidden>0</span></a>
+        <a id="nav-settings" href="/settings/notifications">Settings</a>
+      </nav>
+    </header>
+    <main id="dashboard-view">
+      <div class="dashboard-controls">
         <div class="utility-actions">
-          <button class="header-secondary dashboard-action" id="show-incidents" type="button" aria-haspopup="dialog">Incidents<span class="incident-count" id="incident-count" hidden>0</span></button>
-          <a class="header-secondary" id="show-settings" href="/settings">Settings</a>
-          <button class="header-secondary dashboard-action" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
+          <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
         </div>
         <div class="scan-actions">
           <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog"><span class="dot" id="dot"></span><span id="state">Starting</span></button>
           <button id="scan" type="button">Scan network</button>
         </div>
       </div>
-    </header>
-    <main id="dashboard-view">
       <form class="address-panel" id="address-panel" hidden>
         <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
         <button class="row-action" type="submit">Continue</button>
@@ -611,12 +640,25 @@
       </div>
       <div class="empty" id="empty">Scan the network to find cameras.</div>
     </main>
+    <main class="incidents-page" id="incidents-view" hidden>
+      <div class="settings-heading">
+        <h2>Incidents</h2>
+        <p>Camera outages and authentication failures.</p>
+      </div>
+      <section class="settings-section" aria-label="Camera incidents">
+        <div class="incident-list" id="incidents-list"><div class="settings-copy">Loading incidents...</div></div>
+      </section>
+    </main>
     <main class="settings-page" id="settings-view" hidden>
       <div class="settings-heading">
         <h2>Settings</h2>
         <p>Notifications and connections to other applications.</p>
       </div>
-      <section class="settings-section" aria-labelledby="telegram-settings-title">
+      <nav class="settings-nav" aria-label="Settings navigation">
+        <a id="settings-notifications-link" href="/settings/notifications">Notifications</a>
+        <a id="settings-integrations-link" href="/settings/integrations">Integrations</a>
+      </nav>
+      <section class="settings-section" id="notifications-settings" aria-labelledby="telegram-settings-title">
         <div class="settings-section-header">
           <div>
             <h3 id="telegram-settings-title">Telegram notifications</h3>
@@ -625,7 +667,7 @@
         </div>
         <div id="telegram-settings-body"><div class="settings-copy">Loading Telegram settings...</div></div>
       </section>
-      <section class="settings-section" aria-labelledby="frigate-settings-title">
+      <section class="settings-section" id="integrations-settings" aria-labelledby="frigate-settings-title" hidden>
         <div class="settings-section-header">
           <div>
             <h3 id="frigate-settings-title">Frigate integrations</h3>
@@ -691,9 +733,12 @@
   <script>
     const scanButton = document.querySelector("#scan");
     const showAddAddress = document.querySelector("#show-add-address");
-    const showIncidents = document.querySelector("#show-incidents");
     const dashboardView = document.querySelector("#dashboard-view");
+    const incidentsView = document.querySelector("#incidents-view");
+    const incidentsList = document.querySelector("#incidents-list");
     const settingsView = document.querySelector("#settings-view");
+    const notificationsSettings = document.querySelector("#notifications-settings");
+    const integrationsSettings = document.querySelector("#integrations-settings");
     const telegramSettingsBody = document.querySelector("#telegram-settings-body");
     const frigateTargets = document.querySelector("#frigate-targets");
     const addFrigate = document.querySelector("#add-frigate");
@@ -756,7 +801,10 @@
     let pendingManualRtsp = null;
     let notificationSettings = null;
     let notificationPollTimer = null;
-    const isSettingsPage = window.location.pathname === "/settings";
+    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    const isIncidentsPage = currentPath === "/incidents";
+    const isSettingsPage = currentPath === "/settings" || currentPath.startsWith("/settings/");
+    const isIntegrationsPage = currentPath === "/settings/integrations";
     const inspections = new Map();
     const credentialDrafts = new Map();
     const credentialRepairDrafts = new Map();
@@ -966,21 +1014,20 @@
       } catch (_) {}
     }
 
-    async function openIncidents(trigger = null) {
-      const content = addText(document.createElement("div"), "div", "incident-list", "");
-      addText(content, "div", "settings-copy", "Loading incidents...");
-      openAppModal("incidents", "Incidents", content, trigger, "wide");
+    async function loadIncidents() {
+      incidentsList.replaceChildren();
+      addText(incidentsList, "div", "settings-copy", "Loading incidents...");
       try {
         const response = await fetch("/internal/incidents?status=all&limit=50", {cache: "no-store"});
         const result = await response.json();
         if (!response.ok) throw new Error();
-        content.replaceChildren();
+        incidentsList.replaceChildren();
         const incidents = result.incidents || [];
         if (!incidents.length) {
-          addText(content, "div", "empty", "No camera incidents recorded.");
+          addText(incidentsList, "div", "empty", "No camera incidents recorded.");
         }
         incidents.forEach(incident => {
-          const item = addText(content, "article", "incident-item", "");
+          const item = addText(incidentsList, "article", "incident-item", "");
           addText(item, "div", "incident-camera", incident.camera_name || "Camera");
           addText(item, "div", `incident-state ${incident.status === "resolved" ? "resolved" : ""}`, incident.status);
           const details = [incidentLabel(incident.kind), `Opened ${formatTime(incident.opened_at)}`];
@@ -990,8 +1037,8 @@
         setText(incidentCount, Number(result.open_count || 0));
         incidentCount.hidden = !result.open_count;
       } catch (_) {
-        content.replaceChildren();
-        addText(content, "div", "errorbox", "CamAdmiral could not load incidents.");
+        incidentsList.replaceChildren();
+        addText(incidentsList, "div", "errorbox", "CamAdmiral could not load incidents.");
       }
     }
 
@@ -1111,6 +1158,25 @@
       }
     }
 
+    function frigateFailureDetail(result, fallback) {
+      const stages = {
+        inspect_configuration: "inspect Frigate configuration",
+        remove_camera: "remove stale camera",
+        inspect_runtime_streams: "inspect live streams",
+        remove_runtime_stream: "remove stale live stream",
+        remove_stream_configuration: "remove stale stream configuration",
+        verify_stream_configuration: "verify stale stream configuration",
+        verify_runtime_cleanup: "verify stale live streams",
+        verify_cleanup: "verify cleanup",
+        reconcile_current_cameras: "synchronize current cameras"
+      };
+      const parts = [result?.message || fallback];
+      if (result?.stage) parts.push(`Stage: ${stages[result.stage] || result.stage}.`);
+      if (result?.resource) parts.push(`Resource: ${result.resource}.`);
+      if (result?.status) parts.push(`Code: ${result.status}.`);
+      return parts.join(" ");
+    }
+
     function renderFrigateTargets(data) {
       frigateTargets.replaceChildren();
       const targets = data.targets || [];
@@ -1127,6 +1193,8 @@
         const state = addText(meta, "span", `frigate-target-state ${target.connection_status}`, target.connection_status === "connected" ? "Connected" : target.connection_status === "error" ? "Connection failed" : "Checking");
         if (target.last_error_code) state.title = target.last_error_code;
         if (target.last_checked_at) addText(meta, "span", "", `Checked ${formatTime(target.last_checked_at)}`);
+        const errorDetail = addText(summary, "div", "frigate-target-error", target.last_error_code ? `Last error code: ${target.last_error_code}.` : "");
+        errorDetail.hidden = !target.last_error_code;
         const actions = addText(item, "div", "frigate-target-actions", "");
         const syncLabel = addText(actions, "label", "toggle-label", "");
         const sync = document.createElement("input");
@@ -1142,7 +1210,7 @@
               body: JSON.stringify({sync_cameras: sync.checked})
             });
             const result = await response.json();
-            if (!response.ok) throw new Error(result.message || result.detail || "Frigate settings could not be updated.");
+            if (!response.ok) throw new Error(frigateFailureDetail(result, result.detail || "Frigate settings could not be updated."));
             await loadFrigateTargets();
           } catch (error) {
             sync.checked = !sync.checked;
@@ -1150,6 +1218,69 @@
             setText(state, "Update failed");
             state.className = "frigate-target-state error";
             state.title = error.message;
+            setText(errorDetail, error.message);
+            errorDetail.hidden = false;
+          }
+        });
+        const fullSync = addText(actions, "button", "row-action", "Full sync now");
+        fullSync.type = "button";
+        fullSync.disabled = !sync.checked;
+        fullSync.title = sync.checked ? "Synchronize current cameras and remove stale CamAdmiral resources" : "Enable camera sync first";
+        fullSync.addEventListener("click", async () => {
+          fullSync.disabled = true;
+          setText(fullSync, "Checking...");
+          try {
+            const previewResponse = await fetch(`/internal/frigate-targets/${encodeURIComponent(target.target_id)}/full-sync`, {cache: "no-store"});
+            const preview = await previewResponse.json();
+            if (!previewResponse.ok) throw new Error(frigateFailureDetail(preview, "Full sync could not be prepared."));
+            const staleSummary = preview.stale_cameras || preview.stale_streams
+              ? `remove ${preview.stale_cameras} stale CamAdmiral camera${preview.stale_cameras === 1 ? "" : "s"} and ${preview.stale_streams} associated stream${preview.stale_streams === 1 ? "" : "s"}`
+              : "remove no stale resources";
+            fullSync.disabled = false;
+            setText(fullSync, "Full sync now");
+            showConfirmation({
+              title: `Full sync ${target.name}?`,
+              message: `CamAdmiral will synchronize ${preview.managed_cameras} current camera${preview.managed_cameras === 1 ? "" : "s"} and ${staleSummary}. Other Frigate cameras and streams will not be changed.`,
+              actionLabel: "Full sync",
+              trigger: fullSync,
+              onConfirm: async () => {
+                fullSync.disabled = true;
+                setText(fullSync, "Syncing...");
+                try {
+                  const response = await fetch(`/internal/frigate-targets/${encodeURIComponent(target.target_id)}/full-sync`, {
+                    method: "POST",
+                    headers: {"X-CamAdmiral-Action": "full-sync-frigate-target"}
+                  });
+                  const result = await response.json();
+                  if (!response.ok) throw new Error(frigateFailureDetail(result, "Full sync failed."));
+                  setText(state, `Connected · removed ${result.removed_cameras} stale camera${result.removed_cameras === 1 ? "" : "s"}`);
+                  state.className = "frigate-target-state connected";
+                  state.title = "";
+                  setText(errorDetail, "");
+                  errorDetail.hidden = true;
+                } catch (error) {
+                  setText(state, "Full sync failed");
+                  state.className = "frigate-target-state error";
+                  state.title = error.message;
+                  setText(errorDetail, error.message);
+                  errorDetail.hidden = false;
+                } finally {
+                  fullSync.disabled = false;
+                  setText(fullSync, "Full sync now");
+                }
+              }
+            });
+          } catch (error) {
+            setText(state, "Full sync unavailable");
+            state.className = "frigate-target-state error";
+            state.title = error.message;
+            setText(errorDetail, error.message);
+            errorDetail.hidden = false;
+          } finally {
+            if (fullSync.textContent === "Checking...") {
+              fullSync.disabled = false;
+              setText(fullSync, "Full sync now");
+            }
           }
         });
         const test = addText(actions, "button", "row-action", "Test");
@@ -2888,7 +3019,6 @@
       openAppModal("manual", "Add camera manually", addressPanel, showAddAddress, "compact");
       addressInput.focus();
     });
-    showIncidents.addEventListener("click", () => openIncidents(showIncidents));
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
     scanDetails.addEventListener("click", () => {
       scanDialogContent.hidden = false;
@@ -2990,19 +3120,30 @@
       });
     });
 
-    document.body.classList.toggle("settings-view", isSettingsPage);
-    dashboardView.hidden = isSettingsPage;
+    dashboardView.hidden = isSettingsPage || isIncidentsPage;
+    incidentsView.hidden = !isIncidentsPage;
     settingsView.hidden = !isSettingsPage;
-    document.title = isSettingsPage ? "Settings · CamAdmiral" : "CamAdmiral";
+    notificationsSettings.hidden = !isSettingsPage || isIntegrationsPage;
+    integrationsSettings.hidden = !isSettingsPage || !isIntegrationsPage;
+    document.querySelector("#nav-dashboard").setAttribute("aria-current", !isSettingsPage && !isIncidentsPage ? "page" : "false");
+    document.querySelector("#nav-incidents").setAttribute("aria-current", isIncidentsPage ? "page" : "false");
+    document.querySelector("#nav-settings").setAttribute("aria-current", isSettingsPage ? "page" : "false");
+    document.querySelector("#settings-notifications-link").setAttribute("aria-current", isSettingsPage && !isIntegrationsPage ? "page" : "false");
+    document.querySelector("#settings-integrations-link").setAttribute("aria-current", isIntegrationsPage ? "page" : "false");
+    document.title = isSettingsPage ? "Settings · CamAdmiral" : isIncidentsPage ? "Incidents · CamAdmiral" : "CamAdmiral";
     loadVersion();
-    if (isSettingsPage) {
-      loadNotificationSettings();
+    loadIncidentCount();
+    setInterval(loadIncidentCount, 10000);
+    if (isSettingsPage && isIntegrationsPage) {
       loadFrigateTargets();
+    } else if (isSettingsPage) {
+      loadNotificationSettings();
+    } else if (isIncidentsPage) {
+      loadIncidents();
+      setInterval(loadIncidents, 30000);
     } else {
-      loadIncidentCount();
       refresh();
       setInterval(refresh, 1000);
-      setInterval(loadIncidentCount, 10000);
       setInterval(refreshOpenCameraAvailability, CAMERA_AVAILABILITY_REFRESH_MS);
     }
   </script>

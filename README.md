@@ -122,7 +122,7 @@ reads only this cache and never opens a camera stream.
 
 ## Telegram notifications
 
-Open **Settings** in the web UI to connect a dedicated Telegram bot. Create the bot
+Open **Settings > Notifications** in the web UI to connect a dedicated Telegram bot. Create the bot
 with `@BotFather`, paste its token, then use the generated **Open Telegram** link and press
 **Start**. CamAdmiral discovers the destination chat from that one-time pairing message, so
 you do not need to find or enter a numeric chat ID. Alerts are enabled automatically when
@@ -141,10 +141,15 @@ addresses.
 
 ## Frigate integration
 
-Open **Settings** and add the loopback URL for each local Frigate API, such as
+Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
 `http://127.0.0.1:20001`. CamAdmiral validates the required configuration and runtime
 stream capabilities before saving the integration. Every instance with **Sync cameras**
 enabled receives adopted cameras through stable CamAdmiral downstream URLs.
+
+Use **Full sync now** to synchronize the current cameras and remove stale Frigate cameras
+and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one
+confirmation with the cleanup counts. Cameras and streams outside that namespace are never
+removed or changed by full sync.
 
 Frigate integrations are operational settings stored in CamAdmiral's SQLite database.
 They are included in the `/var/lib/camadmiral` backup boundary and are managed exclusively

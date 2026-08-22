@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
@@ -18,6 +20,7 @@ FRIGATE_GO2RTC_PORT = 8554
 KEY_PREFIX = "camadmiral_"
 REQUIRED_CAPABILITIES = {
     "/config": "get",
+    "/config/raw": "get",
     "/config/raw_paths": "get",
     "/config/set": "put",
     "/go2rtc/streams": "get",
@@ -27,9 +30,30 @@ REQUIRED_CAPABILITIES = {
 
 
 class FrigateApiError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        stage: str | None = None,
+        resource: str | None = None,
+        upstream_status: int | None = None,
+        upstream_detail: str | None = None,
+    ):
         super().__init__(code)
         self.code = code
+        self.stage = stage
+        self.resource = resource
+        self.upstream_status = upstream_status
+        self.upstream_detail = upstream_detail
+
+    def with_context(self, *, stage: str, resource: str | None = None) -> FrigateApiError:
+        return FrigateApiError(
+            self.code,
+            stage=self.stage or stage,
+            resource=self.resource or resource,
+            upstream_status=self.upstream_status,
+            upstream_detail=self.upstream_detail,
+        )
 
 
 @dataclass(frozen=True)
@@ -90,11 +114,24 @@ class FrigateClient:
         except FrigateApiError:
             raise
         except urllib.error.HTTPError as exc:
+            detail = self._safe_http_error_detail(exc)
             if exc.code in {401, 403}:
-                raise FrigateApiError("authorization_required") from exc
+                raise FrigateApiError(
+                    "authorization_required",
+                    upstream_status=exc.code,
+                    upstream_detail=detail,
+                ) from exc
             if exc.code == 404:
-                raise FrigateApiError("capability_unavailable") from exc
-            raise FrigateApiError("request_rejected") from exc
+                raise FrigateApiError(
+                    "capability_unavailable",
+                    upstream_status=exc.code,
+                    upstream_detail=detail,
+                ) from exc
+            raise FrigateApiError(
+                "request_rejected",
+                upstream_status=exc.code,
+                upstream_detail=detail,
+            ) from exc
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
             raise FrigateApiError("target_unavailable") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -103,6 +140,34 @@ class FrigateClient:
             return json.loads(raw)
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise FrigateApiError("invalid_response") from exc
+
+    @staticmethod
+    def _safe_http_error_detail(exc: urllib.error.HTTPError) -> str | None:
+        try:
+            raw = exc.read(4097)
+        except OSError:
+            return None
+        if not raw or len(raw) > 4096:
+            return None
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeError:
+            return None
+        try:
+            payload = json.loads(decoded)
+        except json.JSONDecodeError:
+            detail = decoded
+        else:
+            detail = payload.get("message") if isinstance(payload, dict) else None
+            if not isinstance(detail, str):
+                detail = decoded
+        detail = " ".join(detail.split())
+        detail = re.sub(
+            r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+)@",
+            r"\1***@",
+            detail,
+        )
+        return detail[:240] or None
 
     def capabilities(self) -> None:
         document = self._request("GET", "/api/openapi.json")
@@ -125,6 +190,18 @@ class FrigateClient:
         if not isinstance(result, dict):
             raise FrigateApiError("invalid_response")
         return result
+
+    def raw_config(self) -> dict[str, Any]:
+        result = self._request("GET", "/api/config/raw")
+        if not isinstance(result, str):
+            raise FrigateApiError("invalid_response")
+        try:
+            parsed = yaml.safe_load(result)
+        except yaml.YAMLError as exc:
+            raise FrigateApiError("invalid_response") from exc
+        if not isinstance(parsed, dict):
+            raise FrigateApiError("invalid_response")
+        return parsed
 
     def runtime_streams(self) -> dict[str, Any]:
         result = self._request("GET", "/api/go2rtc/streams")
@@ -157,10 +234,211 @@ class FrigateClient:
         if isinstance(result, dict) and result.get("success") is False:
             raise FrigateApiError("runtime_stream_rejected")
 
+    def delete_runtime_stream(self, stream_name: str) -> None:
+        encoded_name = urllib.parse.quote(stream_name, safe="")
+        result = self._request("DELETE", f"/api/go2rtc/streams/{encoded_name}")
+        if isinstance(result, dict) and result.get("success") is False:
+            raise FrigateApiError("runtime_stream_rejected")
+
 
 def frigate_camera_key(camera_uuid: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
     return f"{KEY_PREFIX}{normalized}"
+
+
+def desired_resource_keys(repository: Any) -> tuple[set[str], set[str]]:
+    camera_keys = {
+        frigate_camera_key(str(camera["camera_uuid"]))
+        for camera in repository.consumer_inventory()
+    }
+    stream_keys = {
+        stream_key
+        for camera_key in camera_keys
+        for stream_key in (f"{camera_key}_record", f"{camera_key}_detect")
+    }
+    return camera_keys, stream_keys
+
+
+def full_sync_preview(
+    repository: Any,
+    target: FrigateTarget,
+    *,
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> dict[str, Any]:
+    client = client_factory(target)
+    client.capabilities()
+    state = _full_sync_state(repository, client)
+    return {
+        "managed_cameras": state["managed_cameras"],
+        "stale_cameras": state["stale_cameras"],
+        "stale_streams": state["stale_streams"],
+    }
+
+
+def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
+    saved_config = client.raw_config()
+    runtime_streams = client.runtime_streams()
+    desired_cameras, desired_streams = desired_resource_keys(repository)
+    configured_cameras = saved_config.get("cameras", {})
+    configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
+    if (
+        not isinstance(configured_cameras, dict)
+        or not isinstance(configured_streams, dict)
+        or not isinstance(runtime_streams, dict)
+    ):
+        raise FrigateApiError("invalid_response")
+    stale_cameras = sorted(
+        name
+        for name in configured_cameras
+        if name.startswith(KEY_PREFIX) and name not in desired_cameras
+    )
+    stale_config_streams = {
+        name
+        for name in configured_streams
+        if name.startswith(KEY_PREFIX) and name not in desired_streams
+    }
+    stale_runtime_streams = {
+        name
+        for name in runtime_streams
+        if name.startswith(KEY_PREFIX) and name not in desired_streams
+    }
+    return {
+        "managed_cameras": len(desired_cameras),
+        "stale_cameras": stale_cameras,
+        "stale_config_streams": sorted(stale_config_streams),
+        "stale_runtime_streams": sorted(stale_runtime_streams),
+        "stale_streams": sorted(stale_config_streams | stale_runtime_streams),
+    }
+
+
+def full_sync_frigate(
+    repository: Any,
+    target: FrigateTarget,
+    *,
+    media_host: str = "127.0.0.1",
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> dict[str, int]:
+    client = client_factory(target)
+    try:
+        client.capabilities()
+        state = _full_sync_state(repository, client)
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_configuration") from exc
+    stale_cameras = state["stale_cameras"]
+    stale_config_streams = state["stale_config_streams"]
+    stale_streams = state["stale_streams"]
+
+    for camera_key in stale_cameras:
+        try:
+            client.set_config(
+                {"cameras": {camera_key: ""}},
+                update_topic=f"config/cameras/{camera_key}/remove",
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
+
+    # Frigate's own UI updates persistent go2rtc configuration before
+    # changing the running go2rtc instance. This prevents an alias from being
+    # recreated after restart and makes saved configuration authoritative.
+    if stale_config_streams:
+        try:
+            client.set_config(
+                {
+                    "go2rtc": {
+                        "streams": {
+                            stream_key: "" for stream_key in stale_config_streams
+                        }
+                    }
+                }
+            )
+            saved_config = client.raw_config()
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_stream_configuration") from exc
+        configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
+        if not isinstance(configured_streams, dict):
+            raise FrigateApiError(
+                "invalid_response", stage="verify_stream_configuration"
+            )
+        remaining_config = [
+            stream_key
+            for stream_key in stale_config_streams
+            if stream_key in configured_streams
+        ]
+        if remaining_config:
+            raise FrigateApiError(
+                "verification_failed",
+                stage="verify_stream_configuration",
+                resource=remaining_config[0],
+            )
+
+    try:
+        runtime_streams = client.runtime_streams()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_runtime_streams") from exc
+    delete_errors: dict[str, FrigateApiError] = {}
+    for stream_key in stale_streams:
+        if stream_key not in runtime_streams:
+            continue
+        try:
+            client.delete_runtime_stream(stream_key)
+        except FrigateApiError as exc:
+            # go2rtc removes the live stream before patching its writable
+            # primary YAML. Streams loaded from Frigate's generated secondary
+            # config can therefore return HTTP 400 ("yaml: path not exist")
+            # after the requested runtime deletion has already succeeded.
+            # Preserve the response for diagnostics, but decide success from
+            # the resulting runtime state below.
+            delete_errors[stream_key] = exc
+
+    try:
+        remaining_runtime = client.runtime_streams()
+    except FrigateApiError as exc:
+        if delete_errors:
+            stream_key, delete_error = next(iter(delete_errors.items()))
+            raise delete_error.with_context(
+                stage="remove_runtime_stream", resource=stream_key
+            ) from exc
+        raise exc.with_context(stage="verify_runtime_cleanup") from exc
+    remaining_runtime_streams = [
+        stream_key for stream_key in stale_streams if stream_key in remaining_runtime
+    ]
+    if remaining_runtime_streams:
+        stream_key = remaining_runtime_streams[0]
+        if stream_key in delete_errors:
+            raise delete_errors[stream_key].with_context(
+                stage="remove_runtime_stream", resource=stream_key
+            )
+        raise FrigateApiError(
+            "verification_failed",
+            stage="verify_runtime_cleanup",
+            resource=stream_key,
+        )
+
+    try:
+        verified = _full_sync_state(repository, client)
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="verify_cleanup") from exc
+    remaining = [*verified["stale_cameras"], *verified["stale_streams"]]
+    if remaining:
+        raise FrigateApiError(
+            "verification_failed",
+            stage="verify_cleanup",
+            resource=remaining[0],
+        )
+    try:
+        reconciliation = reconcile_frigate(
+            repository,
+            target,
+            media_host=media_host,
+            client_factory=lambda _target: client,
+        )
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="reconcile_current_cameras") from exc
+    return {
+        "removed_cameras": len(stale_cameras),
+        "removed_streams": len(stale_streams),
+        **reconciliation,
+    }
 
 
 def _stream_for_role(camera: dict[str, Any], role: str) -> dict[str, Any] | None:
