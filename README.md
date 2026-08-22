@@ -51,6 +51,12 @@ the screenshot are intentionally masked.
 
 ![CamAdmiral validated downstream streams](docs/images/camadmiral-downstream-streams.png)
 
+## Latency
+
+CamAdmiral relays RTSP video through go2rtc without transcoding. One additional relay hop
+measured `0.04-0.17 ms` median and `0.21-0.47 ms` p95 on an uncongested Linux host. This
+excludes camera encoding, keyframe waits, network congestion, decoding, and player buffering.
+
 ## Availability timeline
 
 Each camera includes a seven-day availability timeline. Red blocks show periods when the
