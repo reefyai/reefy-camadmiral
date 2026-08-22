@@ -75,6 +75,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('.evaluate_all(', browser)
         self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
         self.assertIn("bounds.bottom > cardBounds.bottom + 0.5", browser)
+        self.assertIn("assert_downstream_password_masking(page)", browser)
+        self.assertIn('":********@" not in displayed', browser)
+        self.assertIn('urllib.parse.unquote(parsed.password or "") != access["password"]', browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:

@@ -26,7 +26,8 @@ The isolated Docker Compose lab covers:
   identities
 - camera credential rotation, failed repair preservation, and successful repair
 - WebKit phone-viewport rendering with every camera action button fully visible
-  and clickable inside its card
+  and clickable inside its card, downstream passwords masked in the modal, and
+  plaintext credentials preserved only for Copy
 
 Run from the repository root:
 
