@@ -27,9 +27,10 @@ The isolated Docker Compose lab covers:
 - camera IP change with validated upstream replacement and stable downstream
   identities
 - camera credential rotation, failed repair preservation, and successful repair
-- WebKit phone-viewport rendering with every camera action button fully visible
-  and clickable inside its card, downstream passwords masked in the modal, and
-  plaintext credentials preserved only for Copy
+- WebKit phone-viewport rendering with a stable dashboard action bar, 44px scan
+  and add-camera targets, every camera action fully visible inside its card,
+  downstream passwords masked in the modal, and plaintext credentials preserved
+  only for Copy
 
 Run from the repository root:
 
@@ -38,6 +39,23 @@ python -m pip install -r e2e/requirements.txt
 python -m playwright install webkit
 python3 e2e/run.py
 ```
+
+Measure the steady-state delay added by one go2rtc RTSP relay with matched
+decoded H.264 frames:
+
+```console
+python3 e2e/latency.py
+```
+
+The benchmark runs equal low-buffer FFmpeg consumers against a direct camera
+stream and the same stream through one additional go2rtc hop. It reports the
+signed arrival-time difference for matching frames as median, p95, minimum,
+and maximum. Run it on an otherwise idle host. It is intentionally not a hard
+release gate because host scheduling and media-pipeline startup add timing
+noise that is unrelated to CamAdmiral correctness. The
+`Measure go2rtc relay latency` GitHub workflow provides the same benchmark on
+Reefy's Linux runner and can be started manually after it reaches the default
+branch.
 
 Docker with Compose v2 and Playwright WebKit are the host dependencies. The
 runner builds the current source, creates a private bridge network and

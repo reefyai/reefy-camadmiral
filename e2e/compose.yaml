@@ -41,8 +41,9 @@ services:
 
   frigate:
     image: ghcr.io/blakeblackshear/frigate:0.17.1
+    restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
-    command: ["cp /e2e/frigate.yml /config/config.yml && exec /init"]
+    command: ["test -f /config/config.yml || cp /e2e/frigate.yml /config/config.yml; exec /init"]
     networks:
       lab:
         ipv4_address: 172.30.0.30
@@ -79,6 +80,21 @@ services:
     networks:
       lab:
         ipv4_address: 172.30.0.10
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
+  latency-relay:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/latency-relay.yaml"]
+    volumes:
+      - ./fixtures/latency-relay.yaml:/e2e/latency-relay.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.14
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

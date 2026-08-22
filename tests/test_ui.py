@@ -24,14 +24,31 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('class="app-brand" href="/" aria-label="CamAdmiral dashboard"', self.html)
         self.assertIn('<img src="/app-icon.png" alt=""', self.html)
 
-    def test_header_actions_are_grouped_into_compact_utility_and_scan_controls(self) -> None:
-        self.assertIn('class="utility-actions"', self.html)
-        self.assertIn('class="scan-actions"', self.html)
+    def test_dashboard_uses_one_primary_action_and_quiet_scan_status(self) -> None:
+        self.assertIn('class="primary-nav"', self.html)
+        self.assertIn('class="dashboard-controls"', self.html)
+        self.assertIn('class="dashboard-actions"', self.html)
+        self.assertIn('class="scan-status"', self.html)
+        self.assertNotIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
         self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
-        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", self.html)
-        self.assertIn("justify-content: stretch", self.html)
-        self.assertIn(".utility-actions { display: grid; width: 100%", self.html)
-        self.assertIn("display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn('<button id="scan" type="button">Scan network</button>', self.html)
+        self.assertIn('class="scan-details-link">View details</span>', self.html)
+        self.assertIn('function scanStatusLabel(data, active)', self.html)
+        self.assertIn('`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`', self.html)
+        self.assertNotIn('complete: "Scan complete"', self.html)
+        self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
+        self.assertIn("display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn("width: 120px; min-height: 38px", self.html)
+
+    def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
+        self.assertIn("function frigateFailureDetail(result, fallback)", self.html)
+        self.assertIn('parts.push(`Stage: ${stages[result.stage] || result.stage}.`)', self.html)
+        self.assertIn('parts.push(`Resource: ${result.resource}.`)', self.html)
+        self.assertIn('parts.push(`Code: ${result.status}.`)', self.html)
+        self.assertIn('verify_stream_configuration: "verify stale stream configuration"', self.html)
+        self.assertIn('verify_runtime_cleanup: "verify stale live streams"', self.html)
+        self.assertIn('"frigate-target-error"', self.html)
+        self.assertIn("setText(errorDetail, error.message)", self.html)
 
     def test_pasted_rtsp_credentials_are_removed_from_visible_source(self) -> None:
         self.assertIn('source.username = ""', self.html)
@@ -68,6 +85,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("<colgroup>", self.html)
 
     def test_summary_counts_filter_camera_rows(self) -> None:
+        self.assertIn('class="camera-list-surface" aria-label="Camera list"', self.html)
+        self.assertIn(".camera-list-surface {", self.html)
+        self.assertIn("padding: 12px 14px; border-bottom:", self.html)
         self.assertIn('data-camera-filter="all"', self.html)
         self.assertIn('data-camera-filter="online"', self.html)
         self.assertIn('data-camera-filter="offline"', self.html)
@@ -245,12 +265,15 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("#scan {", self.html)
         self.assertIn("background: #2dd4bf", self.html)
 
-    def test_settings_are_a_page_while_incidents_remain_a_modal(self) -> None:
-        self.assertIn('id="show-incidents"', self.html)
+    def test_primary_navigation_and_settings_subpages_are_persistent(self) -> None:
+        self.assertIn('id="nav-dashboard" href="/">Dashboard</a>', self.html)
+        self.assertIn('id="nav-incidents" href="/incidents">Incidents', self.html)
+        self.assertIn('id="nav-settings" href="/settings/notifications">Settings</a>', self.html)
         self.assertIn('id="incident-count"', self.html)
-        self.assertIn('openAppModal("incidents"', self.html)
-        self.assertIn('id="show-settings" href="/settings">Settings</a>', self.html)
+        self.assertIn('id="incidents-view" hidden', self.html)
         self.assertIn('id="settings-view" hidden', self.html)
+        self.assertIn('href="/settings/notifications">Notifications</a>', self.html)
+        self.assertIn('href="/settings/integrations">Integrations</a>', self.html)
         self.assertIn('id="telegram-settings-body"', self.html)
         self.assertIn('id="frigate-targets"', self.html)
         self.assertIn('openAppModal("frigate"', self.html)
@@ -261,6 +284,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('"Telegram alerts"', self.html)
         self.assertNotIn("enabled.checked", self.html)
         self.assertIn("const body = {enabled: true}", self.html)
+
+    def test_frigate_full_sync_is_one_confirmed_target_action(self) -> None:
+        self.assertIn('"Full sync now"', self.html)
+        self.assertIn('/full-sync`, {cache: "no-store"}', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', self.html)
+        self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
 
 
 if __name__ == "__main__":
