@@ -52,7 +52,10 @@ stream and the same stream through one additional go2rtc hop. It reports the
 signed arrival-time difference for matching frames as median, p95, minimum,
 and maximum. Run it on an otherwise idle host. It is intentionally not a hard
 release gate because host scheduling and media-pipeline startup add timing
-noise that is unrelated to CamAdmiral correctness.
+noise that is unrelated to CamAdmiral correctness. The
+`Measure go2rtc relay latency` GitHub workflow provides the same benchmark on
+Reefy's Linux runner and can be started manually after it reaches the default
+branch.
 
 Docker with Compose v2 and Playwright WebKit are the host dependencies. The
 runner builds the current source, creates a private bridge network and
