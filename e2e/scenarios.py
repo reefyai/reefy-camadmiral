@@ -1160,6 +1160,17 @@ def frigate() -> None:
     if "operator_stream" not in cleaned_streams:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate stream")
 
+    def stale_worker_stopped() -> bool:
+        cameras = frigate_json("/api/stats").get("cameras", {})
+        return isinstance(cameras, dict) and stale_camera not in cameras
+
+    wait_for(
+        "Frigate stale camera worker cleanup",
+        stale_worker_stopped,
+        timeout=90,
+        interval=2,
+    )
+
     partial_drift_stream = "camadmiral_synthetic_partial_drift"
     partial_drift_source = "rtsp://camera-open:8554/sub"
     seeded = update_frigate(

@@ -80,6 +80,7 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_e2e_full_sync_preserves_operator_owned_frigate_resources(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
         fixture = (ROOT / "e2e" / "fixtures" / "frigate.yml").read_text()
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
         self.assertIn('stale_camera = "camadmiral_synthetic_stale"', scenarios)
         self.assertIn('operator_camera = "operator_camera"', scenarios)
         self.assertIn("camadmiral_synthetic_stale_record:", fixture)
@@ -87,6 +88,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
+        self.assertIn('"Frigate stale camera worker cleanup"', scenarios)
+        self.assertIn("restart: unless-stopped", compose)
+        self.assertIn("test -f /config/config.yml || cp", compose)
 
     def test_e2e_full_sync_covers_stream_missing_only_from_runtime(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()

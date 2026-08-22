@@ -1167,6 +1167,10 @@
         remove_stream_configuration: "remove stale stream configuration",
         verify_stream_configuration: "verify stale stream configuration",
         verify_runtime_cleanup: "verify stale live streams",
+        inspect_camera_workers: "inspect removed camera workers",
+        restart_frigate: "restart Frigate",
+        wait_for_frigate_restart: "wait for Frigate to restart",
+        verify_camera_worker_cleanup: "verify removed camera workers",
         verify_cleanup: "verify cleanup",
         reconcile_current_cameras: "synchronize current cameras"
       };
@@ -1240,7 +1244,7 @@
             setText(fullSync, "Full sync now");
             showConfirmation({
               title: `Full sync ${target.name}?`,
-              message: `CamAdmiral will synchronize ${preview.managed_cameras} current camera${preview.managed_cameras === 1 ? "" : "s"} and ${staleSummary}. Other Frigate cameras and streams will not be changed.`,
+              message: `CamAdmiral will synchronize ${preview.managed_cameras} current camera${preview.managed_cameras === 1 ? "" : "s"} and ${staleSummary}. Other Frigate cameras and streams will not be changed. Frigate may restart once if removed camera workers are still running.`,
               actionLabel: "Full sync",
               trigger: fullSync,
               onConfirm: async () => {

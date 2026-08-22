@@ -21,6 +21,9 @@ FRIGATE_GO2RTC_PORT = 8554
 KEY_PREFIX = "camadmiral_"
 RUNTIME_CLEANUP_TIMEOUT_SECONDS = 10.0
 RUNTIME_CLEANUP_POLL_SECONDS = 0.25
+CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS = 60.0
+CAMERA_WORKER_CLEANUP_POLL_SECONDS = 0.5
+CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS = 5.0
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -28,6 +31,7 @@ REQUIRED_CAPABILITIES = {
     "/config/set": "put",
     "/go2rtc/streams": "get",
     "/go2rtc/streams/{stream_name}": "put",
+    "/restart": "post",
     "/stats": "get",
 }
 
@@ -243,6 +247,11 @@ class FrigateClient:
         if isinstance(result, dict) and result.get("success") is False:
             raise FrigateApiError("runtime_stream_rejected")
 
+    def restart(self) -> None:
+        result = self._request("POST", "/api/restart")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise FrigateApiError("restart_rejected")
+
 
 def frigate_camera_key(camera_uuid: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
@@ -327,6 +336,26 @@ def _wait_for_runtime_cleanup(
         if not remaining or time.monotonic() >= deadline:
             return remaining
         time.sleep(RUNTIME_CLEANUP_POLL_SECONDS)
+
+
+def _wait_for_camera_worker_cleanup(
+    client: FrigateClient,
+    camera_keys: list[str],
+    *,
+    timeout: float = CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS,
+) -> list[str]:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stats = client.stats()
+        except FrigateApiError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            remaining = [camera_key for camera_key in camera_keys if camera_key in stats]
+            if not remaining or time.monotonic() >= deadline:
+                return remaining
+        time.sleep(CAMERA_WORKER_CLEANUP_POLL_SECONDS)
 
 
 def full_sync_frigate(
@@ -428,6 +457,37 @@ def full_sync_frigate(
             stage="verify_runtime_cleanup",
             resource=stream_key,
         )
+
+    # Frigate 0.17.0 can save a camera removal while leaving the removed
+    # capture workers and shared-memory frames alive. Restart only when the
+    # stale workers remain after a short grace period for the documented
+    # dynamic update.
+    if stale_cameras:
+        try:
+            stale_workers = _wait_for_camera_worker_cleanup(
+                client,
+                stale_cameras,
+                timeout=CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS,
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="inspect_camera_workers") from exc
+        if stale_workers:
+            try:
+                client.restart()
+            except FrigateApiError as exc:
+                raise exc.with_context(stage="restart_frigate") from exc
+            try:
+                remaining_workers = _wait_for_camera_worker_cleanup(
+                    client, stale_workers
+                )
+            except FrigateApiError as exc:
+                raise exc.with_context(stage="wait_for_frigate_restart") from exc
+            if remaining_workers:
+                raise FrigateApiError(
+                    "verification_failed",
+                    stage="verify_camera_worker_cleanup",
+                    resource=remaining_workers[0],
+                )
 
     try:
         verified = _full_sync_state(repository, client)
