@@ -40,6 +40,29 @@ def sweep_allowed(network: ipaddress.IPv4Network) -> bool:
     return max(0, network.num_addresses - 2) <= MAX_SCAN_HOSTS
 
 
+def learned_neighbor_addresses(
+    interface: LanInterface,
+    arp_entries: dict[str, str],
+) -> list[str]:
+    """Return a bounded list of already-learned IPv4 neighbors on a LAN."""
+    return _bounded_interface_addresses(interface, arp_entries)
+
+
+def _bounded_interface_addresses(
+    interface: LanInterface,
+    candidate_addresses: Iterable[str],
+) -> list[str]:
+    addresses: list[ipaddress.IPv4Address] = []
+    for address in candidate_addresses:
+        try:
+            parsed = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if parsed in interface.network and parsed != interface.address:
+            addresses.append(parsed)
+    return [str(address) for address in sorted(set(addresses))[:MAX_SCAN_HOSTS]]
+
+
 class DiscoveryScanError(RuntimeError):
     def __init__(self, message: str, raw_log: list[str]):
         super().__init__(message)
@@ -334,6 +357,7 @@ def parse_probe_matches(payload: bytes, sender_ip: str) -> list[dict[str, Any]]:
 def discover_onvif(
     interface: LanInterface,
     log: Callable[[str], None] | None = None,
+    fallback_addresses: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
     discovered: dict[str, dict[str, Any]] = {}
     emit = log or (lambda _message: None)
@@ -351,15 +375,19 @@ def discover_onvif(
             emit(f"ONVIF: sent multicast probe {index}/{len(messages)} ({len(message)} bytes)")
         # A bounded unicast probe helps cameras with broken or disabled multicast.
         if sweep_allowed(interface.network):
-            for host in interface.network.hosts():
-                if host != interface.address:
-                    sock.sendto(messages[0], (str(host), ONVIF_MULTICAST[1]))
-                    emit(f"ONVIF: sent unicast probe to {host}:{ONVIF_MULTICAST[1]}")
+            unicast_targets = [
+                str(host) for host in interface.network.hosts() if host != interface.address
+            ]
         else:
+            unicast_targets = _bounded_interface_addresses(interface, fallback_addresses)
             emit(
                 f"ONVIF: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
-                "sweep limit; relying on multicast only, unicast fallback skipped"
+                f"sweep limit; using {len(unicast_targets)} learned neighbor(s) "
+                "for unicast fallback"
             )
+        for target in unicast_targets:
+            sock.sendto(messages[0], (target, ONVIF_MULTICAST[1]))
+            emit(f"ONVIF: sent unicast probe to {target}:{ONVIF_MULTICAST[1]}")
         deadline = time.monotonic() + ONVIF_TIMEOUT
         while True:
             remaining = deadline - time.monotonic()
@@ -477,6 +505,27 @@ def discover_rtsp(
         )
         return []
     targets = [str(host) for host in interface.network.hosts() if host != interface.address]
+    return _discover_rtsp_targets(targets, emit)
+
+
+def discover_rtsp_neighbors(
+    interface: LanInterface,
+    addresses: Iterable[str],
+    log: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    emit = log or (lambda _message: None)
+    targets = _bounded_interface_addresses(interface, addresses)
+    emit(
+        f"RTSP: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
+        f"sweep limit; probing {len(targets)} learned neighbor(s) only"
+    )
+    return _discover_rtsp_targets(targets, emit)
+
+
+def _discover_rtsp_targets(
+    targets: list[str],
+    emit: Callable[[str], None],
+) -> list[dict[str, Any]]:
     emit(
         f"RTSP: probing {len(targets)} host(s), ports "
         f"{', '.join(str(port) for port in RTSP_PORTS)}, {RTSP_WORKERS} workers, "
@@ -838,16 +887,27 @@ def scan_lan(
         )
     log(f"SCAN: start; networks={len(interfaces)}")
     known_devices = list(known_devices)
+    initial_arp_entries = read_arp_table()
     sweepable = [interface for interface in interfaces if sweep_allowed(interface.network)]
+    learned_neighbors = {
+        interface: learned_neighbor_addresses(interface, initial_arp_entries)
+        for interface in interfaces
+        if interface not in sweepable
+    }
+    rtsp_candidate_interfaces = [
+        interface for interface, addresses in learned_neighbors.items() if addresses
+    ]
     for interface in interfaces:
         if interface not in sweepable:
+            candidate_count = len(learned_neighbors[interface])
             log(
                 f"SCAN: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
-                "sweep limit; RTSP port sweep skipped, ONVIF multicast only"
+                f"sweep limit; ONVIF multicast plus {candidate_count} learned "
+                "neighbor candidate(s)"
             )
     scanners = {
         "onvif": "running",
-        "rtsp": "running" if sweepable else "skipped",
+        "rtsp": "running" if sweepable or rtsp_candidate_interfaces else "skipped",
         "reachability": "running",
     }
     errors: dict[str, str] = {}
@@ -860,9 +920,21 @@ def scan_lan(
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(interfaces) * 3) as pool:
         futures: dict[concurrent.futures.Future[Any], tuple[str, LanInterface]] = {}
         for interface in interfaces:
-            futures[pool.submit(discover_onvif, interface, log)] = ("onvif", interface)
+            neighbor_addresses = learned_neighbors.get(interface, [])
+            futures[
+                pool.submit(discover_onvif, interface, log, neighbor_addresses)
+            ] = ("onvif", interface)
             if interface in sweepable:
                 futures[pool.submit(discover_rtsp, interface, log)] = ("rtsp", interface)
+            elif neighbor_addresses:
+                futures[
+                    pool.submit(
+                        discover_rtsp_neighbors,
+                        interface,
+                        neighbor_addresses,
+                        log,
+                    )
+                ] = ("rtsp", interface)
             futures[
                 pool.submit(discover_reachable_known, interface, known_devices, log)
             ] = ("reachability", interface)
@@ -895,6 +967,7 @@ def scan_lan(
         raise DiscoveryScanError("ONVIF discovery failed and no RTSP sweep completed", raw_log)
     onvif_devices = results["onvif"]
     rtsp_devices = results["rtsp"]
+    # Reachability checks can populate or refresh ARP while scanners run.
     arp_entries = read_arp_table()
     known_by_ip = {str(device.get("ip") or ""): device for device in known_devices}
     reachable_known: list[str] = []

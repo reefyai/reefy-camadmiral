@@ -153,6 +153,21 @@ services:
     healthcheck:
       disable: true
 
+  camera-rtsp-large:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-secondary.yaml"]
+    volumes:
+      - ./fixtures/camera-secondary.yaml:/e2e/camera-secondary.yaml:ro
+    networks:
+      large:
+        ipv4_address: 172.29.0.88
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
   camera-secondary:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-secondary.yaml"]

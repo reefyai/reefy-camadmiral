@@ -141,6 +141,25 @@ eth0 0028A8C0 00000000 0001 0 0 100 00FFFFFF 0 0 0
         probe.assert_not_called()
         self.assertTrue(any("sweep limit" in line for line in lines))
 
+    def test_learned_neighbors_are_filtered_to_the_interface_and_bounded(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.2.3"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+        entries = {
+            "not-an-address": "02:00:00:00:00:01",
+            "10.0.2.3": "02:00:00:00:00:02",
+            "10.0.2.20": "02:00:00:00:00:20",
+            "10.0.2.10": "02:00:00:00:00:10",
+            "192.168.1.20": "02:00:00:00:00:30",
+        }
+
+        with patch.object(discovery, "MAX_SCAN_HOSTS", 1):
+            addresses = discovery.learned_neighbor_addresses(interface, entries)
+
+        self.assertEqual(addresses, ["10.0.2.10"])
+
 
 class _FakeUdpSocket:
     """Capture sendto destinations; recvfrom immediately times out."""
@@ -198,6 +217,24 @@ class OnvifSweepFallbackTests(unittest.TestCase):
         destinations = self._run("10.0.0.0/16")
 
         self.assertEqual(destinations, [discovery.ONVIF_MULTICAST] * 4)
+
+    def test_large_subnet_uses_learned_neighbors_for_unicast_fallback(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.0.2"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+        with patch.object(discovery.socket, "socket", _FakeUdpSocket):
+            discovery.discover_onvif(
+                interface,
+                fallback_addresses=["10.0.3.20", "192.168.1.20"],
+            )
+
+        self.assertEqual(
+            _FakeUdpSocket.last.destinations,
+            [discovery.ONVIF_MULTICAST] * 4
+            + [("10.0.3.20", discovery.ONVIF_MULTICAST[1])],
+        )
 
 
 class ResultTests(unittest.TestCase):
@@ -312,6 +349,45 @@ class ResultTests(unittest.TestCase):
         self.assertIn(("rtsp", "skipped"), progress)
         self.assertTrue(any("sweep limit" in line for line in result["raw_log"]))
 
+    def test_full_scan_on_large_subnet_probes_learned_neighbors(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("10.0.0.2"),
+            network=ipaddress.IPv4Network("10.0.0.0/16"),
+        )
+        arp_entries = {
+            "10.0.3.20": "02:00:00:00:00:20",
+            "192.168.1.20": "02:00:00:00:00:21",
+        }
+        rtsp_camera = {
+            "ip": "10.0.3.20",
+            "endpoints": [{"port": 554, "verified": True}],
+        }
+
+        with (
+            patch.object(discovery, "private_lan_interfaces", return_value=[interface]),
+            patch.object(discovery, "discover_onvif", return_value=[]) as onvif,
+            patch.object(discovery, "discover_rtsp") as full_rtsp,
+            patch.object(
+                discovery,
+                "discover_rtsp_neighbors",
+                return_value=[rtsp_camera],
+            ) as neighbor_rtsp,
+            patch.object(discovery, "discover_reachable_known", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value=arp_entries),
+        ):
+            result = discovery.scan_lan()
+
+        full_rtsp.assert_not_called()
+        onvif.assert_called_once_with(interface, unittest.mock.ANY, ["10.0.3.20"])
+        neighbor_rtsp.assert_called_once_with(
+            interface,
+            ["10.0.3.20"],
+            unittest.mock.ANY,
+        )
+        self.assertEqual(result["scanners"]["rtsp"], "complete")
+        self.assertEqual([device["ip"] for device in result["devices"]], ["10.0.3.20"])
+
     def test_full_scan_fails_when_onvif_errors_and_rtsp_is_skipped(self) -> None:
         interface = discovery.LanInterface(
             name="eth0",
@@ -340,7 +416,7 @@ class ResultTests(unittest.TestCase):
         barrier = threading.Barrier(2)
         progress = []
 
-        def onvif(_interface, _log=None):
+        def onvif(_interface, _log=None, _fallback_addresses=()):
             barrier.wait(timeout=1)
             return [{"ip": "192.168.10.20", "endpoint_reference": "uuid:test", "service_urls": [], "scopes": [], "types": [], "name": "Camera", "model": None}]
 
