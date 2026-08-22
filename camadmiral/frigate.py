@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
@@ -18,6 +20,7 @@ FRIGATE_GO2RTC_PORT = 8554
 KEY_PREFIX = "camadmiral_"
 REQUIRED_CAPABILITIES = {
     "/config": "get",
+    "/config/raw": "get",
     "/config/raw_paths": "get",
     "/config/set": "put",
     "/go2rtc/streams": "get",
@@ -27,9 +30,24 @@ REQUIRED_CAPABILITIES = {
 
 
 class FrigateApiError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        stage: str | None = None,
+        resource: str | None = None,
+    ):
         super().__init__(code)
         self.code = code
+        self.stage = stage
+        self.resource = resource
+
+    def with_context(self, *, stage: str, resource: str | None = None) -> FrigateApiError:
+        return FrigateApiError(
+            self.code,
+            stage=self.stage or stage,
+            resource=self.resource or resource,
+        )
 
 
 @dataclass(frozen=True)
@@ -126,6 +144,18 @@ class FrigateClient:
             raise FrigateApiError("invalid_response")
         return result
 
+    def raw_config(self) -> dict[str, Any]:
+        result = self._request("GET", "/api/config/raw")
+        if not isinstance(result, str):
+            raise FrigateApiError("invalid_response")
+        try:
+            parsed = yaml.safe_load(result)
+        except yaml.YAMLError as exc:
+            raise FrigateApiError("invalid_response") from exc
+        if not isinstance(parsed, dict):
+            raise FrigateApiError("invalid_response")
+        return parsed
+
     def runtime_streams(self) -> dict[str, Any]:
         result = self._request("GET", "/api/go2rtc/streams")
         if not isinstance(result, dict):
@@ -190,10 +220,10 @@ def full_sync_preview(
 ) -> dict[str, Any]:
     client = client_factory(target)
     client.capabilities()
-    raw_paths = client.raw_paths()
+    saved_config = client.raw_config()
     desired_cameras, desired_streams = desired_resource_keys(repository)
-    configured_cameras = raw_paths.get("cameras", {})
-    configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
+    configured_cameras = saved_config.get("cameras", {})
+    configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
     if not isinstance(configured_cameras, dict) or not isinstance(configured_streams, dict):
         raise FrigateApiError("invalid_response")
     stale_cameras = sorted(
@@ -221,31 +251,60 @@ def full_sync_frigate(
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
 ) -> dict[str, int]:
     client = client_factory(target)
-    preview = full_sync_preview(repository, target, client_factory=lambda _target: client)
+    try:
+        preview = full_sync_preview(repository, target, client_factory=lambda _target: client)
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_configuration") from exc
     stale_cameras = preview["stale_cameras"]
     stale_streams = preview["stale_streams"]
 
     for camera_key in stale_cameras:
-        client.set_config(
-            {"cameras": {camera_key: ""}},
-            update_topic=f"config/cameras/{camera_key}/remove",
-        )
+        try:
+            client.set_config(
+                {"cameras": {camera_key: ""}},
+                update_topic=f"config/cameras/{camera_key}/remove",
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
+    try:
+        runtime_streams = client.runtime_streams()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_runtime_streams") from exc
     for stream_key in stale_streams:
-        client.delete_runtime_stream(stream_key)
+        if stream_key not in runtime_streams:
+            continue
+        try:
+            client.delete_runtime_stream(stream_key)
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_runtime_stream", resource=stream_key) from exc
     if stale_streams:
-        client.set_config(
-            {"go2rtc": {"streams": {stream_key: "" for stream_key in stale_streams}}}
-        )
+        try:
+            client.set_config(
+                {"go2rtc": {"streams": {stream_key: "" for stream_key in stale_streams}}}
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_stream_configuration") from exc
 
-    verified = full_sync_preview(repository, target, client_factory=lambda _target: client)
-    if verified["stale_cameras"] or verified["stale_streams"]:
-        raise FrigateApiError("verification_failed")
-    reconciliation = reconcile_frigate(
-        repository,
-        target,
-        media_host=media_host,
-        client_factory=lambda _target: client,
-    )
+    try:
+        verified = full_sync_preview(repository, target, client_factory=lambda _target: client)
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="verify_cleanup") from exc
+    remaining = [*verified["stale_cameras"], *verified["stale_streams"]]
+    if remaining:
+        raise FrigateApiError(
+            "verification_failed",
+            stage="verify_cleanup",
+            resource=remaining[0],
+        )
+    try:
+        reconciliation = reconcile_frigate(
+            repository,
+            target,
+            media_host=media_host,
+            client_factory=lambda _target: client,
+        )
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="reconcile_current_cameras") from exc
     return {
         "removed_cameras": len(stale_cameras),
         "removed_streams": len(stale_streams),

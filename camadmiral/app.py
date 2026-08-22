@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import hashlib
+import logging
 import os
 import secrets
 import threading
@@ -68,6 +69,7 @@ INVENTORY = settings().storage.inventory
 REPOSITORY: CameraRepository | None = None
 MEDIA_LOCK = threading.Lock()
 FRIGATE_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 SCAN_REQUEST_LOCK = threading.Lock()
 RELAY_HEALTH_MONITOR = RelayHealthMonitor()
 HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "30")))
@@ -873,10 +875,15 @@ def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
         "verification_failed": "Frigate did not apply the complete synchronization.",
     }
     status_code = 422 if exc.code in {"invalid_target_url", "capability_unavailable"} else 503
-    return _secured_json(
-        {"status": exc.code, "message": messages.get(exc.code, "Frigate connection failed.")},
-        status_code=status_code,
-    )
+    payload = {
+        "status": exc.code,
+        "message": messages.get(exc.code, "Frigate connection failed."),
+    }
+    if exc.stage is not None:
+        payload["stage"] = exc.stage
+    if exc.resource is not None:
+        payload["resource"] = exc.resource
+    return _secured_json(payload, status_code=status_code)
 
 
 def _check_frigate_target(target: FrigateTarget) -> None:
@@ -1071,6 +1078,13 @@ def apply_full_sync(
             media_host=media_host_from_inventory(INVENTORY),
         )
     except FrigateApiError as exc:
+        LOGGER.warning(
+            "Frigate full sync failed target=%s code=%s stage=%s resource=%s",
+            target_id,
+            exc.code,
+            exc.stage or "unknown",
+            exc.resource or "none",
+        )
         repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
         return _frigate_target_error(exc)
     finally:

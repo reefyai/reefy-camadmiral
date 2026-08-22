@@ -33,6 +33,14 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
         self.assertIn(".dashboard-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
 
+    def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
+        self.assertIn("function frigateFailureDetail(result, fallback)", self.html)
+        self.assertIn('parts.push(`Stage: ${stages[result.stage] || result.stage}.`)', self.html)
+        self.assertIn('parts.push(`Resource: ${result.resource}.`)', self.html)
+        self.assertIn('parts.push(`Code: ${result.status}.`)', self.html)
+        self.assertIn('"frigate-target-error"', self.html)
+        self.assertIn("setText(errorDetail, error.message)", self.html)
+
     def test_pasted_rtsp_credentials_are_removed_from_visible_source(self) -> None:
         self.assertIn('source.username = ""', self.html)
         self.assertIn('source.password = ""', self.html)

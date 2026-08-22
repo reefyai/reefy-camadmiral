@@ -112,6 +112,7 @@
     .frigate-target-meta { display: flex; gap: 7px 12px; margin-top: 6px; color: #7890a4; font-size: 11px; flex-wrap: wrap; }
     .frigate-target-state.connected { color: #86efac; }
     .frigate-target-state.error { color: #fda4af; }
+    .frigate-target-error { margin-top: 6px; color: #fda4af; font-size: 11px; overflow-wrap: anywhere; }
     .frigate-target-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
     .toggle-label { display: inline-flex; align-items: center; gap: 6px; color: #a9bac6; font-size: 11px; }
     .settings-empty { color: #7890a4; font-size: 12px; }
@@ -1157,6 +1158,23 @@
       }
     }
 
+    function frigateFailureDetail(result, fallback) {
+      const stages = {
+        inspect_configuration: "inspect Frigate configuration",
+        remove_camera: "remove stale camera",
+        inspect_runtime_streams: "inspect live streams",
+        remove_runtime_stream: "remove stale live stream",
+        remove_stream_configuration: "remove stale stream configuration",
+        verify_cleanup: "verify cleanup",
+        reconcile_current_cameras: "synchronize current cameras"
+      };
+      const parts = [result?.message || fallback];
+      if (result?.stage) parts.push(`Stage: ${stages[result.stage] || result.stage}.`);
+      if (result?.resource) parts.push(`Resource: ${result.resource}.`);
+      if (result?.status) parts.push(`Code: ${result.status}.`);
+      return parts.join(" ");
+    }
+
     function renderFrigateTargets(data) {
       frigateTargets.replaceChildren();
       const targets = data.targets || [];
@@ -1173,6 +1191,8 @@
         const state = addText(meta, "span", `frigate-target-state ${target.connection_status}`, target.connection_status === "connected" ? "Connected" : target.connection_status === "error" ? "Connection failed" : "Checking");
         if (target.last_error_code) state.title = target.last_error_code;
         if (target.last_checked_at) addText(meta, "span", "", `Checked ${formatTime(target.last_checked_at)}`);
+        const errorDetail = addText(summary, "div", "frigate-target-error", target.last_error_code ? `Last error code: ${target.last_error_code}.` : "");
+        errorDetail.hidden = !target.last_error_code;
         const actions = addText(item, "div", "frigate-target-actions", "");
         const syncLabel = addText(actions, "label", "toggle-label", "");
         const sync = document.createElement("input");
@@ -1188,7 +1208,7 @@
               body: JSON.stringify({sync_cameras: sync.checked})
             });
             const result = await response.json();
-            if (!response.ok) throw new Error(result.message || result.detail || "Frigate settings could not be updated.");
+            if (!response.ok) throw new Error(frigateFailureDetail(result, result.detail || "Frigate settings could not be updated."));
             await loadFrigateTargets();
           } catch (error) {
             sync.checked = !sync.checked;
@@ -1196,6 +1216,8 @@
             setText(state, "Update failed");
             state.className = "frigate-target-state error";
             state.title = error.message;
+            setText(errorDetail, error.message);
+            errorDetail.hidden = false;
           }
         });
         const fullSync = addText(actions, "button", "row-action", "Full sync now");
@@ -1208,7 +1230,7 @@
           try {
             const previewResponse = await fetch(`/internal/frigate-targets/${encodeURIComponent(target.target_id)}/full-sync`, {cache: "no-store"});
             const preview = await previewResponse.json();
-            if (!previewResponse.ok) throw new Error(preview.message || "Full sync could not be prepared.");
+            if (!previewResponse.ok) throw new Error(frigateFailureDetail(preview, "Full sync could not be prepared."));
             const staleSummary = preview.stale_cameras || preview.stale_streams
               ? `remove ${preview.stale_cameras} stale CamAdmiral camera${preview.stale_cameras === 1 ? "" : "s"} and ${preview.stale_streams} associated stream${preview.stale_streams === 1 ? "" : "s"}`
               : "remove no stale resources";
@@ -1228,14 +1250,18 @@
                     headers: {"X-CamAdmiral-Action": "full-sync-frigate-target"}
                   });
                   const result = await response.json();
-                  if (!response.ok) throw new Error(result.message || "Full sync failed.");
+                  if (!response.ok) throw new Error(frigateFailureDetail(result, "Full sync failed."));
                   setText(state, `Connected · removed ${result.removed_cameras} stale camera${result.removed_cameras === 1 ? "" : "s"}`);
                   state.className = "frigate-target-state connected";
                   state.title = "";
+                  setText(errorDetail, "");
+                  errorDetail.hidden = true;
                 } catch (error) {
                   setText(state, "Full sync failed");
                   state.className = "frigate-target-state error";
                   state.title = error.message;
+                  setText(errorDetail, error.message);
+                  errorDetail.hidden = false;
                 } finally {
                   fullSync.disabled = false;
                   setText(fullSync, "Full sync now");
@@ -1246,6 +1272,8 @@
             setText(state, "Full sync unavailable");
             state.className = "frigate-target-state error";
             state.title = error.message;
+            setText(errorDetail, error.message);
+            errorDetail.hidden = false;
           } finally {
             if (fullSync.textContent === "Checking...") {
               fullSync.disabled = false;

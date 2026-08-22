@@ -404,6 +404,21 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
 
 
 class FrigateTargetApiTests(unittest.TestCase):
+    def test_frigate_error_exposes_safe_full_sync_context(self) -> None:
+        response = app_module._frigate_target_error(
+            app_module.FrigateApiError(
+                "capability_unavailable",
+                stage="remove_runtime_stream",
+                resource="camadmiral_synthetic_stale_detect",
+            )
+        )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "capability_unavailable")
+        self.assertEqual(payload["stage"], "remove_runtime_stream")
+        self.assertEqual(payload["resource"], "camadmiral_synthetic_stale_detect")
+        self.assertNotIn("rtsp://", response.body.decode())
+
     def test_add_validates_and_persists_a_loopback_target(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = []

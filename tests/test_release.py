@@ -81,6 +81,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
 
+    def test_e2e_full_sync_covers_stream_missing_only_from_runtime(self) -> None:
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+        self.assertIn('partial_drift_stream = "camadmiral_synthetic_partial_drift"', scenarios)
+        self.assertIn("Could not seed partial Frigate runtime drift", scenarios)
+        self.assertIn('method="DELETE"', scenarios)
+        self.assertIn("Partial-drift Frigate stream remained in runtime", scenarios)
+        self.assertIn("Full sync left the partial-drift stream in Frigate config", scenarios)
+
     def test_e2e_checks_mobile_actions_in_webkit(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()

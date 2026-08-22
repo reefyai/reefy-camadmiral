@@ -1045,6 +1045,20 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return {}
 
+    def update_frigate(path: str, payload: dict[str, object]) -> dict[str, object]:
+        body = json.dumps(payload).encode("utf-8")
+        api_request = urllib.request.Request(
+            f"http://camadmiral:5000{path}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(api_request, timeout=30) as response:
+                return json.load(response)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
+
     def applied() -> tuple[dict[str, object], dict[str, object]] | None:
         config = frigate_json("/api/config")
         streams = frigate_json("/api/go2rtc/streams")
@@ -1134,6 +1148,55 @@ def frigate() -> None:
         raise ScenarioFailure("Full sync left stale CamAdmiral streams in Frigate")
     if "operator_stream" not in cleaned_streams:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate stream")
+
+    partial_drift_stream = "camadmiral_synthetic_partial_drift"
+    partial_drift_source = "rtsp://camera-open:8554/sub"
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {
+                "go2rtc": {"streams": {partial_drift_stream: [partial_drift_source]}}
+            },
+        },
+    )
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed partial Frigate runtime drift")
+    update_frigate(
+        f"/api/go2rtc/streams/{partial_drift_stream}?"
+        + urllib.parse.urlencode({"src": partial_drift_source}),
+        {},
+    )
+    delete_request = urllib.request.Request(
+        f"http://camadmiral:5000/api/go2rtc/streams/{partial_drift_stream}",
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(delete_request, timeout=8) as response:
+            response.read()
+    except (OSError, urllib.error.URLError) as exc:
+        raise ScenarioFailure("Could not create partial Frigate runtime drift") from exc
+    if partial_drift_stream in frigate_json("/api/go2rtc/streams"):
+        raise ScenarioFailure("Partial-drift Frigate stream remained in runtime")
+
+    drift_preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
+    if drift_preview.get("stale_cameras") != 0 or drift_preview.get("stale_streams") != 1:
+        raise ScenarioFailure(
+            f"Partial-drift full sync preview returned unexpected counts: {drift_preview}"
+        )
+    drift_result = request_json(
+        f"/internal/frigate-targets/{target_id}/full-sync",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
+        timeout=120,
+    )
+    if drift_result.get("removed_cameras") != 0 or drift_result.get("removed_streams") != 1:
+        raise ScenarioFailure(
+            f"Partial-drift full sync returned unexpected counts: {drift_result}"
+        )
+    drift_paths = frigate_json("/api/config/raw_paths")
+    if partial_drift_stream in drift_paths.get("go2rtc", {}).get("streams", {}):
+        raise ScenarioFailure("Full sync left the partial-drift stream in Frigate config")
     print("frigate: injection, processing, and CamAdmiral-only full sync passed")
 
 
