@@ -37,6 +37,7 @@ class FakeFrigateClient:
         self.runtime_delete_failures = {}
         self.runtime_enabled = {}
         self.drop_add_events = 0
+        self.operations = []
 
     def capabilities(self) -> None:
         self.capability_checks += 1
@@ -57,6 +58,7 @@ class FakeFrigateClient:
         return self.current_stats
 
     def set_config(self, config_data, *, update_topic=None):
+        self.operations.append(("set_config", config_data))
         self.config_writes.append((config_data, update_topic))
         for key, update in config_data.get("cameras", {}).items():
             if update is None or update == "":
@@ -103,6 +105,7 @@ class FakeFrigateClient:
         self.current_runtime[stream_name] = {"producers": []}
 
     def delete_runtime_stream(self, stream_name):
+        self.operations.append(("delete_runtime_stream", stream_name))
         self.runtime_deletes.append(stream_name)
         if self.runtime_delete_failures.get(stream_name) == "before":
             raise FrigateApiError(
@@ -339,6 +342,24 @@ class FrigateReconciliationTests(unittest.TestCase):
             ({"go2rtc": {"streams": {name: "" for name in stale_streams}}}, None),
             self.client.config_writes,
         )
+        stream_config_index = next(
+            index
+            for index, operation in enumerate(self.client.operations)
+            if operation
+            == (
+                "set_config",
+                {"go2rtc": {"streams": {name: "" for name in stale_streams}}},
+            )
+        )
+        runtime_delete_indexes = [
+            index
+            for index, operation in enumerate(self.client.operations)
+            if operation[0] == "delete_runtime_stream"
+        ]
+        self.assertTrue(runtime_delete_indexes)
+        self.assertTrue(
+            all(stream_config_index < index for index in runtime_delete_indexes)
+        )
 
     def test_full_sync_tolerates_configured_stream_missing_from_runtime(self) -> None:
         stale_camera = "camadmiral_partial_drift"
@@ -383,6 +404,33 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertNotIn(stale_stream, self.client.current_runtime)
         self.assertNotIn(stale_stream, self.client.current_raw_paths["go2rtc"]["streams"])
 
+    def test_full_sync_removes_runtime_only_stale_stream(self) -> None:
+        stale_stream = "camadmiral_runtime_only_detect"
+        self.client.current_runtime[stale_stream] = {"producers": []}
+        self.client.runtime_delete_failures[stale_stream] = "after"
+
+        preview = full_sync_preview(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        result = full_sync_frigate(
+            self.repository,
+            self.target,
+            media_host="192.168.50.12",
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(preview["stale_streams"], [stale_stream])
+        self.assertEqual(result["removed_streams"], 1)
+        self.assertNotIn(stale_stream, self.client.current_runtime)
+        self.assertFalse(
+            any(
+                config.get("go2rtc", {}).get("streams", {}).get(stale_stream) == ""
+                for config, _topic in self.client.config_writes
+            )
+        )
+
     def test_full_sync_rejects_failed_delete_when_live_stream_remains(self) -> None:
         stale_stream = "camadmiral_rejected_delete_detect"
         self.client.current_raw_paths["go2rtc"]["streams"][stale_stream] = [
@@ -403,6 +451,17 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(raised.exception.stage, "remove_runtime_stream")
         self.assertEqual(raised.exception.resource, stale_stream)
         self.assertIn(stale_stream, self.client.current_runtime)
+        self.assertNotIn(stale_stream, self.client.current_raw_paths["go2rtc"]["streams"])
+
+        self.client.runtime_delete_failures.pop(stale_stream)
+        retry = full_sync_frigate(
+            self.repository,
+            self.target,
+            media_host="192.168.50.12",
+            client_factory=lambda _target: self.client,
+        )
+        self.assertEqual(retry["removed_streams"], 1)
+        self.assertNotIn(stale_stream, self.client.current_runtime)
 
     def test_full_sync_preview_uses_saved_config_instead_of_live_view(self) -> None:
         stale_camera = "camadmiral_saved_only"

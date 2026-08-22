@@ -267,26 +267,47 @@ def full_sync_preview(
 ) -> dict[str, Any]:
     client = client_factory(target)
     client.capabilities()
+    state = _full_sync_state(repository, client)
+    return {
+        "managed_cameras": state["managed_cameras"],
+        "stale_cameras": state["stale_cameras"],
+        "stale_streams": state["stale_streams"],
+    }
+
+
+def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     saved_config = client.raw_config()
+    runtime_streams = client.runtime_streams()
     desired_cameras, desired_streams = desired_resource_keys(repository)
     configured_cameras = saved_config.get("cameras", {})
     configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
-    if not isinstance(configured_cameras, dict) or not isinstance(configured_streams, dict):
+    if (
+        not isinstance(configured_cameras, dict)
+        or not isinstance(configured_streams, dict)
+        or not isinstance(runtime_streams, dict)
+    ):
         raise FrigateApiError("invalid_response")
     stale_cameras = sorted(
         name
         for name in configured_cameras
         if name.startswith(KEY_PREFIX) and name not in desired_cameras
     )
-    stale_streams = sorted(
+    stale_config_streams = {
         name
         for name in configured_streams
         if name.startswith(KEY_PREFIX) and name not in desired_streams
-    )
+    }
+    stale_runtime_streams = {
+        name
+        for name in runtime_streams
+        if name.startswith(KEY_PREFIX) and name not in desired_streams
+    }
     return {
         "managed_cameras": len(desired_cameras),
         "stale_cameras": stale_cameras,
-        "stale_streams": stale_streams,
+        "stale_config_streams": sorted(stale_config_streams),
+        "stale_runtime_streams": sorted(stale_runtime_streams),
+        "stale_streams": sorted(stale_config_streams | stale_runtime_streams),
     }
 
 
@@ -299,11 +320,13 @@ def full_sync_frigate(
 ) -> dict[str, int]:
     client = client_factory(target)
     try:
-        preview = full_sync_preview(repository, target, client_factory=lambda _target: client)
+        client.capabilities()
+        state = _full_sync_state(repository, client)
     except FrigateApiError as exc:
         raise exc.with_context(stage="inspect_configuration") from exc
-    stale_cameras = preview["stale_cameras"]
-    stale_streams = preview["stale_streams"]
+    stale_cameras = state["stale_cameras"]
+    stale_config_streams = state["stale_config_streams"]
+    stale_streams = state["stale_streams"]
 
     for camera_key in stale_cameras:
         try:
@@ -313,42 +336,86 @@ def full_sync_frigate(
             )
         except FrigateApiError as exc:
             raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
+
+    # Frigate's own UI updates persistent go2rtc configuration before
+    # changing the running go2rtc instance. This prevents an alias from being
+    # recreated after restart and makes saved configuration authoritative.
+    if stale_config_streams:
+        try:
+            client.set_config(
+                {
+                    "go2rtc": {
+                        "streams": {
+                            stream_key: "" for stream_key in stale_config_streams
+                        }
+                    }
+                }
+            )
+            saved_config = client.raw_config()
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_stream_configuration") from exc
+        configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
+        if not isinstance(configured_streams, dict):
+            raise FrigateApiError(
+                "invalid_response", stage="verify_stream_configuration"
+            )
+        remaining_config = [
+            stream_key
+            for stream_key in stale_config_streams
+            if stream_key in configured_streams
+        ]
+        if remaining_config:
+            raise FrigateApiError(
+                "verification_failed",
+                stage="verify_stream_configuration",
+                resource=remaining_config[0],
+            )
+
     try:
         runtime_streams = client.runtime_streams()
     except FrigateApiError as exc:
         raise exc.with_context(stage="inspect_runtime_streams") from exc
+    delete_errors: dict[str, FrigateApiError] = {}
     for stream_key in stale_streams:
         if stream_key not in runtime_streams:
             continue
         try:
             client.delete_runtime_stream(stream_key)
         except FrigateApiError as exc:
-            # Frigate 0.17 proxies deletion to go2rtc. go2rtc deletes the
-            # live stream before patching its generated YAML, so a drifted
-            # generated file can produce HTTP 400 ("yaml: path not exist")
-            # after the requested deletion has already succeeded. Verify the
-            # resulting live state before treating that ambiguous response as
-            # a failed full sync.
-            try:
-                remaining_runtime = client.runtime_streams()
-            except FrigateApiError:
-                raise exc.with_context(
-                    stage="remove_runtime_stream", resource=stream_key
-                ) from exc
-            if stream_key in remaining_runtime:
-                raise exc.with_context(
-                    stage="remove_runtime_stream", resource=stream_key
-                ) from exc
-    if stale_streams:
-        try:
-            client.set_config(
-                {"go2rtc": {"streams": {stream_key: "" for stream_key in stale_streams}}}
-            )
-        except FrigateApiError as exc:
-            raise exc.with_context(stage="remove_stream_configuration") from exc
+            # go2rtc removes the live stream before patching its writable
+            # primary YAML. Streams loaded from Frigate's generated secondary
+            # config can therefore return HTTP 400 ("yaml: path not exist")
+            # after the requested runtime deletion has already succeeded.
+            # Preserve the response for diagnostics, but decide success from
+            # the resulting runtime state below.
+            delete_errors[stream_key] = exc
 
     try:
-        verified = full_sync_preview(repository, target, client_factory=lambda _target: client)
+        remaining_runtime = client.runtime_streams()
+    except FrigateApiError as exc:
+        if delete_errors:
+            stream_key, delete_error = next(iter(delete_errors.items()))
+            raise delete_error.with_context(
+                stage="remove_runtime_stream", resource=stream_key
+            ) from exc
+        raise exc.with_context(stage="verify_runtime_cleanup") from exc
+    remaining_runtime_streams = [
+        stream_key for stream_key in stale_streams if stream_key in remaining_runtime
+    ]
+    if remaining_runtime_streams:
+        stream_key = remaining_runtime_streams[0]
+        if stream_key in delete_errors:
+            raise delete_errors[stream_key].with_context(
+                stage="remove_runtime_stream", resource=stream_key
+            )
+        raise FrigateApiError(
+            "verification_failed",
+            stage="verify_runtime_cleanup",
+            resource=stream_key,
+        )
+
+    try:
+        verified = _full_sync_state(repository, client)
     except FrigateApiError as exc:
         raise exc.with_context(stage="verify_cleanup") from exc
     remaining = [*verified["stale_cameras"], *verified["stale_streams"]]

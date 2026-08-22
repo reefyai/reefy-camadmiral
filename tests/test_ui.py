@@ -38,6 +38,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('parts.push(`Stage: ${stages[result.stage] || result.stage}.`)', self.html)
         self.assertIn('parts.push(`Resource: ${result.resource}.`)', self.html)
         self.assertIn('parts.push(`Code: ${result.status}.`)', self.html)
+        self.assertIn('verify_stream_configuration: "verify stale stream configuration"', self.html)
+        self.assertIn('verify_runtime_cleanup: "verify stale live streams"', self.html)
         self.assertIn('"frigate-target-error"', self.html)
         self.assertIn("setText(errorDetail, error.message)", self.html)
 

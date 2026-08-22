@@ -94,7 +94,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
 
         self.assertIn("frigate-ambiguous-delete-setup", runner)
-        self.assertIn("/dev/shm/go2rtc.yaml", runner)
+        self.assertIn("/config/go2rtc_homekit.yml", runner)
         self.assertIn("frigate-ambiguous-delete-verify", runner)
         self.assertIn("Ambiguous-delete full sync failed", scenarios)
         self.assertIn("ambiguous partial-success deletion recovered", scenarios)

@@ -88,9 +88,12 @@ def main() -> int:
         run(
             "exec", "-T", "frigate", "python3", "-c",
             "from pathlib import Path; import yaml; "
-            "path=Path('/dev/shm/go2rtc.yaml'); data=yaml.safe_load(path.read_text()); "
-            "data.setdefault('streams', {}).pop('camadmiral_synthetic_ambiguous_delete_detect', None); "
-            "path.write_text(yaml.safe_dump(data, sort_keys=False))",
+            "path=Path('/config/go2rtc_homekit.yml'); "
+            "data=yaml.safe_load(path.read_text()) or {}; "
+            "streams=data.get('streams'); "
+            "streams.pop('camadmiral_synthetic_ambiguous_delete_detect', None) "
+            "if isinstance(streams, dict) else None; "
+            "path.write_text(yaml.safe_dump(data, sort_keys=False) if data else '')",
         )
         scenario("frigate-ambiguous-delete-verify")
         run("stop", "frigate-api-proxy", "frigate")
