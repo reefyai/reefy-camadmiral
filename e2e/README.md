@@ -7,6 +7,8 @@ CamAdmiral application modules.
 The isolated Docker Compose lab covers:
 
 - manual and full RTSP discovery on a non-default connected private subnet
+- multicast ONVIF discovery plus bounded learned-neighbor ONVIF and RTSP
+  probing on an oversized /16 subnet without a per-address sweep
 - explicit IP discovery and adoption through a synthetic ONVIF camera
 - unauthenticated and authenticated RTSP adoption
 - incorrect camera-credential rejection

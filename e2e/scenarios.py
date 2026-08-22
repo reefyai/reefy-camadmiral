@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -680,6 +681,83 @@ def multi_subnet_discovery() -> None:
     print("multi-subnet-discovery: manual and full RTSP discovery passed on a non-default LAN")
 
 
+def large_subnet_multicast_discovery() -> None:
+    wait_for_health()
+
+    def responder_ready() -> bool:
+        # The fake camera answers any UDP datagram on its WS-Discovery port.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(1)
+            probe.sendto(b"ready?", ("172.29.0.87", 3702))
+            try:
+                payload, _sender = probe.recvfrom(65535)
+            except socket.timeout:
+                return False
+            return b"ProbeMatch" in payload
+
+    wait_for("oversized-subnet camera discovery responder readiness", responder_ready)
+
+    full_request = request_json(
+        "/internal/discovery/scan",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan"},
+        expected=202,
+    )
+    scan_id = full_request.get("scan_id")
+    if not scan_id:
+        raise ScenarioFailure("Full discovery did not return a scan identity")
+
+    def large_cameras_found() -> dict[str, object] | None:
+        state = discovery()
+        if (
+            state.get("scan_id") != scan_id
+            or state.get("status") in {"queued", "running"}
+        ):
+            return None
+        onvif_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.87" and device.get("onvif")
+            ),
+            None,
+        )
+        rtsp_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.88" and device.get("rtsp")
+            ),
+            None,
+        )
+        return state if onvif_camera and rtsp_camera else None
+
+    scanned = wait_for(
+        "multicast ONVIF and learned-neighbor RTSP discovery on an oversized subnet",
+        large_cameras_found,
+        timeout=90,
+    )
+    raw_log = "\n".join(str(line) for line in scanned.get("raw_log", []))
+    if "subnet 172.29.0.0/16 exceeds the" not in raw_log:
+        raise ScenarioFailure("Full discovery did not report the oversized-subnet sweep skip")
+    if "learned neighbor" not in raw_log:
+        raise ScenarioFailure("Oversized subnet did not use its learned neighbor candidates")
+    if (
+        "RTSP: subnet 172.29.0.0/16" not in raw_log
+        or "learned neighbor(s) only" not in raw_log
+    ):
+        raise ScenarioFailure("Oversized subnet did not bound RTSP probing to learned neighbors")
+    if "sent unicast probe to 172.29.0.88:3702" not in raw_log:
+        raise ScenarioFailure("Oversized subnet did not reuse the learned RTSP neighbor for ONVIF")
+    scanners = scanned.get("scanners", {})
+    if scanners.get("onvif") != "complete" or scanners.get("rtsp") != "complete":
+        raise ScenarioFailure(f"Unexpected scanner states after oversized-subnet scan: {scanners}")
+    print(
+        "large-subnet-multicast-discovery: multicast ONVIF and learned-neighbor RTSP "
+        "discovery passed on an oversized /16 subnet without a per-address sweep"
+    )
+
+
 def load_state() -> dict[str, object]:
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -1005,6 +1083,7 @@ def frigate() -> None:
 SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
+    "large-subnet-multicast-discovery": large_subnet_multicast_discovery,
     "runtime-drift": runtime_drift,
     "runtime-recovery": runtime_recovery,
     "camera-outage": camera_outage,

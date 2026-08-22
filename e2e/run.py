@@ -66,9 +66,15 @@ def main() -> int:
         run("build", "camadmiral")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
-            "camera-onvif", "camera-secondary",
+            "camera-onvif", "camera-secondary", "camera-onvif-large",
+            "camera-rtsp-large",
         )
         scenario("multi-subnet-discovery")
+        run(
+            "exec", "-T", "camadmiral", "python", "-c",
+            "import socket; socket.create_connection(('172.29.0.88', 554), 2).close()",
+        )
+        scenario("large-subnet-multicast-discovery")
         run("down", "--volumes", "--remove-orphans")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",

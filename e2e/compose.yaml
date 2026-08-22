@@ -29,6 +29,9 @@ services:
       secondary:
         ipv4_address: 172.31.0.20
         gw_priority: 0
+      large:
+        ipv4_address: 172.29.0.20
+        gw_priority: 0
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -130,6 +133,41 @@ services:
     healthcheck:
       disable: true
 
+  camera-onvif-large:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/fake_onvif.py"]
+    environment:
+      ONVIF_ADDRESS: 172.29.0.87
+      ONVIF_UUID: synthetic-onvif-large
+      ONVIF_NAME: Large Subnet ONVIF
+    volumes:
+      - ./fake_onvif.py:/e2e/fake_onvif.py:ro
+      - ./fixtures/camera-onvif.yaml:/e2e/camera-onvif.yaml:ro
+    networks:
+      large:
+        ipv4_address: 172.29.0.87
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
+  camera-rtsp-large:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-secondary.yaml"]
+    volumes:
+      - ./fixtures/camera-secondary.yaml:/e2e/camera-secondary.yaml:ro
+    networks:
+      large:
+        ipv4_address: 172.29.0.88
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
   camera-secondary:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-secondary.yaml"]
@@ -168,7 +206,7 @@ services:
     volumes:
       - .:/e2e:ro
       - e2e-state:/state
-    networks: [lab, secondary]
+    networks: [lab, secondary, large]
     environment:
       CAMADMIRAL_E2E_ADMIN_PASSWORD: synthetic-e2e-admin-password
     read_only: true
@@ -185,6 +223,10 @@ networks:
     ipam:
       config:
         - subnet: 172.31.0.0/24
+  large:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
 
 volumes:
   camadmiral-data:
