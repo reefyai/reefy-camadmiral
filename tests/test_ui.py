@@ -173,8 +173,15 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("camera-facts", self.html)
 
     def test_downstream_urls_are_selectable_single_line_scrollers(self) -> None:
+        self.assertIn('const downstreamPasswordMask = "********"', self.html)
+        self.assertIn("function downstreamUrl(streamKey, maskPassword = false)", self.html)
+        self.assertIn("const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true) : null", self.html)
+        self.assertIn(': displayUrl || (managed ?', self.html)
         self.assertIn('const urlText = addText(row, "div", "downstream-url", value)', self.html)
-        self.assertIn("urlText.title = url", self.html)
+        self.assertIn("urlText.title = displayUrl", self.html)
+        self.assertIn('copy.addEventListener("click", () => copyText(url, copy))', self.html)
+        self.assertNotIn("urlText.title = url", self.html)
+        self.assertNotIn('`Downstream URL: ${url}`', self.html)
         self.assertIn("urlText.tabIndex = 0", self.html)
         self.assertIn(".stream-access { min-width: 0; }", self.html)
         self.assertIn("overflow-x: auto; overflow-y: hidden", self.html)

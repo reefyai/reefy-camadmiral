@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from pathlib import Path
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,61 @@ def assert_mobile_camera_actions(page: Page) -> None:
         raise UiScenarioFailure("; ".join(failures))
 
 
+def assert_downstream_password_masking(page: Page) -> None:
+    page.add_init_script(
+        """
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async value => { window.__camadmiralCopiedText = value; }
+          }
+        });
+        """
+    )
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function(
+        "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
+        timeout=30_000,
+    )
+    streams = page.get_by_role("button", name="Streams").first
+    streams.click()
+    page.locator("#app-modal-body .downstream-url").filter(
+        has_text="rtsp://"
+    ).first.wait_for(state="visible", timeout=30_000)
+    access = page.evaluate(
+        """
+        async () => {
+          const response = await fetch("/internal/media/access", {
+            method: "POST",
+            headers: {"X-CamAdmiral-Action": "reveal-media-access"}
+          });
+          return response.json();
+        }
+        """
+    )
+    displayed_urls = page.locator("#app-modal-body .downstream-url")
+    displayed = displayed_urls.first.inner_text()
+    if ":********@" not in displayed:
+        raise UiScenarioFailure("Downstream URL does not show a fixed password mask")
+    if access["password"] in page.locator("#app-modal-body").inner_text():
+        raise UiScenarioFailure("Streams modal exposes the downstream password")
+    attributes = displayed_urls.evaluate_all(
+        "elements => elements.flatMap(element => [element.title, element.getAttribute('aria-label')])"
+    )
+    if any(access["password"] in str(value or "") for value in attributes):
+        raise UiScenarioFailure("Downstream password is exposed in a URL attribute")
+
+    copy_button = page.locator("#app-modal-body .copy-button").first
+    copy_button.click()
+    expect(copy_button).to_have_text("✓", timeout=5_000)
+    copied = page.evaluate("window.__camadmiralCopiedText")
+    parsed = urllib.parse.urlsplit(copied)
+    if urllib.parse.unquote(parsed.password or "") != access["password"]:
+        raise UiScenarioFailure("Copied downstream URL does not contain its real password")
+    if "********" in copied:
+        raise UiScenarioFailure("Copied downstream URL contains the display mask")
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     with sync_playwright() as playwright:
@@ -87,6 +143,7 @@ def main() -> int:
         page = context.new_page()
         try:
             assert_mobile_camera_actions(page)
+            assert_downstream_password_masking(page)
         except Exception:
             page.screenshot(
                 path=str(ARTIFACT_DIR / "mobile-camera-actions.png"),

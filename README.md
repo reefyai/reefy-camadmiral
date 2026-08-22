@@ -19,6 +19,15 @@ downstream streams for consumers such as Frigate.
 
 ![CamAdmiral camera dashboard](docs/images/camadmiral-dashboard.png)
 
+## Works on any device
+
+CamAdmiral is a responsive web UI that works in a browser on laptops, tablets, and
+phones. No separate mobile app is required.
+
+<p align="center">
+  <img src="docs/images/camadmiral-mobile-web-ui.png" alt="CamAdmiral responsive web UI on a phone" width="420">
+</p>
+
 ## Discover and adopt cameras
 
 CamAdmiral scans the local network for ONVIF and RTSP cameras. It includes an embedded,
