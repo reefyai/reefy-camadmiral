@@ -32,6 +32,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('workflow_id: "release-gate.yml"', publish)
         self.assertIn('status: "success"', publish)
         self.assertIn("needs: verify-release-gate", publish)
+        self.assertIn("platforms: linux/amd64", publish)
+        self.assertNotIn("linux/arm64", publish)
+        self.assertNotIn("docker/setup-qemu-action", publish)
         self.assertNotIn("uses: ./.github/workflows/release-gate.yml", publish)
         self.assertNotIn('tags: ["v*"]', gate)
 
