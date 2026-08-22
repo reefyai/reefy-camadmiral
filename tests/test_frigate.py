@@ -404,6 +404,36 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertNotIn(stale_stream, self.client.current_runtime)
         self.assertNotIn(stale_stream, self.client.current_raw_paths["go2rtc"]["streams"])
 
+    def test_full_sync_waits_for_frigate_runtime_cleanup_propagation(self) -> None:
+        stale_stream = "camadmiral_delayed_cleanup_detect"
+        self.client.current_raw_paths["go2rtc"]["streams"][stale_stream] = [
+            "rtsp://stale.invalid/sub"
+        ]
+        self.client.current_runtime[stale_stream] = {"producers": []}
+        runtime_streams = self.client.runtime_streams
+        delayed_reads = 0
+
+        def delayed_runtime_streams():
+            nonlocal delayed_reads
+            current = runtime_streams()
+            if self.client.runtime_deletes and delayed_reads < 2:
+                delayed_reads += 1
+                return {**current, stale_stream: {"producers": []}}
+            return current
+
+        self.client.runtime_streams = delayed_runtime_streams
+        with patch("camadmiral.frigate.time.sleep") as sleep:
+            result = full_sync_frigate(
+                self.repository,
+                self.target,
+                media_host="192.168.50.12",
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(result["removed_streams"], 1)
+        self.assertEqual(delayed_reads, 2)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_full_sync_removes_runtime_only_stale_stream(self) -> None:
         stale_stream = "camadmiral_runtime_only_detect"
         self.client.current_runtime[stale_stream] = {"producers": []}
@@ -439,7 +469,10 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.client.current_runtime[stale_stream] = {"producers": []}
         self.client.runtime_delete_failures[stale_stream] = "before"
 
-        with self.assertRaises(FrigateApiError) as raised:
+        with (
+            patch("camadmiral.frigate.RUNTIME_CLEANUP_TIMEOUT_SECONDS", 0),
+            self.assertRaises(FrigateApiError) as raised,
+        ):
             full_sync_frigate(
                 self.repository,
                 self.target,

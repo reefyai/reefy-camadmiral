@@ -15,7 +15,10 @@ concurrency:
 jobs:
   release-gate:
     name: Unit, component, and E2E
-    runs-on: ubuntu-latest
+    # Never execute code from a fork on Reefy's persistent infrastructure.
+    # Trusted branches use the large runner so Docker and browser caches are
+    # retained between release-gate runs.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

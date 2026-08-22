@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +19,8 @@ CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
 FRIGATE_GO2RTC_PORT = 8554
 KEY_PREFIX = "camadmiral_"
+RUNTIME_CLEANUP_TIMEOUT_SECONDS = 10.0
+RUNTIME_CLEANUP_POLL_SECONDS = 0.25
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -311,6 +314,21 @@ def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     }
 
 
+def _wait_for_runtime_cleanup(
+    client: FrigateClient,
+    stream_keys: list[str],
+) -> list[str]:
+    deadline = time.monotonic() + RUNTIME_CLEANUP_TIMEOUT_SECONDS
+    while True:
+        runtime_streams = client.runtime_streams()
+        remaining = [
+            stream_key for stream_key in stream_keys if stream_key in runtime_streams
+        ]
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(RUNTIME_CLEANUP_POLL_SECONDS)
+
+
 def full_sync_frigate(
     repository: Any,
     target: FrigateTarget,
@@ -391,7 +409,7 @@ def full_sync_frigate(
             delete_errors[stream_key] = exc
 
     try:
-        remaining_runtime = client.runtime_streams()
+        remaining_runtime_streams = _wait_for_runtime_cleanup(client, stale_streams)
     except FrigateApiError as exc:
         if delete_errors:
             stream_key, delete_error = next(iter(delete_errors.items()))
@@ -399,9 +417,6 @@ def full_sync_frigate(
                 stage="remove_runtime_stream", resource=stream_key
             ) from exc
         raise exc.with_context(stage="verify_runtime_cleanup") from exc
-    remaining_runtime_streams = [
-        stream_key for stream_key in stale_streams if stream_key in remaining_runtime
-    ]
     if remaining_runtime_streams:
         stream_key = remaining_runtime_streams[0]
         if stream_key in delete_errors:
