@@ -1045,17 +1045,6 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return {}
 
-    def update_frigate(path: str, payload: dict[str, object]) -> dict[str, object]:
-        body = json.dumps(payload).encode("utf-8")
-        api_request = urllib.request.Request(
-            f"http://camadmiral:5000{path}",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="PUT",
-        )
-        with urllib.request.urlopen(api_request, timeout=30) as response:
-            return json.load(response)
-
     def applied() -> tuple[dict[str, object], dict[str, object]] | None:
         config = frigate_json("/api/config")
         streams = frigate_json("/api/go2rtc/streams")
@@ -1108,58 +1097,12 @@ def frigate() -> None:
             f"{exc}; stats={last_stats}; runtime={runtime_summary}"
         ) from exc
 
-    raw_paths = frigate_json("/api/config/raw_paths")
-    camera_config = config["cameras"][camera_key]
-    source_inputs = raw_paths["cameras"][camera_key]["ffmpeg"]["inputs"]
-    source_streams = raw_paths["go2rtc"]["streams"]
     stale_camera = "camadmiral_synthetic_stale"
     operator_camera = "operator_camera"
     stale_streams = {
-        "camadmiral_synthetic_stale_record": next(iter(source_streams.values())),
-        "camadmiral_synthetic_stale_detect": next(iter(source_streams.values())),
+        "camadmiral_synthetic_stale_record",
+        "camadmiral_synthetic_stale_detect",
     }
-    operator_stream = {"operator_stream": next(iter(source_streams.values()))}
-
-    def seed_camera(name: str) -> None:
-        response = update_frigate(
-            "/api/config/set",
-            {
-                "requires_restart": 0,
-                "update_topic": f"config/cameras/{name}/add",
-                "config_data": {
-                    "cameras": {
-                        name: {
-                            "enabled": False,
-                            "friendly_name": name,
-                            "ffmpeg": {"inputs": source_inputs},
-                            "detect": camera_config["detect"],
-                            "live": camera_config["live"],
-                        }
-                    }
-                },
-            },
-        )
-        if response.get("success") is not True:
-            raise ScenarioFailure(f"Could not seed Frigate cleanup fixture: {name}")
-
-    seed_camera(stale_camera)
-    seed_camera(operator_camera)
-    response = update_frigate(
-        "/api/config/set",
-        {
-            "requires_restart": 0,
-            "config_data": {"go2rtc": {"streams": {**stale_streams, **operator_stream}}},
-        },
-    )
-    if response.get("success") is not True:
-        raise ScenarioFailure("Could not seed stale Frigate streams")
-    for stream_name, sources in {**stale_streams, **operator_stream}.items():
-        source = sources[0] if isinstance(sources, list) else sources
-        update_frigate(
-            f"/api/go2rtc/streams/{urllib.parse.quote(stream_name, safe='')}?"
-            + urllib.parse.urlencode({"src": source}),
-            {},
-        )
 
     targets = request_json("/internal/frigate-targets").get("targets", [])
     target = next(
@@ -1187,7 +1130,7 @@ def frigate() -> None:
     if operator_camera not in cleaned_config.get("cameras", {}):
         raise ScenarioFailure("Full sync removed an operator-owned Frigate camera")
     cleaned_streams = cleaned_paths.get("go2rtc", {}).get("streams", {})
-    if any(name in cleaned_streams for name in stale_streams):
+    if stale_streams.intersection(cleaned_streams):
         raise ScenarioFailure("Full sync left stale CamAdmiral streams in Frigate")
     if "operator_stream" not in cleaned_streams:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate stream")
