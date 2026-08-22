@@ -4,7 +4,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,13 +92,9 @@ def assert_downstream_password_masking(page: Page) -> None:
     )
     streams = page.get_by_role("button", name="Streams").first
     streams.click()
-    page.wait_for_function(
-        """
-        [...document.querySelectorAll("#app-modal-body .downstream-url")]
-          .some(element => element.textContent.startsWith("rtsp://"))
-        """,
-        timeout=30_000,
-    )
+    page.locator("#app-modal-body .downstream-url").filter(
+        has_text="rtsp://"
+    ).first.wait_for(state="visible", timeout=30_000)
     access = page.evaluate(
         """
         async () => {
@@ -122,8 +118,9 @@ def assert_downstream_password_masking(page: Page) -> None:
     if any(access["password"] in str(value or "") for value in attributes):
         raise UiScenarioFailure("Downstream password is exposed in a URL attribute")
 
-    page.locator("#app-modal-body .copy-button").first.click()
-    page.wait_for_function("window.__camadmiralCopiedText", timeout=5_000)
+    copy_button = page.locator("#app-modal-body .copy-button").first
+    copy_button.click()
+    expect(copy_button).to_have_text("✓", timeout=5_000)
     copied = page.evaluate("window.__camadmiralCopiedText")
     parsed = urllib.parse.urlsplit(copied)
     if urllib.parse.unquote(parsed.password or "") != access["password"]:
