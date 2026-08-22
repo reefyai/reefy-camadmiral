@@ -1,0 +1,34 @@
+name: Measure go2rtc relay latency
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/relay-latency.yml
+      - e2e/latency.py
+      - e2e/scenarios.py
+      - e2e/fixtures/latency-relay.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: camadmiral-relay-latency
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Matched-frame relay benchmark
+    runs-on: [self-hosted, Linux, X64, big-bird, large]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure one additional go2rtc hop
+        run: python3 e2e/latency.py
+
+      - name: Remove benchmark resources
+        if: always()
+        run: >-
+          docker compose --project-name camadmiral-latency --file e2e/compose.yaml
+          down --volumes --remove-orphans

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -26,6 +27,40 @@ def assert_mobile_camera_actions(page: Page) -> None:
         "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
         timeout=30_000,
     )
+
+    action_layout = page.locator(".dashboard-controls").evaluate(
+        """
+        controls => {
+          const scan = controls.querySelector("#scan").getBoundingClientRect();
+          const add = controls.querySelector("#show-add-address").getBoundingClientRect();
+          const status = controls.querySelector(".scan-status").getBoundingClientRect();
+          return {
+            sameRow: Math.abs(scan.top - add.top) < 1,
+            primaryLast: add.left < scan.left,
+            touchTargets: scan.height >= 44 && add.height >= 44,
+            equalSize: Math.abs(scan.width - add.width) < 1 && Math.abs(scan.height - add.height) < 1,
+            statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5,
+            insideViewport: scan.left >= 0 && add.right <= window.innerWidth + 0.5,
+          };
+        }
+        """
+    )
+    failed_rules = [name for name, passed in action_layout.items() if not passed]
+    if failed_rules:
+        raise UiScenarioFailure(
+            f"Mobile dashboard action bar failed: {', '.join(failed_rules)}"
+        )
+    if page.get_by_role("heading", name="Cameras").count():
+        raise UiScenarioFailure("Dashboard repeats the Cameras heading")
+    expect(page.locator(".scan-details-link")).to_have_text("View details")
+
+    list_surface = page.locator(".camera-list-surface")
+    attached_controls = list_surface.evaluate(
+        "surface => surface.contains(document.querySelector('#toolbar')) && "
+        "surface.contains(document.querySelector('#camera-table'))"
+    )
+    if not attached_controls:
+        raise UiScenarioFailure("Camera filters and table do not share one surface")
 
     protocol_badges = set(
         page.locator("#camera-rows .connectivity-protocols .protocol-badge").all_inner_texts()
@@ -130,11 +165,18 @@ def assert_downstream_password_masking(page: Page) -> None:
 
 
 def assert_mobile_settings(page: Page) -> None:
-    page.goto(f"{BASE_URL}/settings", wait_until="domcontentloaded")
+    page.goto(f"{BASE_URL}/settings/notifications", wait_until="domcontentloaded")
     expect(page.locator("#settings-view")).to_be_visible(timeout=15_000)
     expect(page.locator("#dashboard-view")).to_be_hidden()
+    expect(page.locator("#incidents-view")).to_be_hidden()
     expect(page.get_by_role("heading", name="Telegram notifications")).to_be_visible()
+    expect(page.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
+    expect(page.get_by_role("link", name="Notifications")).to_have_attribute("aria-current", "page")
+    page.get_by_role("link", name="Integrations").click()
+    expect(page).to_have_url(re.compile(r"/settings/integrations$"))
     expect(page.get_by_role("heading", name="Frigate integrations")).to_be_visible()
+    expect(page.get_by_role("heading", name="Telegram notifications")).to_be_hidden()
+    expect(page.get_by_role("link", name="Integrations")).to_have_attribute("aria-current", "page")
     expect(page.locator("a.app-brand")).to_have_attribute("href", "/")
     overflow = page.locator("#settings-view .settings-section").evaluate_all(
         "sections => sections.filter(section => section.getBoundingClientRect().right > window.innerWidth + 0.5).length"
@@ -146,6 +188,12 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("heading", name="Add Frigate")).to_be_visible()
     expect(page.get_by_label("Frigate API URL")).to_be_visible()
     page.locator("#app-modal-close").click()
+
+    page.get_by_role("link", name="Incidents").click()
+    expect(page).to_have_url(re.compile(r"/incidents$"))
+    expect(page.locator("#incidents-view")).to_be_visible()
+    expect(page.get_by_role("heading", name="Incidents")).to_be_visible()
+    expect(page.get_by_role("link", name="Incidents")).to_have_attribute("aria-current", "page")
 
 
 def main() -> int:
