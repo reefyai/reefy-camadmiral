@@ -54,8 +54,8 @@ the screenshot are intentionally masked.
 ## Latency
 
 CamAdmiral relays RTSP video through go2rtc without transcoding. One additional relay hop
-measured `0.04-0.17 ms` median and `0.21-0.47 ms` p95 on an uncongested Linux host. This
-excludes camera encoding, keyframe waits, network congestion, decoding, and player buffering.
+measured `0.04-0.17 ms` median and `0.21-0.47 ms` p95 on an uncongested Linux host,
+consistent with go2rtc's [“zero-delay” design](https://github.com/AlexxIT/go2rtc/blob/v1.9.14/README.md#L14-L23).
 
 ## Availability timeline
 
