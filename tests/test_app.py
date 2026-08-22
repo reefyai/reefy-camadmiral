@@ -58,6 +58,9 @@ class FakeRepository:
             return None
         return {"camera_id": "camera-1", "streams": []}
 
+    def frigate_targets(self, *, sync_only=False):
+        return []
+
 
 class DiscoveryDecorationTests(unittest.TestCase):
     def test_app_icon_is_served_for_header_and_browser_tab(self) -> None:
@@ -73,11 +76,20 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertIn("img-src 'self' data: blob:", policy)
         self.assertEqual(policy.count("blob:"), 2)
 
+    def test_settings_page_route_is_registered(self) -> None:
+        routes = {
+            (route.path, method)
+            for route in app_module.app.routes
+            for method in getattr(route, "methods", set())
+        }
+        self.assertIn(("/settings", "GET"), routes)
+
     def test_adopted_name_replaces_scanner_name(self) -> None:
         repository = Mock()
         repository.adoption_map.return_value = {
             "candidate-1": {"display_name": "Operator name", "streams": []}
         }
+        repository.frigate_targets.return_value = []
         state = {
             "devices": [
                 {
@@ -386,6 +398,95 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(json.loads(response.body)["status"], "bot_has_webhook")
         repository.save_telegram_settings.assert_not_called()
+
+
+class FrigateTargetApiTests(unittest.TestCase):
+    def test_add_validates_and_persists_a_loopback_target(self) -> None:
+        repository = Mock()
+        repository.frigate_targets.return_value = []
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "sync_cameras": True,
+            "connection_status": "connected",
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "_check_frigate_target") as check,
+            patch.object(app_module, "_queue_frigate_reconciliation") as queue,
+        ):
+            response = app_module.add_frigate_target(
+                app_module.FrigateTargetRequest(
+                    name="Local Frigate",
+                    api_url="http://127.0.0.1:20001/",
+                    sync_cameras=True,
+                ),
+                "add-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        check.assert_called_once()
+        repository.save_frigate_target.assert_called_once()
+        self.assertEqual(
+            repository.save_frigate_target.call_args.args[2],
+            "http://127.0.0.1:20001",
+        )
+        repository.record_frigate_target_check.assert_called_once()
+        queue.assert_called_once()
+
+    def test_add_rejects_non_loopback_target_before_network_access(self) -> None:
+        repository = Mock()
+        repository.frigate_targets.return_value = []
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "_check_frigate_target") as check,
+        ):
+            response = app_module.add_frigate_target(
+                app_module.FrigateTargetRequest(
+                    name="Remote",
+                    api_url="http://192.0.2.10:5000",
+                ),
+                "add-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(json.loads(response.body)["status"], "invalid_target_url")
+        check.assert_not_called()
+        repository.save_frigate_target.assert_not_called()
+
+    def test_add_rejects_a_blank_name_before_network_access(self) -> None:
+        repository = Mock()
+        repository.frigate_targets.return_value = []
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "_check_frigate_target") as check,
+        ):
+            response = app_module.add_frigate_target(
+                app_module.FrigateTargetRequest(
+                    name="   ",
+                    api_url="http://127.0.0.1:20001",
+                ),
+                "add-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(json.loads(response.body)["status"], "invalid_name")
+        check.assert_not_called()
+        repository.save_frigate_target.assert_not_called()
+
+    def test_remove_leaves_frigate_configuration_untouched(self) -> None:
+        repository = Mock()
+        repository.remove_frigate_target.return_value = True
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.remove_frigate_target(
+                "frigate-synthetic",
+                "remove-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("left unchanged", json.loads(response.body)["message"])
+        repository.remove_frigate_target.assert_called_once_with("frigate-synthetic")
 
 
 class ConsumerApiTests(unittest.TestCase):

@@ -2,21 +2,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from camadmiral.config import (
-    CamAdmiralSettings,
-    FrigateIntegrationSettings,
-    FrigateTargetSettings,
-    IntegrationSettings,
-)
 from camadmiral.frigate import (
+    FrigateApiError,
     FrigateClient,
     FrigateTarget,
     desired_camera,
     frigate_camera_key,
     load_frigate_targets,
     media_host_from_inventory,
+    normalize_frigate_api_url,
     reconcile_frigate,
 )
 from camadmiral.media import ProbeResult
@@ -111,32 +107,28 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertEqual(stats, {"camadmiral_synthetic": {"camera_fps": 5.0}})
 
     def test_only_targets_with_camera_sync_enabled_are_loaded(self) -> None:
-        configured = CamAdmiralSettings(
-            integrations=IntegrationSettings(
-                FrigateIntegrationSettings(
-                    targets=(
-                        FrigateTargetSettings(
-                            "frigate-primary",
-                            "Primary Frigate",
-                            "http://127.0.0.1:20001",
-                            True,
-                        ),
-                        FrigateTargetSettings(
-                            "frigate-secondary",
-                            "Secondary Frigate",
-                            "http://127.0.0.1:20007",
-                            False,
-                        ),
-                    ),
-                    default_target="frigate-primary",
-                )
-            )
-        )
-        with patch("camadmiral.frigate.settings", return_value=configured):
-            targets = load_frigate_targets()
+        repository = Mock()
+        repository.frigate_targets.return_value = [
+            {
+                "target_id": "frigate-primary",
+                "name": "Primary Frigate",
+                "api_url": "http://127.0.0.1:20001",
+            }
+        ]
+        targets = load_frigate_targets(repository)
 
         self.assertEqual([target.target_id for target in targets], ["frigate-primary"])
         self.assertEqual(targets[0].api_url, "http://127.0.0.1:20001")
+        repository.frigate_targets.assert_called_once_with(sync_only=True)
+
+    def test_frigate_url_is_normalized_and_restricted_to_loopback(self) -> None:
+        self.assertEqual(
+            normalize_frigate_api_url("http://127.0.0.1:20001/"),
+            "http://127.0.0.1:20001",
+        )
+        with self.assertRaises(FrigateApiError) as raised:
+            normalize_frigate_api_url("http://192.0.2.10:5000")
+        self.assertEqual(raised.exception.code, "invalid_target_url")
 
     def test_media_host_comes_from_private_scanner_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
