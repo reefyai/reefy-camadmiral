@@ -53,7 +53,7 @@ class FakeFrigateClient:
     def set_config(self, config_data, *, update_topic=None):
         self.config_writes.append((config_data, update_topic))
         for key, update in config_data.get("cameras", {}).items():
-            if update is None:
+            if update is None or update == "":
                 self.current_config["cameras"].pop(key, None)
                 self.current_raw_paths["cameras"].pop(key, None)
                 self.current_stats.pop(key, None)
@@ -79,7 +79,7 @@ class FakeFrigateClient:
             elif update_topic == f"config/cameras/{key}/enabled":
                 self.runtime_enabled[key] = bool(update["enabled"])
         for key, update in config_data.get("go2rtc", {}).get("streams", {}).items():
-            if update is None:
+            if update is None or update == "":
                 self.current_raw_paths["go2rtc"]["streams"].pop(key, None)
             else:
                 self.current_raw_paths["go2rtc"]["streams"][key] = update
@@ -257,6 +257,14 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertNotIn(stale_camera, self.client.current_config["cameras"])
         self.assertTrue(stale_streams.isdisjoint(self.client.current_raw_paths["go2rtc"]["streams"]))
         self.assertEqual(set(self.client.runtime_deletes), stale_streams)
+        self.assertIn(
+            ({"cameras": {stale_camera: ""}}, f"config/cameras/{stale_camera}/remove"),
+            self.client.config_writes,
+        )
+        self.assertIn(
+            ({"go2rtc": {"streams": {name: "" for name in stale_streams}}}, None),
+            self.client.config_writes,
+        )
 
     def test_desired_camera_uses_full_stable_id_and_one_shared_password(self) -> None:
         camera = self.repository.consumer_inventory()[0]

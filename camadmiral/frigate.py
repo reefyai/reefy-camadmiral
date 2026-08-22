@@ -227,14 +227,14 @@ def full_sync_frigate(
 
     for camera_key in stale_cameras:
         client.set_config(
-            {"cameras": {camera_key: None}},
+            {"cameras": {camera_key: ""}},
             update_topic=f"config/cameras/{camera_key}/remove",
         )
     for stream_key in stale_streams:
         client.delete_runtime_stream(stream_key)
     if stale_streams:
         client.set_config(
-            {"go2rtc": {"streams": {stream_key: None for stream_key in stale_streams}}}
+            {"go2rtc": {"streams": {stream_key: "" for stream_key in stale_streams}}}
         )
 
     verified = full_sync_preview(repository, target, client_factory=lambda _target: client)
