@@ -173,7 +173,14 @@
       background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
     }
-    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 10px; }
+    .camera-list-surface {
+      overflow: hidden; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
+      background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
+    }
+    .toolbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0;
+      padding: 12px 14px; border-bottom: 1px solid rgba(148, 163, 184, .11);
+    }
     .summary { display: flex; gap: 9px; }
     .pill {
       border: 1px solid rgba(148, 163, 184, .15); background: rgba(12, 26, 42, .65);
@@ -192,8 +199,7 @@
     .search input:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
     .toolbar-controls { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex: 1; }
     .table-wrap {
-      overflow-x: auto; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
-      background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
+      overflow-x: auto;
     }
     table { width: 100%; min-width: 720px; table-layout: auto; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 13px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid rgba(148, 163, 184, .11); }
@@ -521,12 +527,13 @@
       .address-panel .setup-field { flex: none; width: 100%; }
       .address-panel .row-action { width: 100%; padding: 9px 12px; }
       .address-status { min-width: 0; }
-      .toolbar { align-items: stretch; flex-direction: column; }
+      .camera-list-surface { overflow: visible; }
+      .toolbar { align-items: stretch; flex-direction: column; padding: 10px; }
       .toolbar-controls { display: block; width: 100%; }
       .summary { flex-wrap: wrap; }
       .pill { padding: 6px 9px; }
       .search { width: 100%; }
-      .table-wrap { overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+      .table-wrap { overflow: visible; padding: 0 10px 10px; }
       table { display: block; min-width: 0; font-size: 13px; }
       thead { display: none; }
       tbody { display: grid; gap: 10px; }
@@ -621,31 +628,33 @@
         <span class="address-status" id="address-status"></span>
       </form>
       <div class="errorbox" id="error" hidden></div>
-      <div class="toolbar" id="toolbar" hidden>
-        <div class="summary">
-          <button class="pill summary-filter" data-camera-filter="all" type="button"><strong id="device-count">0</strong> devices</button>
-          <button class="pill summary-filter" data-camera-filter="online" type="button" aria-pressed="false"><strong id="online-count">0</strong> online</button>
-          <button class="pill summary-filter" data-camera-filter="offline" type="button" aria-pressed="false"><strong id="offline-count">0</strong> offline</button>
+      <section class="camera-list-surface" aria-label="Camera list">
+        <div class="toolbar" id="toolbar" hidden>
+          <div class="summary">
+            <button class="pill summary-filter" data-camera-filter="all" type="button"><strong id="device-count">0</strong> devices</button>
+            <button class="pill summary-filter" data-camera-filter="online" type="button" aria-pressed="false"><strong id="online-count">0</strong> online</button>
+            <button class="pill summary-filter" data-camera-filter="offline" type="button" aria-pressed="false"><strong id="offline-count">0</strong> offline</button>
+          </div>
+          <div class="toolbar-controls">
+            <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
+          </div>
         </div>
-        <div class="toolbar-controls">
-          <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
+        <div class="table-wrap" id="table-wrap" hidden>
+          <table id="camera-table">
+            <thead>
+              <tr>
+                <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
+                <th><button class="sort" type="button" data-sort="status">Status <span class="sort-arrow"></span></button></th>
+                <th>Recent view</th>
+                <th>Connectivity</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="camera-rows"></tbody>
+          </table>
         </div>
-      </div>
-      <div class="table-wrap" id="table-wrap" hidden>
-        <table id="camera-table">
-          <thead>
-            <tr>
-              <th><button class="sort" type="button" data-sort="name">Camera <span class="sort-arrow"></span></button></th>
-              <th><button class="sort" type="button" data-sort="status">Status <span class="sort-arrow"></span></button></th>
-              <th>Recent view</th>
-              <th>Connectivity</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="camera-rows"></tbody>
-        </table>
-      </div>
-      <div class="empty" id="empty">Scan the network to find cameras.</div>
+        <div class="empty" id="empty">Scan the network to find cameras.</div>
+      </section>
     </main>
     <main class="incidents-page" id="incidents-view" hidden>
       <div class="settings-heading">

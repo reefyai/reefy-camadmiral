@@ -54,6 +54,14 @@ def assert_mobile_camera_actions(page: Page) -> None:
         raise UiScenarioFailure("Dashboard repeats the Cameras heading")
     expect(page.locator(".scan-details-link")).to_have_text("View details")
 
+    list_surface = page.locator(".camera-list-surface")
+    attached_controls = list_surface.evaluate(
+        "surface => surface.contains(document.querySelector('#toolbar')) && "
+        "surface.contains(document.querySelector('#camera-table'))"
+    )
+    if not attached_controls:
+        raise UiScenarioFailure("Camera filters and table do not share one surface")
+
     protocol_badges = set(
         page.locator("#camera-rows .connectivity-protocols .protocol-badge").all_inner_texts()
     )

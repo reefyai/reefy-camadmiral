@@ -124,6 +124,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
         self.assertIn("bounds.bottom > cardBounds.bottom + 0.5", browser)
         self.assertIn("Mobile dashboard action bar failed", browser)
+        self.assertIn("Camera filters and table do not share one surface", browser)
         self.assertIn("touchTargets: scan.height >= 44 && add.height >= 44", browser)
         self.assertIn("equalSize: Math.abs(scan.width - add.width) < 1", browser)
         self.assertIn("statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5", browser)

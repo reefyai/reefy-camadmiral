@@ -85,6 +85,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("<colgroup>", self.html)
 
     def test_summary_counts_filter_camera_rows(self) -> None:
+        self.assertIn('class="camera-list-surface" aria-label="Camera list"', self.html)
+        self.assertIn(".camera-list-surface {", self.html)
+        self.assertIn("padding: 12px 14px; border-bottom:", self.html)
         self.assertIn('data-camera-filter="all"', self.html)
         self.assertIn('data-camera-filter="online"', self.html)
         self.assertIn('data-camera-filter="offline"', self.html)
