@@ -51,11 +51,16 @@
       background: #2dd4bf; content: "";
     }
     .dashboard-controls {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 18px;
-      align-items: center; margin-bottom: 16px;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 18px;
+      align-items: center; margin-bottom: 16px; padding: 11px 12px;
+      border: 1px solid rgba(148, 163, 184, .13); border-radius: 12px;
+      background: rgba(12, 26, 42, .5);
     }
-    .dashboard-title { margin: 0; font-size: 21px; letter-spacing: -.025em; }
     .dashboard-actions { display: flex; align-items: center; gap: 8px; }
+    .dashboard-actions > button {
+      width: 120px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
+      font-size: 12px; font-weight: 800;
+    }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
       background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
@@ -503,13 +508,12 @@
       h1 { font-size: 32px; }
       .primary-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(148, 163, 184, .1); }
       .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
-      .dashboard-controls { grid-template-columns: 1fr; gap: 10px; }
-      .dashboard-title { font-size: 19px; }
+      .dashboard-controls { grid-template-columns: 1fr; gap: 8px; padding: 10px; }
       .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; grid-row: 2; }
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
-      .scan-status { grid-row: 3; min-width: 0; }
+      .scan-status { grid-row: 1; min-width: 0; }
       .scan-details-trigger { width: 100%; min-height: 34px; padding: 5px 4px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
       .scanner-progress { flex-wrap: wrap; }
@@ -603,13 +607,12 @@
     </header>
     <main id="dashboard-view">
       <div class="dashboard-controls">
-        <h2 class="dashboard-title">Cameras</h2>
+        <div class="scan-status">
+          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog" aria-label="Open scan details"><span class="dot" id="dot"></span><span class="scan-details-label" id="state">Starting</span><span class="scan-details-link">View details</span></button>
+        </div>
         <div class="dashboard-actions">
           <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
           <button id="scan" type="button">Scan network</button>
-        </div>
-        <div class="scan-status">
-          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog" aria-label="Open scan details"><span class="dot" id="dot"></span><span class="scan-details-label" id="state">Starting</span><span class="scan-details-link">View details</span></button>
         </div>
       </div>
       <form class="address-panel" id="address-panel" hidden>

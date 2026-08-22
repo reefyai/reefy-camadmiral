@@ -38,7 +38,8 @@ def assert_mobile_camera_actions(page: Page) -> None:
             sameRow: Math.abs(scan.top - add.top) < 1,
             primaryLast: add.left < scan.left,
             touchTargets: scan.height >= 44 && add.height >= 44,
-            statusBelow: status.top >= Math.max(scan.bottom, add.bottom) - 0.5,
+            equalSize: Math.abs(scan.width - add.width) < 1 && Math.abs(scan.height - add.height) < 1,
+            statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5,
             insideViewport: scan.left >= 0 && add.right <= window.innerWidth + 0.5,
           };
         }
@@ -49,7 +50,8 @@ def assert_mobile_camera_actions(page: Page) -> None:
         raise UiScenarioFailure(
             f"Mobile dashboard action bar failed: {', '.join(failed_rules)}"
         )
-    expect(page.get_by_role("heading", name="Cameras")).to_be_visible()
+    if page.get_by_role("heading", name="Cameras").count():
+        raise UiScenarioFailure("Dashboard repeats the Cameras heading")
     expect(page.locator(".scan-details-link")).to_have_text("View details")
 
     protocol_badges = set(
