@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
-import urllib.parse
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -14,7 +12,6 @@ import yaml
 CONFIG_FILE_ENV = "CAMADMIRAL_CONFIG_FILE"
 DEFAULT_CONFIG_FILE = Path("/etc/camadmiral/config.yaml")
 MAX_CONFIG_BYTES = 256 * 1024
-SAFE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
 
 
 class ConfigurationError(RuntimeError):
@@ -49,31 +46,11 @@ class SecretSettings:
 
 
 @dataclass(frozen=True)
-class FrigateTargetSettings:
-    target_id: str
-    name: str
-    api_url: str
-    sync_cameras: bool = False
-
-
-@dataclass(frozen=True)
-class FrigateIntegrationSettings:
-    targets: tuple[FrigateTargetSettings, ...] = ()
-    default_target: str | None = None
-
-
-@dataclass(frozen=True)
-class IntegrationSettings:
-    frigate: FrigateIntegrationSettings = field(default_factory=FrigateIntegrationSettings)
-
-
-@dataclass(frozen=True)
 class CamAdmiralSettings:
     version: int = 1
     server: ServerSettings = field(default_factory=ServerSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     secrets: SecretSettings = field(default_factory=SecretSettings)
-    integrations: IntegrationSettings = field(default_factory=IntegrationSettings)
 
 
 def _mapping(value: object, context: str) -> dict[str, Any]:
@@ -99,20 +76,6 @@ def _absolute_path(value: object, default: Path, context: str) -> Path:
     if not path.is_absolute():
         raise ConfigurationError(f"{context} must be an absolute path")
     return path
-
-
-def _loopback_http_url(value: object) -> str:
-    if not isinstance(value, str):
-        raise ConfigurationError("Frigate api_url must be a string")
-    parsed = urllib.parse.urlsplit(value.strip())
-    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ConfigurationError("Frigate api_url must be a plain loopback HTTP URL")
-    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.port is None:
-        raise ConfigurationError("Frigate api_url must include a loopback host and port")
-    if parsed.path not in {"", "/"}:
-        raise ConfigurationError("Frigate api_url must not include a path")
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    return f"http://{host}:{parsed.port}"
 
 
 def _parse_server(root: dict[str, Any]) -> ServerSettings:
@@ -160,62 +123,13 @@ def _parse_secrets(root: dict[str, Any]) -> SecretSettings:
     )
 
 
-def _parse_frigate(section: dict[str, Any]) -> FrigateIntegrationSettings:
-    _only(section, {"targets", "default_target"}, "integrations.frigate")
-    raw_targets = section.get("targets", [])
-    if not isinstance(raw_targets, list) or len(raw_targets) > 8:
-        raise ConfigurationError("Frigate targets must be a list with at most eight entries")
-    targets: list[FrigateTargetSettings] = []
-    target_ids: set[str] = set()
-    for raw_target in raw_targets:
-        target = _mapping(raw_target, "Frigate target")
-        _only(target, {"id", "name", "api_url", "sync_cameras"}, "Frigate target")
-        target_id = target.get("id")
-        name = target.get("name")
-        sync_cameras = target.get("sync_cameras", False)
-        if not isinstance(target_id, str) or not SAFE_ID.fullmatch(target_id):
-            raise ConfigurationError("Invalid Frigate target id")
-        if target_id in target_ids:
-            raise ConfigurationError("Duplicate Frigate target id")
-        if not isinstance(name, str) or not name.strip() or len(name) > 120:
-            raise ConfigurationError("Invalid Frigate target name")
-        if not isinstance(sync_cameras, bool):
-            raise ConfigurationError("Frigate sync_cameras must be true or false")
-        target_ids.add(target_id)
-        targets.append(
-            FrigateTargetSettings(
-                target_id,
-                name.strip(),
-                _loopback_http_url(target.get("api_url")),
-                sync_cameras,
-            )
-        )
-    default_target = section.get("default_target")
-    if default_target is None and len(targets) == 1:
-        default_target = targets[0].target_id
-    if default_target is not None and (
-        not isinstance(default_target, str) or default_target not in target_ids
-    ):
-        raise ConfigurationError("integrations.frigate.default_target is invalid")
-    if len(targets) > 1 and default_target is None:
-        raise ConfigurationError("Multiple Frigate targets require default_target")
-    return FrigateIntegrationSettings(tuple(targets), default_target)
-
-
-def _parse_integrations(root: dict[str, Any]) -> IntegrationSettings:
-    section = _mapping(root.get("integrations"), "integrations")
-    _only(section, {"frigate"}, "integrations")
-    frigate = _parse_frigate(_mapping(section.get("frigate"), "integrations.frigate"))
-    return IntegrationSettings(frigate)
-
-
 def parse_settings(payload: object) -> CamAdmiralSettings:
     if payload is None:
         return CamAdmiralSettings()
     root = _mapping(payload, "configuration")
     if not root:
         return CamAdmiralSettings()
-    _only(root, {"version", "server", "storage", "secrets", "integrations"}, "top-level")
+    _only(root, {"version", "server", "storage", "secrets"}, "top-level")
     if root.get("version") != 1:
         raise ConfigurationError("Configuration version must be 1")
     return CamAdmiralSettings(
@@ -223,7 +137,6 @@ def parse_settings(payload: object) -> CamAdmiralSettings:
         server=_parse_server(root),
         storage=_parse_storage(root),
         secrets=_parse_secrets(root),
-        integrations=_parse_integrations(root),
     )
 
 

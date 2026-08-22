@@ -57,6 +57,37 @@ class CameraRepositoryTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertNotIn(first.encode(), ciphertext)
 
+    def test_frigate_targets_are_managed_in_sqlite(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-synthetic",
+            "Synthetic Frigate",
+            "http://127.0.0.1:20001",
+            sync_cameras=True,
+        )
+        self.repository.record_frigate_target_check(
+            "frigate-synthetic",
+            status="connected",
+        )
+
+        target = self.repository.frigate_target("frigate-synthetic")
+        self.assertEqual(target["api_url"], "http://127.0.0.1:20001")
+        self.assertTrue(target["sync_cameras"])
+        self.assertEqual(target["connection_status"], "connected")
+        self.assertEqual(
+            [item["target_id"] for item in self.repository.frigate_targets(sync_only=True)],
+            ["frigate-synthetic"],
+        )
+
+        self.repository.save_frigate_target(
+            "frigate-synthetic",
+            "Synthetic Frigate",
+            "http://127.0.0.1:20001",
+            sync_cameras=False,
+        )
+        self.assertEqual(self.repository.frigate_targets(sync_only=True), [])
+        self.assertTrue(self.repository.remove_frigate_target("frigate-synthetic"))
+        self.assertIsNone(self.repository.frigate_target("frigate-synthetic"))
+
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-incident", "display_name": "Synthetic entrance"},

@@ -1019,6 +1019,25 @@ def rotated_camera_ready() -> None:
 def frigate() -> None:
     state = load_state()
 
+    def integration_connected() -> bool:
+        configured = request_json("/internal/frigate-targets").get("targets", [])
+        if any(target.get("api_url") == "http://127.0.0.1:5000" for target in configured):
+            return True
+        status, _body, _headers = request(
+            "/internal/frigate-targets",
+            method="POST",
+            payload={
+                "name": "Synthetic Frigate",
+                "api_url": "http://127.0.0.1:5000",
+                "sync_cameras": True,
+            },
+            headers={"X-CamAdmiral-Action": "add-frigate-target"},
+            timeout=10,
+        )
+        return status == 201
+
+    wait_for("Frigate integration setup", integration_connected, timeout=180, interval=2)
+
     def frigate_json(path: str) -> dict[str, object]:
         try:
             with urllib.request.urlopen(f"http://camadmiral:5000{path}", timeout=8) as response:

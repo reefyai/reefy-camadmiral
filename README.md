@@ -122,7 +122,7 @@ reads only this cache and never opens a camera stream.
 
 ## Telegram notifications
 
-Open **Notifications** in the web UI to connect a dedicated Telegram bot. Create the bot
+Open **Settings** in the web UI to connect a dedicated Telegram bot. Create the bot
 with `@BotFather`, paste its token, then use the generated **Open Telegram** link and press
 **Start**. CamAdmiral discovers the destination chat from that one-time pairing message, so
 you do not need to find or enter a numeric chat ID. Alerts are enabled automatically when
@@ -138,6 +138,17 @@ temporary pairing secret are encrypted with CamAdmiral's master key and are neve
 by the settings API. Alert messages contain only the camera name, incident state, and
 observation time. They do not contain camera credentials, media URLs, IP addresses, or MAC
 addresses.
+
+## Frigate integration
+
+Open **Settings** and add the loopback URL for each local Frigate API, such as
+`http://127.0.0.1:20001`. CamAdmiral validates the required configuration and runtime
+stream capabilities before saving the integration. Every instance with **Sync cameras**
+enabled receives adopted cameras through stable CamAdmiral downstream URLs.
+
+Frigate integrations are operational settings stored in CamAdmiral's SQLite database.
+They are included in the `/var/lib/camadmiral` backup boundary and are managed exclusively
+through the web UI, not the YAML process configuration.
 
 ## Tests
 
@@ -170,8 +181,8 @@ authoritative and is displayed in the app footer.
 ## Optional configuration and external secrets
 
 Mount [camadmiral.example.yaml](camadmiral.example.yaml) at
-`/etc/camadmiral/config.yaml` to change the server, storage, secret, or Frigate integration
-settings. An explicitly configured `secrets.master_key_file` is authoritative and must
+`/etc/camadmiral/config.yaml` to change the server, storage, or secret paths. An explicitly
+configured `secrets.master_key_file` is authoritative and must
 exist. This supports Docker Compose secrets and Reefy-managed read-only secret mounts. An
 external master key is outside the data-volume backup boundary and must be backed up and
 restored separately. The default generated key stays inside the data volume.

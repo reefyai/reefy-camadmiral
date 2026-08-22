@@ -21,6 +21,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('<link rel="icon" type="image/png" href="/app-icon.png">', self.html)
         self.assertIn('<link rel="apple-touch-icon" href="/app-icon.png">', self.html)
         self.assertIn('class="app-brand"', self.html)
+        self.assertIn('class="app-brand" href="/" aria-label="CamAdmiral dashboard"', self.html)
         self.assertIn('<img src="/app-icon.png" alt=""', self.html)
 
     def test_header_actions_are_grouped_into_compact_utility_and_scan_controls(self) -> None:
@@ -244,12 +245,16 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("#scan {", self.html)
         self.assertIn("background: #2dd4bf", self.html)
 
-    def test_incidents_and_telegram_settings_use_compact_shared_modals(self) -> None:
+    def test_settings_are_a_page_while_incidents_remain_a_modal(self) -> None:
         self.assertIn('id="show-incidents"', self.html)
         self.assertIn('id="incident-count"', self.html)
         self.assertIn('openAppModal("incidents"', self.html)
-        self.assertIn('id="show-notifications"', self.html)
-        self.assertIn('openAppModal("notifications"', self.html)
+        self.assertIn('id="show-settings" href="/settings">Settings</a>', self.html)
+        self.assertIn('id="settings-view" hidden', self.html)
+        self.assertIn('id="telegram-settings-body"', self.html)
+        self.assertIn('id="frigate-targets"', self.html)
+        self.assertIn('openAppModal("frigate"', self.html)
+        self.assertNotIn('id="show-notifications"', self.html)
         self.assertIn("Paste token from BotFather", self.html)
         self.assertIn("Open Telegram", self.html)
         self.assertIn('autocomplete = "off"', self.html)

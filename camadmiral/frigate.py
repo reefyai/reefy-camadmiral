@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import settings
-
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
@@ -41,11 +39,28 @@ class FrigateTarget:
     api_url: str
 
 
-def load_frigate_targets() -> list[FrigateTarget]:
+def normalize_frigate_api_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise FrigateApiError("invalid_target_url")
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise FrigateApiError("invalid_target_url")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise FrigateApiError("invalid_target_url") from exc
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or port is None or not 1 <= port <= 65535:
+        raise FrigateApiError("invalid_target_url")
+    if parsed.path not in {"", "/"}:
+        raise FrigateApiError("invalid_target_url")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"http://{host}:{port}"
+
+
+def load_frigate_targets(repository: Any) -> list[FrigateTarget]:
     return [
-        FrigateTarget(target.target_id, target.name, target.api_url)
-        for target in settings().integrations.frigate.targets
-        if target.sync_cameras
+        FrigateTarget(str(target["target_id"]), str(target["name"]), str(target["api_url"]))
+        for target in repository.frigate_targets(sync_only=True)
     ]
 
 

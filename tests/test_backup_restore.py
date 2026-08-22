@@ -77,6 +77,16 @@ class BackupRestoreTests(unittest.TestCase):
             revision_id, revision_status = source_repository.record_desired_media_revision(sources)
             if revision_status == "desired":
                 source_repository.complete_media_revision(revision_id, "applied")
+            source_repository.save_frigate_target(
+                "frigate-synthetic",
+                "Synthetic Frigate",
+                "http://127.0.0.1:20001",
+                sync_cameras=True,
+            )
+            source_repository.record_frigate_target_check(
+                "frigate-synthetic",
+                status="connected",
+            )
             source_repository.record_frigate_attempt(
                 "frigate-synthetic",
                 adoption["camera_uuid"],
@@ -157,6 +167,10 @@ class BackupRestoreTests(unittest.TestCase):
                     adoption["camera_uuid"],
                 )["status"],
                 "applied",
+            )
+            self.assertEqual(
+                restored_repository.frigate_target("frigate-synthetic")["connection_status"],
+                "connected",
             )
             with restored_repository.connect() as connection:
                 address_events = connection.execute(
