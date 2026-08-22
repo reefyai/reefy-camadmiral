@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -32,6 +34,7 @@ class FakeFrigateClient:
         self.config_writes = []
         self.runtime_writes = []
         self.runtime_deletes = []
+        self.runtime_delete_failures = {}
         self.runtime_enabled = {}
         self.drop_add_events = 0
 
@@ -101,7 +104,19 @@ class FakeFrigateClient:
 
     def delete_runtime_stream(self, stream_name):
         self.runtime_deletes.append(stream_name)
+        if self.runtime_delete_failures.get(stream_name) == "before":
+            raise FrigateApiError(
+                "request_rejected",
+                upstream_status=400,
+                upstream_detail="synthetic rejection",
+            )
         self.current_runtime.pop(stream_name, None)
+        if self.runtime_delete_failures.get(stream_name) == "after":
+            raise FrigateApiError(
+                "request_rejected",
+                upstream_status=400,
+                upstream_detail="yaml: path not exist",
+            )
 
 
 class FrigateTargetTests(unittest.TestCase):
@@ -148,6 +163,37 @@ class FrigateTargetTests(unittest.TestCase):
 
         self.assertIn("camadmiral_saved", config["cameras"])
         self.assertIn("camadmiral_saved_record", config["go2rtc"]["streams"])
+
+    def test_http_error_detail_is_bounded_and_redacts_url_credentials(self) -> None:
+        target = FrigateTarget(
+            "frigate-primary",
+            "Primary Frigate",
+            "http://127.0.0.1:20001",
+        )
+        client = FrigateClient(target)
+        response = json.dumps(
+            {
+                "message": (
+                    "Failed rtsp://operator:synthetic-secret@192.0.2.20/live: "
+                    "yaml: path not exist"
+                )
+            }
+        ).encode("utf-8")
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1:20001/api/go2rtc/streams/test",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(response),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(FrigateApiError) as raised:
+                client.runtime_streams()
+
+        self.assertEqual(raised.exception.upstream_status, 400)
+        self.assertIn("rtsp://***@192.0.2.20/live", raised.exception.upstream_detail)
+        self.assertNotIn("synthetic-secret", raised.exception.upstream_detail)
 
     def test_only_targets_with_camera_sync_enabled_are_loaded(self) -> None:
         repository = Mock()
@@ -317,6 +363,46 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(self.client.runtime_deletes, [stale_record])
         self.assertNotIn(stale_record, self.client.current_raw_paths["go2rtc"]["streams"])
         self.assertNotIn(stale_detect, self.client.current_raw_paths["go2rtc"]["streams"])
+
+    def test_full_sync_accepts_rejected_delete_when_live_stream_is_gone(self) -> None:
+        stale_stream = "camadmiral_ambiguous_delete_detect"
+        self.client.current_raw_paths["go2rtc"]["streams"][stale_stream] = [
+            "rtsp://stale.invalid/sub"
+        ]
+        self.client.current_runtime[stale_stream] = {"producers": []}
+        self.client.runtime_delete_failures[stale_stream] = "after"
+
+        result = full_sync_frigate(
+            self.repository,
+            self.target,
+            media_host="192.168.50.12",
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result["removed_streams"], 1)
+        self.assertNotIn(stale_stream, self.client.current_runtime)
+        self.assertNotIn(stale_stream, self.client.current_raw_paths["go2rtc"]["streams"])
+
+    def test_full_sync_rejects_failed_delete_when_live_stream_remains(self) -> None:
+        stale_stream = "camadmiral_rejected_delete_detect"
+        self.client.current_raw_paths["go2rtc"]["streams"][stale_stream] = [
+            "rtsp://stale.invalid/sub"
+        ]
+        self.client.current_runtime[stale_stream] = {"producers": []}
+        self.client.runtime_delete_failures[stale_stream] = "before"
+
+        with self.assertRaises(FrigateApiError) as raised:
+            full_sync_frigate(
+                self.repository,
+                self.target,
+                media_host="192.168.50.12",
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(raised.exception.code, "request_rejected")
+        self.assertEqual(raised.exception.stage, "remove_runtime_stream")
+        self.assertEqual(raised.exception.resource, stale_stream)
+        self.assertIn(stale_stream, self.client.current_runtime)
 
     def test_full_sync_preview_uses_saved_config_instead_of_live_view(self) -> None:
         stale_camera = "camadmiral_saved_only"

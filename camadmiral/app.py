@@ -875,9 +875,12 @@ def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
         "verification_failed": "Frigate did not apply the complete synchronization.",
     }
     status_code = 422 if exc.code in {"invalid_target_url", "capability_unavailable"} else 503
+    message = messages.get(exc.code, "Frigate connection failed.")
+    if exc.upstream_detail:
+        message = f"{message} Frigate response: {exc.upstream_detail}"
     payload = {
         "status": exc.code,
-        "message": messages.get(exc.code, "Frigate connection failed."),
+        "message": message,
     }
     if exc.stage is not None:
         payload["stage"] = exc.stage
@@ -1079,11 +1082,14 @@ def apply_full_sync(
         )
     except FrigateApiError as exc:
         LOGGER.warning(
-            "Frigate full sync failed target=%s code=%s stage=%s resource=%s",
+            "Frigate full sync failed target=%s code=%s stage=%s resource=%s "
+            "upstream_status=%s upstream_detail=%s",
             target_id,
             exc.code,
             exc.stage or "unknown",
             exc.resource or "none",
+            exc.upstream_status or "none",
+            exc.upstream_detail or "none",
         )
         repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
         return _frigate_target_error(exc)

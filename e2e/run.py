@@ -84,6 +84,15 @@ def main() -> int:
         ui_scenario()
         run("up", "--detach", "frigate", "frigate-api-proxy")
         scenario("frigate")
+        scenario("frigate-ambiguous-delete-setup")
+        run(
+            "exec", "-T", "frigate", "python3", "-c",
+            "from pathlib import Path; import yaml; "
+            "path=Path('/dev/shm/go2rtc.yaml'); data=yaml.safe_load(path.read_text()); "
+            "data['streams'].pop('camadmiral_synthetic_ambiguous_delete_detect'); "
+            "path.write_text(yaml.safe_dump(data, sort_keys=False))",
+        )
+        scenario("frigate-ambiguous-delete-verify")
         run("stop", "frigate-api-proxy", "frigate")
 
         run("exec", "-T", "camadmiral", "python", "/e2e/faults.py", "delete-managed-stream")

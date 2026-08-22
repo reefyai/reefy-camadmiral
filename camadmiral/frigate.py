@@ -36,17 +36,23 @@ class FrigateApiError(RuntimeError):
         *,
         stage: str | None = None,
         resource: str | None = None,
+        upstream_status: int | None = None,
+        upstream_detail: str | None = None,
     ):
         super().__init__(code)
         self.code = code
         self.stage = stage
         self.resource = resource
+        self.upstream_status = upstream_status
+        self.upstream_detail = upstream_detail
 
     def with_context(self, *, stage: str, resource: str | None = None) -> FrigateApiError:
         return FrigateApiError(
             self.code,
             stage=self.stage or stage,
             resource=self.resource or resource,
+            upstream_status=self.upstream_status,
+            upstream_detail=self.upstream_detail,
         )
 
 
@@ -108,11 +114,24 @@ class FrigateClient:
         except FrigateApiError:
             raise
         except urllib.error.HTTPError as exc:
+            detail = self._safe_http_error_detail(exc)
             if exc.code in {401, 403}:
-                raise FrigateApiError("authorization_required") from exc
+                raise FrigateApiError(
+                    "authorization_required",
+                    upstream_status=exc.code,
+                    upstream_detail=detail,
+                ) from exc
             if exc.code == 404:
-                raise FrigateApiError("capability_unavailable") from exc
-            raise FrigateApiError("request_rejected") from exc
+                raise FrigateApiError(
+                    "capability_unavailable",
+                    upstream_status=exc.code,
+                    upstream_detail=detail,
+                ) from exc
+            raise FrigateApiError(
+                "request_rejected",
+                upstream_status=exc.code,
+                upstream_detail=detail,
+            ) from exc
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
             raise FrigateApiError("target_unavailable") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -121,6 +140,34 @@ class FrigateClient:
             return json.loads(raw)
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise FrigateApiError("invalid_response") from exc
+
+    @staticmethod
+    def _safe_http_error_detail(exc: urllib.error.HTTPError) -> str | None:
+        try:
+            raw = exc.read(4097)
+        except OSError:
+            return None
+        if not raw or len(raw) > 4096:
+            return None
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeError:
+            return None
+        try:
+            payload = json.loads(decoded)
+        except json.JSONDecodeError:
+            detail = decoded
+        else:
+            detail = payload.get("message") if isinstance(payload, dict) else None
+            if not isinstance(detail, str):
+                detail = decoded
+        detail = " ".join(detail.split())
+        detail = re.sub(
+            r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+)@",
+            r"\1***@",
+            detail,
+        )
+        return detail[:240] or None
 
     def capabilities(self) -> None:
         document = self._request("GET", "/api/openapi.json")
@@ -276,7 +323,22 @@ def full_sync_frigate(
         try:
             client.delete_runtime_stream(stream_key)
         except FrigateApiError as exc:
-            raise exc.with_context(stage="remove_runtime_stream", resource=stream_key) from exc
+            # Frigate 0.17 proxies deletion to go2rtc. go2rtc deletes the
+            # live stream before patching its generated YAML, so a drifted
+            # generated file can produce HTTP 400 ("yaml: path not exist")
+            # after the requested deletion has already succeeded. Verify the
+            # resulting live state before treating that ambiguous response as
+            # a failed full sync.
+            try:
+                remaining_runtime = client.runtime_streams()
+            except FrigateApiError:
+                raise exc.with_context(
+                    stage="remove_runtime_stream", resource=stream_key
+                ) from exc
+            if stream_key in remaining_runtime:
+                raise exc.with_context(
+                    stage="remove_runtime_stream", resource=stream_key
+                ) from exc
     if stale_streams:
         try:
             client.set_config(

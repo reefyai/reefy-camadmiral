@@ -1200,6 +1200,86 @@ def frigate() -> None:
     print("frigate: injection, processing, and CamAdmiral-only full sync passed")
 
 
+AMBIGUOUS_DELETE_STREAM = "camadmiral_synthetic_ambiguous_delete_detect"
+AMBIGUOUS_DELETE_SOURCE = "rtsp://camera-open:8554/sub"
+
+
+def frigate_ambiguous_delete_setup() -> None:
+    body = json.dumps(
+        {
+            "requires_restart": 0,
+            "config_data": {
+                "go2rtc": {
+                    "streams": {AMBIGUOUS_DELETE_STREAM: [AMBIGUOUS_DELETE_SOURCE]}
+                }
+            },
+        }
+    ).encode("utf-8")
+    config_request = urllib.request.Request(
+        "http://camadmiral:5000/api/config/set",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(config_request, timeout=30) as response:
+        configured = json.load(response)
+    if configured.get("success") is not True:
+        raise ScenarioFailure("Could not save ambiguous-delete Frigate stream")
+
+    runtime_path = (
+        f"http://camadmiral:5000/api/go2rtc/streams/{AMBIGUOUS_DELETE_STREAM}?"
+        + urllib.parse.urlencode({"src": AMBIGUOUS_DELETE_SOURCE})
+    )
+    runtime_request = urllib.request.Request(
+        runtime_path,
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(runtime_request, timeout=30) as response:
+        runtime_result = json.load(response)
+    if runtime_result.get("success") is not True:
+        raise ScenarioFailure("Could not create ambiguous-delete live stream")
+    print("frigate: ambiguous-delete fixture ready")
+
+
+def frigate_ambiguous_delete_verify() -> None:
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        None,
+    )
+    if target is None:
+        raise ScenarioFailure("Frigate integration missing for ambiguous-delete test")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+    preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
+    if preview.get("stale_streams") != 1:
+        raise ScenarioFailure(f"Ambiguous-delete preview was unexpected: {preview}")
+    result = request_json(
+        f"/internal/frigate-targets/{target_id}/full-sync",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
+        timeout=120,
+    )
+    if result.get("removed_streams") != 1:
+        raise ScenarioFailure(f"Ambiguous-delete full sync failed: {result}")
+
+    with urllib.request.urlopen(
+        "http://camadmiral:5000/api/go2rtc/streams", timeout=8
+    ) as response:
+        runtime = json.load(response)
+    if AMBIGUOUS_DELETE_STREAM in runtime:
+        raise ScenarioFailure("Ambiguous-delete stream remained in live go2rtc state")
+    with urllib.request.urlopen(
+        "http://camadmiral:5000/api/config/raw_paths", timeout=8
+    ) as response:
+        raw_paths = json.load(response)
+    saved_streams = raw_paths.get("go2rtc", {}).get("streams", {})
+    if AMBIGUOUS_DELETE_STREAM in saved_streams:
+        raise ScenarioFailure("Ambiguous-delete stream remained in saved Frigate config")
+    print("frigate: ambiguous partial-success deletion recovered")
+
+
 SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
@@ -1215,6 +1295,8 @@ SCENARIOS = {
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
     "frigate": frigate,
+    "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
+    "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
 }
 
 

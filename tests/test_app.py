@@ -419,6 +419,20 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertEqual(payload["resource"], "camadmiral_synthetic_stale_detect")
         self.assertNotIn("rtsp://", response.body.decode())
 
+    def test_frigate_error_includes_safe_upstream_detail(self) -> None:
+        response = app_module._frigate_target_error(
+            app_module.FrigateApiError(
+                "request_rejected",
+                stage="remove_runtime_stream",
+                resource="camadmiral_synthetic_stale_detect",
+                upstream_status=400,
+                upstream_detail="yaml: path not exist",
+            )
+        )
+
+        payload = json.loads(response.body)
+        self.assertIn("Frigate response: yaml: path not exist", payload["message"])
+
     def test_add_validates_and_persists_a_loopback_target(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = []
