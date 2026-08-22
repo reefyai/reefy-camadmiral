@@ -22,12 +22,17 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_tag_release_has_one_gate_owner(self) -> None:
+    def test_tag_release_reuses_the_exact_tested_commit(self) -> None:
         publish = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
 
         self.assertIn('tags: ["v*"]', publish)
-        self.assertIn("uses: ./.github/workflows/release-gate.yml", publish)
+        self.assertIn("uses: actions/github-script@v7", publish)
+        self.assertIn("run.head_sha === context.sha", publish)
+        self.assertIn('workflow_id: "release-gate.yml"', publish)
+        self.assertIn('status: "success"', publish)
+        self.assertIn("needs: verify-release-gate", publish)
+        self.assertNotIn("uses: ./.github/workflows/release-gate.yml", publish)
         self.assertNotIn('tags: ["v*"]', gate)
 
     def test_e2e_snapshot_wait_allows_bounded_recovery(self) -> None:
