@@ -157,10 +157,100 @@ class FrigateClient:
         if isinstance(result, dict) and result.get("success") is False:
             raise FrigateApiError("runtime_stream_rejected")
 
+    def delete_runtime_stream(self, stream_name: str) -> None:
+        encoded_name = urllib.parse.quote(stream_name, safe="")
+        result = self._request("DELETE", f"/api/go2rtc/streams/{encoded_name}")
+        if isinstance(result, dict) and result.get("success") is False:
+            raise FrigateApiError("runtime_stream_rejected")
+
 
 def frigate_camera_key(camera_uuid: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
     return f"{KEY_PREFIX}{normalized}"
+
+
+def desired_resource_keys(repository: Any) -> tuple[set[str], set[str]]:
+    camera_keys = {
+        frigate_camera_key(str(camera["camera_uuid"]))
+        for camera in repository.consumer_inventory()
+    }
+    stream_keys = {
+        stream_key
+        for camera_key in camera_keys
+        for stream_key in (f"{camera_key}_record", f"{camera_key}_detect")
+    }
+    return camera_keys, stream_keys
+
+
+def full_sync_preview(
+    repository: Any,
+    target: FrigateTarget,
+    *,
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> dict[str, Any]:
+    client = client_factory(target)
+    client.capabilities()
+    raw_paths = client.raw_paths()
+    desired_cameras, desired_streams = desired_resource_keys(repository)
+    configured_cameras = raw_paths.get("cameras", {})
+    configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
+    if not isinstance(configured_cameras, dict) or not isinstance(configured_streams, dict):
+        raise FrigateApiError("invalid_response")
+    stale_cameras = sorted(
+        name
+        for name in configured_cameras
+        if name.startswith(KEY_PREFIX) and name not in desired_cameras
+    )
+    stale_streams = sorted(
+        name
+        for name in configured_streams
+        if name.startswith(KEY_PREFIX) and name not in desired_streams
+    )
+    return {
+        "managed_cameras": len(desired_cameras),
+        "stale_cameras": stale_cameras,
+        "stale_streams": stale_streams,
+    }
+
+
+def full_sync_frigate(
+    repository: Any,
+    target: FrigateTarget,
+    *,
+    media_host: str = "127.0.0.1",
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> dict[str, int]:
+    client = client_factory(target)
+    preview = full_sync_preview(repository, target, client_factory=lambda _target: client)
+    stale_cameras = preview["stale_cameras"]
+    stale_streams = preview["stale_streams"]
+
+    for camera_key in stale_cameras:
+        client.set_config(
+            {"cameras": {camera_key: None}},
+            update_topic=f"config/cameras/{camera_key}/remove",
+        )
+    for stream_key in stale_streams:
+        client.delete_runtime_stream(stream_key)
+    if stale_streams:
+        client.set_config(
+            {"go2rtc": {"streams": {stream_key: None for stream_key in stale_streams}}}
+        )
+
+    verified = full_sync_preview(repository, target, client_factory=lambda _target: client)
+    if verified["stale_cameras"] or verified["stale_streams"]:
+        raise FrigateApiError("verification_failed")
+    reconciliation = reconcile_frigate(
+        repository,
+        target,
+        media_host=media_host,
+        client_factory=lambda _target: client,
+    )
+    return {
+        "removed_cameras": len(stale_cameras),
+        "removed_streams": len(stale_streams),
+        **reconciliation,
+    }
 
 
 def _stream_for_role(camera: dict[str, Any], role: str) -> dict[str, Any] | None:

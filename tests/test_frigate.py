@@ -9,6 +9,8 @@ from camadmiral.frigate import (
     FrigateClient,
     FrigateTarget,
     desired_camera,
+    full_sync_frigate,
+    full_sync_preview,
     frigate_camera_key,
     load_frigate_targets,
     media_host_from_inventory,
@@ -29,6 +31,7 @@ class FakeFrigateClient:
         self.capability_checks = 0
         self.config_writes = []
         self.runtime_writes = []
+        self.runtime_deletes = []
         self.runtime_enabled = {}
         self.drop_add_events = 0
 
@@ -50,6 +53,12 @@ class FakeFrigateClient:
     def set_config(self, config_data, *, update_topic=None):
         self.config_writes.append((config_data, update_topic))
         for key, update in config_data.get("cameras", {}).items():
+            if update is None:
+                self.current_config["cameras"].pop(key, None)
+                self.current_raw_paths["cameras"].pop(key, None)
+                self.current_stats.pop(key, None)
+                self.runtime_enabled.pop(key, None)
+                continue
             camera = self.current_config["cameras"].setdefault(key, {})
             self._merge(camera, update)
             if "ffmpeg" in update:
@@ -69,9 +78,11 @@ class FakeFrigateClient:
                     self.current_stats[key] = {"camera_fps": 5.0}
             elif update_topic == f"config/cameras/{key}/enabled":
                 self.runtime_enabled[key] = bool(update["enabled"])
-        self.current_raw_paths["go2rtc"]["streams"].update(
-            config_data.get("go2rtc", {}).get("streams", {})
-        )
+        for key, update in config_data.get("go2rtc", {}).get("streams", {}).items():
+            if update is None:
+                self.current_raw_paths["go2rtc"]["streams"].pop(key, None)
+            else:
+                self.current_raw_paths["go2rtc"]["streams"][key] = update
 
     @classmethod
     def _merge(cls, current, update):
@@ -84,6 +95,10 @@ class FakeFrigateClient:
     def set_runtime_stream(self, stream_name, source):
         self.runtime_writes.append((stream_name, source))
         self.current_runtime[stream_name] = {"producers": []}
+
+    def delete_runtime_stream(self, stream_name):
+        self.runtime_deletes.append(stream_name)
+        self.current_runtime.pop(stream_name, None)
 
 
 class FrigateTargetTests(unittest.TestCase):
@@ -197,6 +212,51 @@ class FrigateReconciliationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_full_sync_removes_only_stale_camadmiral_resources(self) -> None:
+        stale_camera = "camadmiral_stale_camera"
+        stale_streams = {f"{stale_camera}_record", f"{stale_camera}_detect"}
+        self.client.current_config["cameras"].update(
+            {
+                stale_camera: {"enabled": True},
+                "operator_camera": {"enabled": True},
+            }
+        )
+        self.client.current_raw_paths["cameras"].update(
+            {
+                stale_camera: {"ffmpeg": {"inputs": []}},
+                "operator_camera": {"ffmpeg": {"inputs": []}},
+            }
+        )
+        self.client.current_raw_paths["go2rtc"]["streams"].update(
+            {
+                **{name: ["rtsp://stale.invalid/stream"] for name in stale_streams},
+                "operator_stream": ["rtsp://camera.invalid/stream"],
+            }
+        )
+        self.client.current_runtime.update({name: {} for name in stale_streams})
+
+        preview = full_sync_preview(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        result = full_sync_frigate(
+            self.repository,
+            self.target,
+            media_host="192.168.50.12",
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(preview["stale_cameras"], [stale_camera])
+        self.assertEqual(set(preview["stale_streams"]), stale_streams)
+        self.assertEqual(result["removed_cameras"], 1)
+        self.assertEqual(result["removed_streams"], 2)
+        self.assertIn("operator_camera", self.client.current_config["cameras"])
+        self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
+        self.assertNotIn(stale_camera, self.client.current_config["cameras"])
+        self.assertTrue(stale_streams.isdisjoint(self.client.current_raw_paths["go2rtc"]["streams"]))
+        self.assertEqual(set(self.client.runtime_deletes), stale_streams)
 
     def test_desired_camera_uses_full_stable_id_and_one_shared_password(self) -> None:
         camera = self.repository.consumer_inventory()[0]

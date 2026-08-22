@@ -70,6 +70,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn("last observation=", scenarios)
 
+    def test_e2e_full_sync_preserves_operator_owned_frigate_resources(self) -> None:
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+        self.assertIn('stale_camera = "camadmiral_synthetic_stale"', scenarios)
+        self.assertIn('operator_camera = "operator_camera"', scenarios)
+        self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', scenarios)
+        self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
+        self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
+
     def test_e2e_checks_mobile_actions_in_webkit(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()
@@ -84,7 +92,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("bounds.bottom > cellBounds.bottom + 0.5", browser)
         self.assertIn("bounds.bottom > cardBounds.bottom + 0.5", browser)
         self.assertIn("assert_mobile_settings(page)", browser)
-        self.assertIn('page.goto(f"{BASE_URL}/settings",', browser)
+        self.assertIn('page.goto(f"{BASE_URL}/settings/notifications",', browser)
+        self.assertIn('to_have_url(re.compile(r"/settings/integrations$"))', browser)
+        self.assertIn('to_have_url(re.compile(r"/incidents$"))', browser)
         self.assertIn("Settings section extends beyond the mobile viewport", browser)
         self.assertIn("assert_downstream_password_masking(page)", browser)
         self.assertIn('":********@" not in displayed', browser)

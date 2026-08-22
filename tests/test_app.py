@@ -76,13 +76,16 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertIn("img-src 'self' data: blob:", policy)
         self.assertEqual(policy.count("blob:"), 2)
 
-    def test_settings_page_route_is_registered(self) -> None:
+    def test_navigation_page_routes_are_registered(self) -> None:
         routes = {
             (route.path, method)
             for route in app_module.app.routes
             for method in getattr(route, "methods", set())
         }
         self.assertIn(("/settings", "GET"), routes)
+        self.assertIn(("/settings/notifications", "GET"), routes)
+        self.assertIn(("/settings/integrations", "GET"), routes)
+        self.assertIn(("/incidents", "GET"), routes)
 
     def test_adopted_name_replaces_scanner_name(self) -> None:
         repository = Mock()
@@ -487,6 +490,63 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("left unchanged", json.loads(response.body)["message"])
         repository.remove_frigate_target.assert_called_once_with("frigate-synthetic")
+
+    def test_full_sync_uses_one_confirmed_action_for_the_whole_target(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "sync_cameras": True,
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(
+                app_module,
+                "full_sync_frigate",
+                return_value={"removed_cameras": 2, "removed_streams": 4, "applied": 3, "pending": 0},
+            ) as full_sync,
+        ):
+            response = app_module.apply_full_sync(
+                "frigate-synthetic",
+                "full-sync-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["removed_cameras"], 2)
+        full_sync.assert_called_once()
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic",
+            status="connected",
+        )
+
+    def test_full_sync_preview_returns_counts_without_resource_names(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "sync_cameras": True,
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "preview_frigate_full_sync",
+                return_value={
+                    "managed_cameras": 3,
+                    "stale_cameras": ["camadmiral_old"],
+                    "stale_streams": ["camadmiral_old_record", "camadmiral_old_detect"],
+                },
+            ),
+        ):
+            response = app_module.preview_full_sync("frigate-synthetic")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["stale_cameras"], 1)
+        self.assertEqual(payload["stale_streams"], 2)
+        self.assertNotIn("camadmiral_old", response.body.decode())
 
 
 class ConsumerApiTests(unittest.TestCase):

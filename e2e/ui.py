@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -130,11 +131,18 @@ def assert_downstream_password_masking(page: Page) -> None:
 
 
 def assert_mobile_settings(page: Page) -> None:
-    page.goto(f"{BASE_URL}/settings", wait_until="domcontentloaded")
+    page.goto(f"{BASE_URL}/settings/notifications", wait_until="domcontentloaded")
     expect(page.locator("#settings-view")).to_be_visible(timeout=15_000)
     expect(page.locator("#dashboard-view")).to_be_hidden()
+    expect(page.locator("#incidents-view")).to_be_hidden()
     expect(page.get_by_role("heading", name="Telegram notifications")).to_be_visible()
+    expect(page.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
+    expect(page.get_by_role("link", name="Notifications")).to_have_attribute("aria-current", "page")
+    page.get_by_role("link", name="Integrations").click()
+    expect(page).to_have_url(re.compile(r"/settings/integrations$"))
     expect(page.get_by_role("heading", name="Frigate integrations")).to_be_visible()
+    expect(page.get_by_role("heading", name="Telegram notifications")).to_be_hidden()
+    expect(page.get_by_role("link", name="Integrations")).to_have_attribute("aria-current", "page")
     expect(page.locator("a.app-brand")).to_have_attribute("href", "/")
     overflow = page.locator("#settings-view .settings-section").evaluate_all(
         "sections => sections.filter(section => section.getBoundingClientRect().right > window.innerWidth + 0.5).length"
@@ -146,6 +154,12 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("heading", name="Add Frigate")).to_be_visible()
     expect(page.get_by_label("Frigate API URL")).to_be_visible()
     page.locator("#app-modal-close").click()
+
+    page.get_by_role("link", name="Incidents").click()
+    expect(page).to_have_url(re.compile(r"/incidents$"))
+    expect(page.locator("#incidents-view")).to_be_visible()
+    expect(page.get_by_role("heading", name="Incidents")).to_be_visible()
+    expect(page.get_by_role("link", name="Incidents")).to_have_attribute("aria-current", "page")
 
 
 def main() -> int:

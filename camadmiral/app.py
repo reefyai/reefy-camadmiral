@@ -28,6 +28,8 @@ from .frigate import (
     FrigateApiError,
     FrigateClient,
     FrigateTarget,
+    full_sync_frigate,
+    full_sync_preview as preview_frigate_full_sync,
     load_frigate_targets,
     media_host_from_inventory,
     normalize_frigate_api_url,
@@ -865,6 +867,10 @@ def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
         "authorization_required": "Frigate requires authorization on that endpoint.",
         "capability_unavailable": "This Frigate endpoint does not provide the required camera configuration API.",
         "invalid_response": "Frigate returned an unexpected response.",
+        "request_rejected": "Frigate rejected the configuration update.",
+        "runtime_stream_rejected": "Frigate could not remove a stale stream.",
+        "configuration_rejected": "Frigate rejected the configuration update.",
+        "verification_failed": "Frigate did not apply the complete synchronization.",
     }
     status_code = 422 if exc.code in {"invalid_target_url", "capability_unavailable"} else 503
     return _secured_json(
@@ -875,6 +881,14 @@ def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
 
 def _check_frigate_target(target: FrigateTarget) -> None:
     FrigateClient(target).capabilities()
+
+
+def _stored_frigate_target(repository: CameraRepository, target_id: str) -> tuple[dict[str, object], FrigateTarget]:
+    current = repository.frigate_target(target_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
+    return current, target
 
 
 @app.get("/internal/frigate-targets", include_in_schema=False)
@@ -1004,6 +1018,65 @@ def test_frigate_target(
         return _frigate_target_error(exc)
     repository.record_frigate_target_check(target_id, status="connected")
     return _secured_json({"status": "connected", "target": repository.frigate_target(target_id)})
+
+
+@app.get("/internal/frigate-targets/{target_id}/full-sync", include_in_schema=False)
+def preview_full_sync(target_id: str) -> JSONResponse:
+    repository = _repository(required=True)
+    assert repository is not None
+    current, target = _stored_frigate_target(repository, target_id)
+    if not current["sync_cameras"]:
+        return _secured_json(
+            {"status": "sync_disabled", "message": "Enable camera sync before running a full sync."},
+            status_code=409,
+        )
+    try:
+        preview = preview_frigate_full_sync(repository, target)
+    except FrigateApiError as exc:
+        return _frigate_target_error(exc)
+    return _secured_json(
+        {
+            "status": "ready",
+            "managed_cameras": preview["managed_cameras"],
+            "stale_cameras": len(preview["stale_cameras"]),
+            "stale_streams": len(preview["stale_streams"]),
+        }
+    )
+
+
+@app.post("/internal/frigate-targets/{target_id}/full-sync", include_in_schema=False)
+def apply_full_sync(
+    target_id: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "full-sync-frigate-target":
+        raise HTTPException(status_code=400, detail="Missing Frigate full sync action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    current, target = _stored_frigate_target(repository, target_id)
+    if not current["sync_cameras"]:
+        return _secured_json(
+            {"status": "sync_disabled", "message": "Enable camera sync before running a full sync."},
+            status_code=409,
+        )
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json(
+            {"status": "sync_busy", "message": "Camera synchronization is already running."},
+            status_code=409,
+        )
+    try:
+        result = full_sync_frigate(
+            repository,
+            target,
+            media_host=media_host_from_inventory(INVENTORY),
+        )
+    except FrigateApiError as exc:
+        repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
+        return _frigate_target_error(exc)
+    finally:
+        FRIGATE_LOCK.release()
+    repository.record_frigate_target_check(target_id, status="connected")
+    return _secured_json({"status": "synchronized", **result})
 
 
 @app.delete("/internal/frigate-targets/{target_id}", include_in_schema=False)
@@ -1226,7 +1299,10 @@ def update_camera_credentials(
     )
 
 
+@app.get("/settings/integrations", include_in_schema=False)
+@app.get("/settings/notifications", include_in_schema=False)
 @app.get("/settings", include_in_schema=False)
+@app.get("/incidents", include_in_schema=False)
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(
