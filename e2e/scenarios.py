@@ -1137,11 +1137,11 @@ def frigate() -> None:
     )
     if result.get("removed_cameras") != 1 or result.get("removed_streams") != 2:
         raise ScenarioFailure(f"Full sync returned unexpected counts: {result}")
-    cleaned_config = frigate_json("/api/config")
     cleaned_paths = frigate_json("/api/config/raw_paths")
-    if stale_camera in cleaned_config.get("cameras", {}):
+    cleaned_cameras = cleaned_paths.get("cameras", {})
+    if stale_camera in cleaned_cameras:
         raise ScenarioFailure("Full sync left the stale CamAdmiral camera in Frigate")
-    if operator_camera not in cleaned_config.get("cameras", {}):
+    if operator_camera not in cleaned_cameras:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate camera")
     cleaned_streams = cleaned_paths.get("go2rtc", {}).get("streams", {})
     if stale_streams.intersection(cleaned_streams):
