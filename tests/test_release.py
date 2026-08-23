@@ -56,6 +56,17 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("needs.classify-changes.outputs.runtime == 'true'", gate)
         self.assertNotIn("paths-ignore:", gate)
 
+    def test_e2e_runs_the_docker_only_launcher(self) -> None:
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        launcher = (ROOT / "e2e" / "launcher.py").read_text()
+
+        self.assertIn("from launcher import run_launcher", runner)
+        self.assertIn("run_launcher()", runner)
+        self.assertIn('URL = "http://127.0.0.1:18080"', launcher)
+        self.assertIn('f"admin:{password}"', launcher)
+        self.assertIn('host_config.get("ReadonlyRootfs")', launcher)
+        self.assertIn("Launcher replaced its existing admin password", launcher)
+
     def test_e2e_snapshot_wait_allows_bounded_recovery(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
 

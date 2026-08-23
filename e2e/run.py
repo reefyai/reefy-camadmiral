@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+from launcher import run_launcher
+
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "e2e" / "compose.yaml"
@@ -147,6 +149,8 @@ def main() -> int:
         run("up", "--detach", "camera-auth-rotated")
         scenario("rotated-camera-ready")
         scenario("credential-repair")
+        run("down", "--volumes", "--remove-orphans")
+        run_launcher()
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"CamAdmiral E2E failed: {exc}", file=sys.stderr)
         try:

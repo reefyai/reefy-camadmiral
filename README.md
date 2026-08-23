@@ -38,14 +38,24 @@ use ONVIF multicast plus addresses already learned in the host ARP table, avoidi
 unbounded sweep. Results are merged by IP and MAC. Adopted cameras are retained when absent,
 marked offline, and recovered after IP changes using ONVIF identity or a unique MAC.
 
-**Add camera** probes one explicit address without scanning the rest of the LAN. Detailed,
-timestamped protocol logs are available under scan details.
+If automatic discovery misses a camera, **Add camera** accepts its IP address or complete
+RTSP URL and probes only that address. The camera must be on a connected private LAN.
+Timestamped protocol logs are available under scan details.
 
 ![CamAdmiral ONVIF and RTSP network scan details](docs/images/camadmiral-network-scan.png)
 
-Adoption validates the credentials and discovered streams before storing anything. ONVIF
-cameras expose their media profiles directly; RTSP-only cameras use the compatibility
-database to find working paths without asking the operator to construct URLs manually.
+**Camera not detected?** If you identify the cause, please open a PR with the fix and a
+regression test.
+
+### Camera adoption
+
+To make a camera managed by CamAdmiral, select **Adopt** and provide credentials for the
+camera. CamAdmiral validates the credentials and streams before storing them. ONVIF cameras
+provide their media profiles directly; RTSP-only cameras use the compatibility database or
+an exact RTSP URL.
+
+CamAdmiral does not change the camera configuration. It only reads camera capabilities and
+consumes its media streams.
 
 ![CamAdmiral camera adoption dialog](docs/images/camadmiral-adopt-camera.png)
 
@@ -90,46 +100,36 @@ phones. No separate mobile app is required.
 
 ## Run with Docker
 
-Build the image and create one named volume for all persistent CamAdmiral state:
+### Quick start
+
+On a Linux system with Docker, run:
 
 ```console
-docker build -t camadmiral:latest .
-docker volume create camadmiral-data
-mkdir -p secrets
-openssl rand -hex 32 > secrets/api-token
-openssl rand -base64 24 > secrets/admin-password
-chmod 600 secrets/api-token secrets/admin-password
-docker run -d \
-  --name camadmiral \
-  --network host \
-  --restart unless-stopped \
-  --volume camadmiral-data:/var/lib/camadmiral \
-  --mount type=bind,source="$(pwd)/secrets/api-token",target=/run/secrets/camadmiral_api_token,readonly \
-  --mount type=bind,source="$(pwd)/secrets/admin-password",target=/run/secrets/camadmiral_admin_password,readonly \
-  camadmiral:latest
+./start-camadmiral.sh
 ```
 
-Open `http://<device-address>:18080`. No configuration file is required. On first boot,
-CamAdmiral generates its master key inside the data volume. Recreating the container with
-the same named volume preserves adopted cameras and credentials. Sign in as `admin` with
-the password in `secrets/admin-password`.
+The script pulls the latest image, creates the data volume, generates missing secrets, and
+starts one hardened container. It never replaces existing secrets or persistent data. The
+URL, admin credentials, and consumer API token are printed after startup. Secrets remain
+inside the `camadmiral-data` volume.
 
-For Docker Compose, create the API token once and start the checked-in hardened
-configuration:
+### Build and run from source
+
+To build the current source and start it through the same launcher:
 
 ```console
-mkdir -p secrets
-openssl rand -hex 32 > secrets/api-token
-openssl rand -base64 24 > secrets/admin-password
-chmod 600 secrets/api-token
-chmod 600 secrets/admin-password
-docker compose up -d
+docker build -t camadmiral:local .
+CAMADMIRAL_IMAGE=camadmiral:local ./start-camadmiral.sh
 ```
 
-The browser prompts for HTTP Basic credentials. Use username `admin` and the
-value stored in `secrets/admin-password`. Put CamAdmiral behind an HTTPS reverse
-proxy before accessing it across an untrusted network because HTTP Basic
-credentials are not encrypted by the application protocol.
+No configuration file is required. On first boot, CamAdmiral generates its master key inside
+the data volume. Recreating the container with the same named volume preserves adopted
+cameras and credentials. The launcher is a plain shell script containing the complete
+`docker volume` and `docker run` commands.
+
+The browser prompts for the printed HTTP Basic credentials. Put CamAdmiral behind an HTTPS
+reverse proxy before accessing it across an untrusted network because HTTP Basic credentials
+are not encrypted by the application protocol.
 
 The complete persistent state boundary is `/var/lib/camadmiral`. Back up and restore that
 volume as a unit. Stop CamAdmiral before making a raw volume copy so the SQLite database and
@@ -160,6 +160,8 @@ by the settings API. Alert messages contain only the camera name, incident state
 observation time. They do not contain camera credentials, media URLs, IP addresses, or MAC
 addresses.
 
+**Need another notification service?** Please open a PR with the provider.
+
 ## Frigate integration
 
 Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
@@ -175,6 +177,8 @@ removed or changed by full sync.
 Frigate integrations are operational settings stored in CamAdmiral's SQLite database.
 They are included in the `/var/lib/camadmiral` backup boundary and are managed exclusively
 through the web UI, not the YAML process configuration.
+
+**Need another downstream consumer?** Please open a PR with the integration.
 
 ## Tests
 

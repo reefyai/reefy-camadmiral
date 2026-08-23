@@ -6,6 +6,8 @@ CamAdmiral application modules.
 
 The isolated Docker Compose lab covers:
 
+- standalone Docker-only launcher startup, generated admin credentials, live HTTP access,
+  hardened runtime settings, and safe repeated execution
 - manual and full RTSP discovery on a non-default connected private subnet
 - multicast ONVIF discovery plus bounded learned-neighbor ONVIF and RTSP
   probing on an oversized /16 subnet without a per-address sweep
