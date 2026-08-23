@@ -328,6 +328,7 @@ def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     }
     return {
         "managed_cameras": len(desired_cameras),
+        "desired_cameras": desired_cameras,
         "stale_cameras": stale_cameras,
         "stale_config_streams": sorted(stale_config_streams),
         "stale_runtime_streams": sorted(stale_runtime_streams),
@@ -419,6 +420,7 @@ def full_sync_frigate(
     except FrigateApiError as exc:
         raise exc.with_context(stage="inspect_configuration") from exc
     stale_cameras = state["stale_cameras"]
+    desired_cameras = state["desired_cameras"]
     stale_config_streams = state["stale_config_streams"]
     stale_streams = state["stale_streams"]
 
@@ -509,11 +511,26 @@ def full_sync_frigate(
     # capture workers and shared-memory frames alive. Do not restart the
     # whole Frigate instance: that would interrupt every remaining camera.
     restart_recommended = False
-    if stale_cameras:
+    try:
+        worker_stats = client.stats()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_camera_workers") from exc
+    stale_worker_candidates = sorted(
+        {
+            *stale_cameras,
+            *(
+                camera_key
+                for camera_key in worker_stats
+                if camera_key.startswith(KEY_PREFIX)
+                and camera_key not in desired_cameras
+            ),
+        }
+    )
+    if stale_worker_candidates:
         try:
             stale_workers = _wait_for_camera_worker_cleanup(
                 client,
-                stale_cameras,
+                stale_worker_candidates,
                 timeout=CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS,
             )
         except FrigateApiError as exc:

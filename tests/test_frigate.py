@@ -429,6 +429,30 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertIn(stale_camera, self.client.current_stats)
         self.assertNotIn(("restart",), self.client.operations)
 
+    def test_full_sync_keeps_restart_warning_for_orphaned_worker(self) -> None:
+        orphaned_camera = "camadmiral_orphaned_worker"
+        orphaned_streams = {
+            f"{orphaned_camera}_record",
+            f"{orphaned_camera}_detect",
+        }
+        self.client.current_runtime.update({name: {} for name in orphaned_streams})
+        self.client.current_stats[orphaned_camera] = {"camera_fps": 0.0}
+        self.client.retain_removed_camera_stats = True
+
+        with patch("camadmiral.frigate.CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS", 0):
+            result = full_sync_frigate(
+                self.repository,
+                self.target,
+                media_host="192.168.50.12",
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(result["removed_cameras"], 0)
+        self.assertEqual(result["removed_streams"], 2)
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(orphaned_camera, self.client.current_stats)
+
     def test_full_sync_tolerates_configured_stream_missing_from_runtime(self) -> None:
         stale_camera = "camadmiral_partial_drift"
         stale_record = f"{stale_camera}_record"

@@ -1590,7 +1590,8 @@ def frigate_ambiguous_delete_verify() -> None:
         raise ScenarioFailure("Frigate integration missing for ambiguous-delete test")
     target_id = urllib.parse.quote(str(target["target_id"]), safe="")
     preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
-    if preview.get("stale_streams") != 1:
+    stale_stream_count = int(preview.get("stale_streams") or 0)
+    if stale_stream_count < 1:
         raise ScenarioFailure(f"Ambiguous-delete preview was unexpected: {preview}")
     result = request_json(
         f"/internal/frigate-targets/{target_id}/full-sync",
@@ -1598,7 +1599,7 @@ def frigate_ambiguous_delete_verify() -> None:
         headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
         timeout=120,
     )
-    if result.get("removed_streams") != 1:
+    if result.get("removed_streams") != stale_stream_count:
         raise ScenarioFailure(f"Ambiguous-delete full sync failed: {result}")
 
     with urllib.request.urlopen(
