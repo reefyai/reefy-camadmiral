@@ -24,7 +24,8 @@ The isolated Docker Compose lab covers:
 - recovered media overriding stale offline scan state in camera summary counts
 - persisted availability buckets across camera outage and recovery
 - complete CamAdmiral container restart with stable IDs, paths, and secrets
-- real Frigate 0.17 camera injection, runtime creation, and frame processing
+- real Frigate 0.17 camera injection, global detect-FPS inheritance, legacy
+  camera-level FPS cleanup, runtime creation, and frame processing
 - invalid recovered-address rejection with last-known-good media preservation
 - camera IP change with validated upstream replacement and stable downstream
   identities

@@ -1285,6 +1285,38 @@ def frigate() -> None:
     if not config["cameras"][camera_key].get("live", {}).get("streams", {}):
         raise ScenarioFailure("Frigate camera has no live stream mapping")
 
+    saved_camera = frigate_saved_config().get("cameras", {}).get(camera_key, {})
+    if "fps" in saved_camera.get("detect", {}):
+        raise ScenarioFailure("CamAdmiral injected a camera-level detect FPS")
+    if config["cameras"][camera_key].get("detect", {}).get("fps") != 5:
+        raise ScenarioFailure("Frigate camera did not inherit the global detect FPS")
+
+    updated = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {"cameras": {camera_key: {"detect": {"fps": 12}}}},
+        },
+    )
+    if updated.get("success") is not True:
+        raise ScenarioFailure("Could not seed a legacy camera-level detect FPS")
+    selected = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+        timeout=120,
+    )
+    if selected.get("selected") is not True:
+        raise ScenarioFailure(f"Frigate FPS inheritance sync failed: {selected}")
+
+    saved_camera = frigate_saved_config().get("cameras", {}).get(camera_key, {})
+    if "fps" in saved_camera.get("detect", {}):
+        raise ScenarioFailure("Camera-level detect FPS remained after synchronization")
+    config = frigate_json("/api/config")
+    if config["cameras"][camera_key].get("detect", {}).get("fps") != 5:
+        raise ScenarioFailure("Global detect FPS was not restored after synchronization")
+
     last_stats: dict[str, object] = {}
     def frigate_processing() -> bool:
         nonlocal last_stats

@@ -5,6 +5,9 @@ detectors:
   synthetic_cpu:
     type: cpu
 
+detect:
+  fps: 5
+
 go2rtc:
   streams:
     operator_stream:

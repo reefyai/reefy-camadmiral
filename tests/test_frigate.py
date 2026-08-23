@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 import tempfile
@@ -31,6 +32,7 @@ class FakeFrigateClient:
         self.target = target
         self.current_config = {"version": "0.17-0", "cameras": {}}
         self.current_raw_paths = {"cameras": {}, "go2rtc": {"streams": {}}}
+        self.current_raw_config = {"cameras": {}, "go2rtc": {"streams": {}}}
         self.current_runtime = {}
         self.current_stats = {}
         self.capability_checks = 0
@@ -55,7 +57,13 @@ class FakeFrigateClient:
         return self.current_raw_paths
 
     def raw_config(self):
-        return self.current_raw_paths
+        raw_config = copy.deepcopy(self.current_raw_config)
+        for key, camera in self.current_raw_paths["cameras"].items():
+            self._merge(raw_config["cameras"].setdefault(key, {}), camera)
+        raw_config["go2rtc"]["streams"] = copy.deepcopy(
+            self.current_raw_paths["go2rtc"]["streams"]
+        )
+        return raw_config
 
     def runtime_streams(self):
         return self.current_runtime
@@ -71,6 +79,7 @@ class FakeFrigateClient:
         for key, update in config_data.get("cameras", {}).items():
             if update is None or update == "":
                 self.current_raw_paths["cameras"].pop(key, None)
+                self.current_raw_config["cameras"].pop(key, None)
                 if not requires_restart or update_topic is not None:
                     self.current_config["cameras"].pop(key, None)
                     if not self.retain_removed_camera_stats:
@@ -79,6 +88,8 @@ class FakeFrigateClient:
                 continue
             camera = self.current_config["cameras"].setdefault(key, {})
             self._merge(camera, update)
+            raw_camera = self.current_raw_config["cameras"].setdefault(key, {})
+            self._merge(raw_camera, update)
             if "ffmpeg" in update:
                 self.current_raw_paths["cameras"][key] = {
                     "ffmpeg": {
@@ -99,13 +110,17 @@ class FakeFrigateClient:
         for key, update in config_data.get("go2rtc", {}).get("streams", {}).items():
             if update is None or update == "":
                 self.current_raw_paths["go2rtc"]["streams"].pop(key, None)
+                self.current_raw_config["go2rtc"]["streams"].pop(key, None)
             else:
                 self.current_raw_paths["go2rtc"]["streams"][key] = update
+                self.current_raw_config["go2rtc"]["streams"][key] = update
 
     @classmethod
     def _merge(cls, current, update):
         for key, value in update.items():
-            if isinstance(value, dict) and isinstance(current.get(key), dict):
+            if value == "":
+                current.pop(key, None)
+            elif isinstance(value, dict) and isinstance(current.get(key), dict):
                 cls._merge(current[key], value)
             else:
                 current[key] = value
@@ -640,7 +655,7 @@ class FrigateReconciliationTests(unittest.TestCase):
         for sources in desired["streams"].values():
             self.assertIn("camadmiral:shared-media-secret@192.168.50.12:18554", sources[0])
             self.assertNotIn("upstream-secret", sources[0])
-        self.assertEqual(desired["camera_config"]["detect"], {"width": 640, "height": 360, "fps": 10})
+        self.assertEqual(desired["camera_config"]["detect"], {"width": 640, "height": 360})
 
     def test_config_preview_masks_password_but_keeps_plaintext_for_copy(self) -> None:
         preview = frigate_camera_configuration(
@@ -950,6 +965,32 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertFalse(camera["enabled"])
         self.assertEqual(camera["zones"], {"walkway": {"coordinates": "0,0,1,1"}})
         self.assertEqual(camera["record"], {"retain": {"days": 14}})
+
+    def test_reconcile_removes_camera_fps_to_restore_global_inheritance(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        key = frigate_camera_key(self.camera_uuid)
+        self.client.current_config["cameras"][key]["detect"]["fps"] = 12
+        self.client.current_raw_config["cameras"][key]["detect"]["fps"] = 12
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertNotIn("fps", self.client.current_config["cameras"][key]["detect"])
+        self.assertNotIn("fps", self.client.current_raw_config["cameras"][key]["detect"])
+        self.assertTrue(
+            any(
+                update.get("cameras", {}).get(key, {}).get("detect", {}).get("fps") == ""
+                for update, _topic in self.client.config_writes
+            )
+        )
 
     def test_camadmiral_disable_and_enable_are_applied_without_losing_settings(self) -> None:
         reconcile_frigate(
