@@ -144,10 +144,10 @@ def assert_mobile_camera_actions(page: Page) -> None:
             status: null,
             error_code: null,
           }];
+          openCameraSync(device);
         }
         """
     )
-    page.get_by_role("button", name="Sync", exact=True).first.click()
     modal = page.locator("#app-modal")
     expect(modal).to_be_visible()
     modal.get_by_role("button", name="Sync", exact=True).click()
