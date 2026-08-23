@@ -108,7 +108,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         self.assertIn('stale_camera = "camadmiral_synthetic_stale"', scenarios)
         self.assertIn('operator_camera = "operator_camera"', scenarios)
-        self.assertIn("camadmiral_synthetic_stale_record:", fixture)
+        self.assertIn('"camadmiral_synthetic_stale_record":', scenarios)
         self.assertIn("operator_stream:", fixture)
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)

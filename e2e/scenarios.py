@@ -1220,19 +1220,8 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
 
-    # Leave exactly one operator-owned camera running before camera injection.
-    # Frigate 0.17.x requires one restart when the next camera is hot-added.
-    initial_cleanup = request_json(
-        f"/internal/frigate-targets/{target_id}/full-sync",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
-        timeout=120,
-    )
-    if initial_cleanup.get("removed_cameras") != 1:
-        raise ScenarioFailure(
-            f"Could not prepare the Frigate 0.17 one-camera fixture: {initial_cleanup}"
-        )
-
+    # The fixture starts with exactly one operator-owned camera. Frigate
+    # 0.17.x requires one restart when the next camera is hot-added.
     first_camera_uuid = state["open_camera_uuid"]
     selected = request_json(
         f"/internal/frigate-targets/{target_id}/cameras/"

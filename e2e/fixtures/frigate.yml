@@ -7,29 +7,10 @@ detectors:
 
 go2rtc:
   streams:
-    camadmiral_synthetic_stale_record:
-      - rtsp://camera-open:8554/main
-    camadmiral_synthetic_stale_detect:
-      - rtsp://camera-open:8554/sub
     operator_stream:
       - rtsp://camera-open:8554/main
 
 cameras:
-  camadmiral_synthetic_stale:
-    enabled: false
-    ffmpeg:
-      inputs:
-        - path: rtsp://127.0.0.1:8554/camadmiral_synthetic_stale_record
-          input_args: preset-rtsp-restream
-          roles: [record, detect]
-    detect:
-      width: 1280
-      height: 720
-      fps: 5
-    live:
-      streams:
-        Record: camadmiral_synthetic_stale_record
-        Detect: camadmiral_synthetic_stale_detect
   operator_camera:
     enabled: false
     ffmpeg:
