@@ -23,9 +23,8 @@ class UiScenarioFailure(RuntimeError):
 
 def assert_mobile_camera_actions(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
-    page.wait_for_function(
-        "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
-        timeout=30_000,
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
     )
 
     action_layout = page.locator(".dashboard-controls").evaluate(
@@ -169,9 +168,8 @@ def assert_downstream_password_masking(page: Page) -> None:
         """
     )
     page.reload(wait_until="domcontentloaded")
-    page.wait_for_function(
-        "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
-        timeout=30_000,
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
     )
     streams = page.get_by_role("button", name="Streams").first
     streams.click()
