@@ -62,7 +62,6 @@ class CameraRepositoryTests(unittest.TestCase):
             "frigate-synthetic",
             "Synthetic Frigate",
             "http://127.0.0.1:20001",
-            sync_cameras=True,
         )
         self.repository.record_frigate_target_check(
             "frigate-synthetic",
@@ -71,22 +70,61 @@ class CameraRepositoryTests(unittest.TestCase):
 
         target = self.repository.frigate_target("frigate-synthetic")
         self.assertEqual(target["api_url"], "http://127.0.0.1:20001")
-        self.assertTrue(target["sync_cameras"])
+        self.assertNotIn("sync_cameras", target)
+        self.assertEqual(target["selected_cameras"], 0)
         self.assertEqual(target["connection_status"], "connected")
-        self.assertEqual(
-            [item["target_id"] for item in self.repository.frigate_targets(sync_only=True)],
-            ["frigate-synthetic"],
+        self.assertFalse(target["restart_recommended"])
+
+        self.repository.record_frigate_target_check(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=True,
+        )
+        self.assertTrue(
+            self.repository.frigate_target("frigate-synthetic")["restart_recommended"]
         )
 
-        self.repository.save_frigate_target(
-            "frigate-synthetic",
-            "Synthetic Frigate",
-            "http://127.0.0.1:20001",
-            sync_cameras=False,
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-frigate", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
         )
-        self.assertEqual(self.repository.frigate_targets(sync_only=True), [])
+        camera_uuid = adoption["camera_uuid"]
+        self.assertTrue(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
+        self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
+        self.assertEqual(
+            self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
+            [camera_uuid],
+        )
+        self.assertEqual(self.repository.frigate_target("frigate-synthetic")["selected_cameras"], 1)
+        self.assertTrue(self.repository.deselect_frigate_camera("frigate-synthetic", camera_uuid))
+        self.assertEqual(self.repository.selected_frigate_camera_uuids("frigate-synthetic"), [])
         self.assertTrue(self.repository.remove_frigate_target("frigate-synthetic"))
         self.assertIsNone(self.repository.frigate_target("frigate-synthetic"))
+
+    def test_frigate_selection_migration_does_not_backfill_existing_targets(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        with self.repository.connect() as connection:
+            connection.execute("DELETE FROM schema_migrations WHERE version = 14")
+            connection.execute("DROP TABLE frigate_camera_selections")
+            connection.execute(
+                "UPDATE frigate_targets SET sync_cameras = 1 WHERE target_id = 'frigate-existing'"
+            )
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(self.repository.selected_frigate_camera_uuids("frigate-existing"), [])
 
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
         adoption = self.repository.adopt(

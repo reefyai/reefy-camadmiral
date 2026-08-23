@@ -190,6 +190,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
             [{"camera_uuid": "camera-1", "status": "applied"}],
             [],
         ]
+        repository.selected_frigate_camera_uuids.side_effect = [["camera-1"], []]
         state = {
             "devices": [
                 {
@@ -212,8 +213,8 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(
             decorated["devices"][0]["adoption"]["frigate"],
             [
-                {"target": "Frigate One", "status": "applied"},
-                {"target": "Frigate Two", "status": "pending"},
+                {"target_id": "one", "target": "Frigate One", "selected": True, "status": "applied"},
+                {"target_id": "two", "target": "Frigate Two", "selected": False, "status": "not_synced"},
             ],
         )
 
@@ -233,6 +234,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
                 "last_error_code": "camera_start_pending",
             }
         ]
+        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
         state = {
             "devices": [
                 {
@@ -253,7 +255,9 @@ class DiscoveryDecorationTests(unittest.TestCase):
             decorated["devices"][0]["adoption"]["frigate"],
             [
                 {
+                    "target_id": "one",
                     "target": "Frigate One",
+                    "selected": True,
                     "status": "error",
                     "error_code": "camera_start_pending",
                 }
@@ -440,7 +444,7 @@ class FrigateTargetApiTests(unittest.TestCase):
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
             "api_url": "http://127.0.0.1:20001",
-            "sync_cameras": True,
+            "selected_cameras": 0,
             "connection_status": "connected",
         }
         with (
@@ -452,7 +456,6 @@ class FrigateTargetApiTests(unittest.TestCase):
                 app_module.FrigateTargetRequest(
                     name="Local Frigate",
                     api_url="http://127.0.0.1:20001/",
-                    sync_cameras=True,
                 ),
                 "add-frigate-target",
             )
@@ -507,6 +510,37 @@ class FrigateTargetApiTests(unittest.TestCase):
         check.assert_not_called()
         repository.save_frigate_target.assert_not_called()
 
+    def test_connection_test_clears_restart_required_after_runtime_cleanup(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "restart_recommended": True,
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "frigate_restart_required",
+                return_value=False,
+            ) as restart_required,
+            patch.object(app_module, "_check_frigate_target") as basic_check,
+        ):
+            response = app_module.test_frigate_target(
+                "frigate-synthetic",
+                "test-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        restart_required.assert_called_once()
+        basic_check.assert_not_called()
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=False,
+        )
+
     def test_remove_leaves_frigate_configuration_untouched(self) -> None:
         repository = Mock()
         repository.remove_frigate_target.return_value = True
@@ -526,7 +560,7 @@ class FrigateTargetApiTests(unittest.TestCase):
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
             "api_url": "http://127.0.0.1:20001",
-            "sync_cameras": True,
+            "selected_cameras": 3,
         }
         with (
             patch.object(app_module, "_repository", return_value=repository),
@@ -534,7 +568,13 @@ class FrigateTargetApiTests(unittest.TestCase):
             patch.object(
                 app_module,
                 "full_sync_frigate",
-                return_value={"removed_cameras": 2, "removed_streams": 4, "applied": 3, "pending": 0},
+                return_value={
+                    "removed_cameras": 2,
+                    "removed_streams": 4,
+                    "restart_recommended": True,
+                    "applied": 3,
+                    "pending": 0,
+                },
             ) as full_sync,
         ):
             response = app_module.apply_full_sync(
@@ -548,6 +588,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.record_frigate_target_check.assert_called_once_with(
             "frigate-synthetic",
             status="connected",
+            restart_recommended=True,
         )
 
     def test_full_sync_preview_returns_counts_without_resource_names(self) -> None:
@@ -556,7 +597,7 @@ class FrigateTargetApiTests(unittest.TestCase):
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
             "api_url": "http://127.0.0.1:20001",
-            "sync_cameras": True,
+            "selected_cameras": 3,
         }
         with (
             patch.object(app_module, "_repository", return_value=repository),
@@ -576,6 +617,103 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertEqual(payload["stale_cameras"], 1)
         self.assertEqual(payload["stale_streams"], 2)
         self.assertNotIn("camadmiral_old", response.body.decode())
+
+    def test_camera_sync_selects_only_the_requested_camera(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "selected_cameras": 0,
+        }
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(
+                app_module,
+                "reconcile_frigate",
+                return_value={"applied": 1, "pending": 0},
+            ) as reconcile,
+        ):
+            response = app_module.sync_frigate_camera(
+                "frigate-synthetic",
+                "camera-1",
+                "sync-frigate-camera",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.body)["selected"])
+        repository.select_frigate_camera.assert_called_once_with(
+            "frigate-synthetic", "camera-1"
+        )
+        reconcile.assert_called_once()
+
+    def test_camera_config_preview_returns_masked_and_copyable_versions(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "selected_cameras": 0,
+        }
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(
+                app_module,
+                "frigate_camera_configuration",
+                return_value={
+                    "configuration": "source: rtsp://camadmiral:synthetic-secret@host/live",
+                    "display_configuration": "source: rtsp://camadmiral:********@host/live",
+                },
+            ),
+        ):
+            response = app_module.preview_frigate_camera_config(
+                "frigate-synthetic", "camera-1"
+            )
+
+        payload = json.loads(response.body)
+        self.assertIn("synthetic-secret", payload["configuration"])
+        self.assertNotIn("synthetic-secret", payload["display_configuration"])
+
+    def test_camera_remove_cleans_only_the_selected_managed_camera(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "selected_cameras": 1,
+        }
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "remove_frigate_camera",
+                return_value={
+                    "removed_cameras": 1,
+                    "removed_streams": 2,
+                    "restart_recommended": True,
+                },
+            ) as remove,
+        ):
+            response = app_module.remove_synced_frigate_camera(
+                "frigate-synthetic",
+                "camera-1",
+                "remove-frigate-camera",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(json.loads(response.body)["selected"])
+        remove.assert_called_once()
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=True,
+        )
 
 
 class ConsumerApiTests(unittest.TestCase):

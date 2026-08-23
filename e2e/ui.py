@@ -23,9 +23,8 @@ class UiScenarioFailure(RuntimeError):
 
 def assert_mobile_camera_actions(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
-    page.wait_for_function(
-        "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
-        timeout=30_000,
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
     )
 
     action_layout = page.locator(".dashboard-controls").evaluate(
@@ -70,6 +69,13 @@ def assert_mobile_camera_actions(page: Page) -> None:
         missing = ", ".join(sorted(missing_protocols))
         raise UiScenarioFailure(f"Connectivity is missing protocol badges: {missing}")
 
+    if page.get_by_role("button", name="Live", exact=True).count():
+        raise UiScenarioFailure("Camera actions repeat the thumbnail live-view control")
+    page.locator("#camera-rows .preview-cell").first.click()
+    expect(page.locator("#live-modal")).to_be_visible()
+    expect(page.locator("#live-title")).to_contain_text("Live view")
+    page.locator("#live-close").click()
+
     failures: list[str] = page.locator("#camera-rows tr.camera-row").evaluate_all(
         """
         cards => {
@@ -108,6 +114,47 @@ def assert_mobile_camera_actions(page: Page) -> None:
     if failures:
         raise UiScenarioFailure("; ".join(failures))
 
+    sync = page.get_by_role("button", name="Sync").first
+    expect(sync).to_be_visible()
+    sync.click()
+    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(page.get_by_text("No Frigate integrations configured.")).to_be_visible()
+    expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
+        "href", "/settings/integrations"
+    )
+    page.locator("#app-modal-close").click()
+
+    page.route(
+        "**/internal/frigate-targets/synthetic-target/cameras/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"selected": true}',
+        ),
+    )
+    page.evaluate(
+        """
+        () => {
+          const device = devices.find(candidate => candidate.adoption?.camera_uuid);
+          device.adoption.frigate = [{
+            target_id: "synthetic-target",
+            target: "Synthetic Frigate",
+            selected: false,
+            status: null,
+            error_code: null,
+          }];
+          openCameraSync(device);
+        }
+        """
+    )
+    modal = page.locator("#app-modal")
+    expect(modal).to_be_visible()
+    modal.get_by_role("button", name="Sync", exact=True).click()
+    expect(modal).to_be_visible()
+    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(modal.get_by_text("Synthetic Frigate")).to_be_visible()
+    page.locator("#app-modal-close").click()
+
 
 def assert_downstream_password_masking(page: Page) -> None:
     page.add_init_script(
@@ -121,9 +168,8 @@ def assert_downstream_password_masking(page: Page) -> None:
         """
     )
     page.reload(wait_until="domcontentloaded")
-    page.wait_for_function(
-        "document.querySelectorAll('#camera-rows tr.camera-row').length >= 3",
-        timeout=30_000,
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
     )
     streams = page.get_by_role("button", name="Streams").first
     streams.click()
@@ -186,7 +232,9 @@ def assert_mobile_settings(page: Page) -> None:
     add = page.get_by_role("button", name="Add Frigate")
     add.click()
     expect(page.get_by_role("heading", name="Add Frigate")).to_be_visible()
-    expect(page.get_by_label("Frigate API URL")).to_be_visible()
+    expect(page.get_by_label("Frigate API URL")).to_have_value(
+        "http://127.0.0.1:5000"
+    )
     page.locator("#app-modal-close").click()
 
     page.get_by_role("link", name="Incidents").click()

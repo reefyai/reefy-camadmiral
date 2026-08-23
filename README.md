@@ -173,11 +173,15 @@ addresses.
 ## Frigate integration
 
 Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
-`http://127.0.0.1:20001`. CamAdmiral validates the required configuration and runtime
-stream capabilities before saving the integration. Every instance with **Sync cameras**
-enabled receives adopted cameras through stable CamAdmiral downstream URLs.
+`http://127.0.0.1:5000`. Port 5000 is Frigate's internal API port and must be exposed only
+to trusted local services. CamAdmiral validates the required configuration and runtime
+stream capabilities before saving the integration.
 
-Use **Full sync now** to synchronize the current cameras and remove stale Frigate cameras
+Use a camera's **Sync** action to select which Frigate instance should receive it through a
+stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
+configuration or remove that CamAdmiral-managed camera from the instance.
+
+Use **Full sync now** to synchronize the selected cameras and remove stale Frigate cameras
 and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one
 confirmation with the cleanup counts. Cameras and streams outside that namespace are never
 removed or changed by full sync.
@@ -207,10 +211,13 @@ The E2E runner builds the current container and verifies it only through HTTP, R
 process, and persistent-volume boundaries. See [e2e/README.md](e2e/README.md) for its
 scenario list and isolation guarantees.
 
-The `CamAdmiral release gate` workflow runs the fast suite and the complete E2E lab for
-pull requests, `main`, release tags, manual runs, and as a reusable `workflow_call`.
-Release publishing must call this workflow and depend on its successful result. A failed
-or cancelled E2E run is therefore not release-eligible.
+The `CamAdmiral release gate` runs the fast suite for ordinary development commits. A
+commit that changes `VERSION` is a release candidate and also runs the complete E2E lab.
+Prepare the version metadata before the final validation commit, ideally by squashing it
+with the completed feature work. Manual and reusable-workflow runs remain full gates.
+
+The image publisher accepts only the exact versioned commit whose `Run isolated E2E lab`
+step succeeded. A later development commit cannot be released by reusing an earlier gate.
 
 CamAdmiral versions follow Reefy's `vYYYY.MM.DD-NN` convention. `VERSION` is the
 standalone source version. On Reefy, the platform-injected `REEFY_APP_VERSION` is
