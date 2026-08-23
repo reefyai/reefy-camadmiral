@@ -1543,9 +1543,11 @@ def frigate() -> None:
     saved_after_removal = frigate_saved_config()
     if removed_key in saved_after_removal.get("cameras", {}):
         raise ScenarioFailure("Deferred removal remained in saved Frigate config")
-    runtime_after_removal = frigate_json("/api/stats").get("cameras", {})
-    if removed_key not in runtime_after_removal:
-        raise ScenarioFailure("Frigate 0.17 removal unexpectedly stopped the live worker")
+    live_after_removal = frigate_json("/api/config").get("cameras", {})
+    if removed_key not in live_after_removal:
+        raise ScenarioFailure(
+            "Frigate removal did not leave a detectable restart-required state"
+        )
 
     uptime_before_deferred_restart = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0

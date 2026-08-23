@@ -780,6 +780,16 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.client.current_runtime.pop(f"{key}_record")
         self.client.current_runtime.pop(f"{key}_detect")
 
+        self.assertTrue(
+            frigate_restart_required(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+        )
+
+        self.client.current_config["cameras"].pop(key)
+
         self.assertFalse(
             frigate_restart_required(
                 self.repository,

@@ -424,15 +424,26 @@ def frigate_restart_required(
     """Return whether removed CamAdmiral resources are still running."""
     client = client_factory(target)
     client.capabilities()
+    live_config = client.config()
     state = _full_sync_state(repository, client)
     desired_cameras = state["desired_cameras"]
+    live_cameras = live_config.get("cameras", {})
+    if not isinstance(live_cameras, dict):
+        raise FrigateApiError("invalid_response")
+    stale_live_cameras = {
+        camera_key
+        for camera_key in live_cameras
+        if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+    }
     worker_stats = client.stats()
     stale_workers = {
         camera_key
         for camera_key in worker_stats
         if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
     }
-    return bool(stale_workers or state["stale_runtime_streams"])
+    return bool(
+        stale_live_cameras or stale_workers or state["stale_runtime_streams"]
+    )
 
 
 def full_sync_frigate(
