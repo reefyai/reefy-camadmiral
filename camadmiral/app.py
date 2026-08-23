@@ -30,6 +30,7 @@ from .frigate import (
     FrigateClient,
     FrigateTarget,
     frigate_camera_configuration,
+    frigate_restart_required,
     full_sync_frigate,
     full_sync_preview as preview_frigate_full_sync,
     load_frigate_targets,
@@ -1029,11 +1030,20 @@ def test_frigate_target(
         raise HTTPException(status_code=404, detail="Frigate target not found")
     target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
     try:
-        _check_frigate_target(target)
+        restart_required = bool(current.get("restart_recommended")) and frigate_restart_required(
+            repository,
+            target,
+        )
+        if not current.get("restart_recommended"):
+            _check_frigate_target(target)
     except FrigateApiError as exc:
         repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
         return _frigate_target_error(exc)
-    repository.record_frigate_target_check(target_id, status="connected")
+    repository.record_frigate_target_check(
+        target_id,
+        status="connected",
+        restart_recommended=restart_required,
+    )
     return _secured_json({"status": "connected", "target": repository.frigate_target(target_id)})
 
 

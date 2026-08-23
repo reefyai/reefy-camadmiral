@@ -1459,7 +1459,7 @@ def frigate() -> None:
     if bool(refreshed_target.get("restart_recommended")) != bool(
         result.get("restart_recommended")
     ):
-        raise ScenarioFailure("Frigate restart recommendation was not persisted")
+        raise ScenarioFailure("Frigate restart-required state was not persisted")
 
     partial_drift_stream = "camadmiral_synthetic_partial_drift"
     partial_drift_source = "rtsp://camera-open:8554/sub"
@@ -1522,6 +1522,8 @@ def frigate() -> None:
     )
     if removed.get("selected") is not False:
         raise ScenarioFailure(f"Per-camera Frigate removal failed: {removed}")
+    if removed.get("restart_recommended") is not True:
+        raise ScenarioFailure("Frigate 0.17 removal did not require a deferred restart")
     uptime_after_removal = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0
     )
@@ -1534,6 +1536,52 @@ def frigate() -> None:
         timeout=30,
         interval=2,
     )
+
+    removed_key = "camadmiral_" + re.sub(
+        r"[^a-zA-Z0-9_]", "_", str(second_camera_uuid)
+    )
+    saved_after_removal = frigate_saved_config()
+    if removed_key in saved_after_removal.get("cameras", {}):
+        raise ScenarioFailure("Deferred removal remained in saved Frigate config")
+    runtime_after_removal = frigate_json("/api/stats").get("cameras", {})
+    if removed_key not in runtime_after_removal:
+        raise ScenarioFailure("Frigate 0.17 removal unexpectedly stopped the live worker")
+
+    uptime_before_deferred_restart = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    restart_request = urllib.request.Request(
+        "http://camadmiral:5000/api/restart",
+        data=b"",
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(restart_request, timeout=30) as response:
+            restart_result = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise ScenarioFailure("Could not restart Frigate after deferred removal") from exc
+    if restart_result.get("success") is not True:
+        raise ScenarioFailure(f"Frigate rejected deferred restart: {restart_result}")
+
+    def deferred_restart_settled() -> float | bool:
+        uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
+        return uptime if 5 <= uptime < uptime_before_deferred_restart else False
+
+    wait_for(
+        "Frigate deferred-removal restart",
+        deferred_restart_settled,
+        timeout=120,
+        interval=1,
+    )
+    checked = request_json(
+        f"/internal/frigate-targets/{target_id}/test",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "test-frigate-target"},
+        timeout=30,
+    )
+    checked_target = checked.get("target", {})
+    if checked_target.get("restart_recommended") is not False:
+        raise ScenarioFailure("Frigate restart-required state did not clear after restart")
     print("frigate: injection, processing, and CamAdmiral-only full sync passed")
 
 

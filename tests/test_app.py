@@ -510,6 +510,37 @@ class FrigateTargetApiTests(unittest.TestCase):
         check.assert_not_called()
         repository.save_frigate_target.assert_not_called()
 
+    def test_connection_test_clears_restart_required_after_runtime_cleanup(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "restart_recommended": True,
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "frigate_restart_required",
+                return_value=False,
+            ) as restart_required,
+            patch.object(app_module, "_check_frigate_target") as basic_check,
+        ):
+            response = app_module.test_frigate_target(
+                "frigate-synthetic",
+                "test-frigate-target",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        restart_required.assert_called_once()
+        basic_check.assert_not_called()
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=False,
+        )
+
     def test_remove_leaves_frigate_configuration_untouched(self) -> None:
         repository = Mock()
         repository.remove_frigate_target.return_value = True

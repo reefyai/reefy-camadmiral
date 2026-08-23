@@ -114,7 +114,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
         self.assertIn("Frigate restarted while full sync removed stale resources", scenarios)
-        self.assertIn("Frigate restart recommendation was not persisted", scenarios)
+        self.assertIn("Frigate restart-required state was not persisted", scenarios)
+        self.assertIn("Frigate 0.17 removal did not require a deferred restart", scenarios)
+        self.assertIn("Frigate restart-required state did not clear after restart", scenarios)
         self.assertIn("restart: unless-stopped", compose)
         self.assertIn("test -f /config/config.yml || cp", compose)
 
