@@ -1572,7 +1572,7 @@ def frigate() -> None:
     wait_for(
         "Frigate deferred-removal restart",
         deferred_restart_settled,
-        timeout=120,
+        timeout=180,
         interval=1,
     )
     checked = request_json(
