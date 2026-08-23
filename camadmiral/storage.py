@@ -226,6 +226,16 @@ MIGRATIONS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     );
     """,
+    """
+    CREATE TABLE frigate_camera_selections (
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        selected_at TEXT NOT NULL,
+        PRIMARY KEY(target_id, camera_uuid)
+    );
+    CREATE INDEX frigate_camera_selections_camera
+        ON frigate_camera_selections(camera_uuid, target_id);
+    """,
 )
 
 
@@ -1076,35 +1086,32 @@ class CameraRepository:
             connection.commit()
             return password
 
-    def frigate_targets(self, *, sync_only: bool = False) -> list[dict[str, Any]]:
-        where = "WHERE sync_cameras = 1" if sync_only else ""
+    def frigate_targets(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT target_id, name, api_url, sync_cameras, connection_status, "
-                "last_error_code, last_checked_at, created_at, updated_at "
-                f"FROM frigate_targets {where} ORDER BY name COLLATE NOCASE, target_id"
+                "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
+                "t.last_error_code, t.last_checked_at, t.created_at, t.updated_at, "
+                "COUNT(s.camera_uuid) AS selected_cameras "
+                "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
+                "ON s.target_id = t.target_id GROUP BY t.target_id "
+                "ORDER BY t.name COLLATE NOCASE, t.target_id"
             ).fetchall()
-        result = [dict(row) for row in rows]
-        for target in result:
-            target["sync_cameras"] = bool(target["sync_cameras"])
-        return result
+        return [dict(row) for row in rows]
 
     def save_frigate_target(
         self,
         target_id: str,
         name: str,
         api_url: str,
-        *,
-        sync_cameras: bool,
     ) -> None:
         timestamp = _now()
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO frigate_targets(target_id, name, api_url, sync_cameras, "
                 "connection_status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'pending', ?, ?) "
+                "VALUES (?, ?, ?, 0, 'pending', ?, ?) "
                 "ON CONFLICT(target_id) DO UPDATE SET name=excluded.name, "
-                "api_url=excluded.api_url, sync_cameras=excluded.sync_cameras, "
+                "api_url=excluded.api_url, "
                 "connection_status=CASE WHEN frigate_targets.api_url != excluded.api_url "
                 "THEN 'pending' ELSE frigate_targets.connection_status END, "
                 "last_error_code=CASE WHEN frigate_targets.api_url != excluded.api_url "
@@ -1112,23 +1119,51 @@ class CameraRepository:
                 "last_checked_at=CASE WHEN frigate_targets.api_url != excluded.api_url "
                 "THEN NULL ELSE frigate_targets.last_checked_at END, "
                 "updated_at=excluded.updated_at",
-                (target_id, name, api_url, int(sync_cameras), timestamp, timestamp),
+                (target_id, name, api_url, timestamp, timestamp),
             )
             connection.commit()
 
     def frigate_target(self, target_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT target_id, name, api_url, sync_cameras, connection_status, "
-                "last_error_code, last_checked_at, created_at, updated_at "
-                "FROM frigate_targets WHERE target_id = ?",
+                "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
+                "t.last_error_code, t.last_checked_at, t.created_at, t.updated_at, "
+                "COUNT(s.camera_uuid) AS selected_cameras "
+                "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
+                "ON s.target_id = t.target_id WHERE t.target_id = ? GROUP BY t.target_id",
                 (target_id,),
             ).fetchone()
         if row is None:
             return None
-        result = dict(row)
-        result["sync_cameras"] = bool(result["sync_cameras"])
-        return result
+        return dict(row)
+
+    def select_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO frigate_camera_selections"
+                "(target_id, camera_uuid, selected_at) VALUES (?, ?, ?)",
+                (target_id, camera_uuid, _now()),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def deselect_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM frigate_camera_selections WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def selected_frigate_camera_uuids(self, target_id: str) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT camera_uuid FROM frigate_camera_selections "
+                "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
+                (target_id,),
+            ).fetchall()
+        return [str(row["camera_uuid"]) for row in rows]
 
     def remove_frigate_target(self, target_id: str) -> bool:
         with self.connect() as connection:
@@ -1238,6 +1273,15 @@ class CameraRepository:
                 (target_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def remove_frigate_binding(self, target_id: str, camera_uuid: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM frigate_bindings WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
 
     def set_frigate_camera_enabled_applied(
         self,

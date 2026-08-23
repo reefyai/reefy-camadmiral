@@ -81,7 +81,6 @@ class BackupRestoreTests(unittest.TestCase):
                 "frigate-synthetic",
                 "Synthetic Frigate",
                 "http://127.0.0.1:20001",
-                sync_cameras=True,
             )
             source_repository.record_frigate_target_check(
                 "frigate-synthetic",

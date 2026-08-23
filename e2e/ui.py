@@ -108,6 +108,16 @@ def assert_mobile_camera_actions(page: Page) -> None:
     if failures:
         raise UiScenarioFailure("; ".join(failures))
 
+    sync = page.get_by_role("button", name="Sync").first
+    expect(sync).to_be_visible()
+    sync.click()
+    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(page.get_by_text("No Frigate integrations configured.")).to_be_visible()
+    expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
+        "href", "/settings/integrations"
+    )
+    page.locator("#app-modal-close").click()
+
 
 def assert_downstream_password_masking(page: Page) -> None:
     page.add_init_script(
@@ -186,7 +196,9 @@ def assert_mobile_settings(page: Page) -> None:
     add = page.get_by_role("button", name="Add Frigate")
     add.click()
     expect(page.get_by_role("heading", name="Add Frigate")).to_be_visible()
-    expect(page.get_by_label("Frigate API URL")).to_be_visible()
+    expect(page.get_by_label("Frigate API URL")).to_have_value(
+        "http://127.0.0.1:5000"
+    )
     page.locator("#app-modal-close").click()
 
     page.get_by_role("link", name="Incidents").click()

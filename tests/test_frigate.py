@@ -11,6 +11,7 @@ from camadmiral.frigate import (
     FrigateClient,
     FrigateTarget,
     desired_camera,
+    frigate_camera_configuration,
     full_sync_frigate,
     full_sync_preview,
     frigate_camera_key,
@@ -18,6 +19,7 @@ from camadmiral.frigate import (
     media_host_from_inventory,
     normalize_frigate_api_url,
     reconcile_frigate,
+    remove_frigate_camera,
 )
 from camadmiral.media import ProbeResult
 from camadmiral.storage import CameraRepository
@@ -226,7 +228,7 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertIn("rtsp://***@192.0.2.20/live", raised.exception.upstream_detail)
         self.assertNotIn("synthetic-secret", raised.exception.upstream_detail)
 
-    def test_only_targets_with_camera_sync_enabled_are_loaded(self) -> None:
+    def test_all_configured_targets_are_loaded(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = [
             {
@@ -239,7 +241,7 @@ class FrigateTargetTests(unittest.TestCase):
 
         self.assertEqual([target.target_id for target in targets], ["frigate-primary"])
         self.assertEqual(targets[0].api_url, "http://127.0.0.1:20001")
-        repository.frigate_targets.assert_called_once_with(sync_only=True)
+        repository.frigate_targets.assert_called_once_with()
 
     def test_frigate_url_is_normalized_and_restricted_to_loopback(self) -> None:
         self.assertEqual(
@@ -313,6 +315,12 @@ class FrigateReconciliationTests(unittest.TestCase):
             "Primary Frigate",
             "http://127.0.0.1:20001",
         )
+        self.repository.save_frigate_target(
+            self.target.target_id,
+            self.target.name,
+            self.target.api_url,
+        )
+        self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
         self.client = FakeFrigateClient(self.target)
 
     def tearDown(self) -> None:
@@ -581,6 +589,65 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.assertIn("camadmiral:shared-media-secret@192.168.50.12:18554", sources[0])
             self.assertNotIn("upstream-secret", sources[0])
         self.assertEqual(desired["camera_config"]["detect"], {"width": 640, "height": 360, "fps": 10})
+
+    def test_config_preview_masks_password_but_keeps_plaintext_for_copy(self) -> None:
+        preview = frigate_camera_configuration(
+            self.repository,
+            self.target,
+            self.camera_uuid,
+            media_host="192.168.50.12",
+        )
+
+        password = self.repository.rtsp_access_password()
+        self.assertIn(password, preview["configuration"])
+        self.assertNotIn(password, preview["display_configuration"])
+        self.assertIn("********", preview["display_configuration"])
+
+    def test_unselected_camera_is_not_reconciled(self) -> None:
+        self.repository.deselect_frigate_camera(self.target.target_id, self.camera_uuid)
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 0, "pending": 0})
+        self.assertEqual(self.client.capability_checks, 0)
+        self.assertEqual(self.client.config_writes, [])
+
+    def test_remove_selected_camera_cleans_only_owned_resources(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": True}
+        self.client.current_raw_paths["cameras"]["operator_camera"] = {
+            "ffmpeg": {"inputs": []}
+        }
+        self.client.current_raw_paths["go2rtc"]["streams"]["operator_stream"] = [
+            "rtsp://camera.invalid/main"
+        ]
+
+        result = remove_frigate_camera(
+            self.repository,
+            self.target,
+            self.camera_uuid,
+            client_factory=lambda _target: self.client,
+        )
+
+        key = frigate_camera_key(self.camera_uuid)
+        self.assertEqual(result, {"removed_cameras": 1, "removed_streams": 2})
+        self.assertNotIn(key, self.client.current_config["cameras"])
+        self.assertIn("operator_camera", self.client.current_config["cameras"])
+        self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
+        self.assertEqual(
+            self.repository.selected_frigate_camera_uuids(self.target.target_id), []
+        )
+        self.assertIsNone(
+            self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
+        )
 
     def test_idle_role_stream_remains_valid_frigate_configuration(self) -> None:
         camera = self.repository.consumer_inventory()[0]

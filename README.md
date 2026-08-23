@@ -173,11 +173,15 @@ addresses.
 ## Frigate integration
 
 Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
-`http://127.0.0.1:20001`. CamAdmiral validates the required configuration and runtime
-stream capabilities before saving the integration. Every instance with **Sync cameras**
-enabled receives adopted cameras through stable CamAdmiral downstream URLs.
+`http://127.0.0.1:5000`. Port 5000 is Frigate's internal API port and must be exposed only
+to trusted local services. CamAdmiral validates the required configuration and runtime
+stream capabilities before saving the integration.
 
-Use **Full sync now** to synchronize the current cameras and remove stale Frigate cameras
+Use a camera's **Sync** action to select which Frigate instance should receive it through a
+stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
+configuration or remove that CamAdmiral-managed camera from the instance.
+
+Use **Full sync now** to synchronize the selected cameras and remove stale Frigate cameras
 and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one
 confirmation with the cleanup counts. Cameras and streams outside that namespace are never
 removed or changed by full sync.

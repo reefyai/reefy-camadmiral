@@ -1183,7 +1183,6 @@ def frigate() -> None:
             payload={
                 "name": "Synthetic Frigate",
                 "api_url": "http://127.0.0.1:5000",
-                "sync_cameras": True,
             },
             headers={"X-CamAdmiral-Action": "add-frigate-target"},
             timeout=10,
@@ -1191,6 +1190,24 @@ def frigate() -> None:
         return status == 201
 
     wait_for("Frigate integration setup", integration_connected, timeout=180, interval=2)
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        None,
+    )
+    if target is None:
+        raise ScenarioFailure("Frigate integration disappeared before camera selection")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+    for camera_uuid in (state["open_camera_uuid"], state["auth_camera_uuid"]):
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            timeout=120,
+        )
+        if selected.get("selected") is not True:
+            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
 
     def frigate_json(path: str) -> dict[str, object]:
         try:
@@ -1272,14 +1289,6 @@ def frigate() -> None:
         "camadmiral_synthetic_stale_detect",
     }
 
-    targets = request_json("/internal/frigate-targets").get("targets", [])
-    target = next(
-        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
-        None,
-    )
-    if target is None:
-        raise ScenarioFailure("Frigate integration disappeared before full sync")
-    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
     preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
     if preview.get("stale_cameras") != 1 or preview.get("stale_streams") != 2:
         raise ScenarioFailure(f"Full sync preview returned unexpected counts: {preview}")

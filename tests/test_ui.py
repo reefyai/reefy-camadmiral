@@ -62,9 +62,10 @@ class DiscoveryUiTests(unittest.TestCase):
     def test_phone_layout_replaces_wide_rows_with_compact_cards(self) -> None:
         self.assertIn("tbody tr.camera-row", self.html)
         self.assertIn('grid-template-areas: "preview identity" "preview status" "action action"', self.html)
-        self.assertIn("grid-template-rows: 40px 30px 32px", self.html)
-        self.assertIn("height: 150px; min-height: 150px; max-height: 150px", self.html)
-        self.assertIn(".action-stack .row-action { flex: 1 1 0; min-width: 0; min-height: 32px", self.html)
+        self.assertIn("grid-template-rows: 40px 30px 72px", self.html)
+        self.assertIn("height: 190px; min-height: 190px; max-height: 190px", self.html)
+        self.assertIn("grid-template-columns: 1fr 1fr", self.html)
+        self.assertIn(".action-stack .row-action { min-width: 0; min-height: 32px", self.html)
         self.assertIn("camera-mobile-ip", self.html)
         self.assertIn(".preview-cell { width: 78px; height: 58px; }", self.html)
         self.assertIn(".camera-model { display: none; }", self.html)
@@ -277,6 +278,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="telegram-settings-body"', self.html)
         self.assertIn('id="frigate-targets"', self.html)
         self.assertIn('openAppModal("frigate"', self.html)
+        self.assertIn('"http://127.0.0.1:5000"', self.html)
+        self.assertNotIn("Sync adopted cameras", self.html)
+        self.assertNotIn("sync_cameras", self.html)
         self.assertNotIn('id="show-notifications"', self.html)
         self.assertIn("Paste token from BotFather", self.html)
         self.assertIn("Open Telegram", self.html)
@@ -290,6 +294,14 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('/full-sync`, {cache: "no-store"}', self.html)
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', self.html)
         self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
+
+    def test_camera_actions_offer_per_target_sync_and_masked_config_preview(self) -> None:
+        self.assertIn('"row-action", "Sync"', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
+        self.assertIn("display_configuration", self.html)
+        self.assertIn("Copy configuration", self.html)
+        self.assertIn("Copy includes the working plaintext credential.", self.html)
 
 
 if __name__ == "__main__":
