@@ -45,6 +45,17 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('["ubuntu-latest"]', gate)
         self.assertNotIn('tags: ["v*"]', gate)
 
+    def test_release_gate_skips_runtime_work_only_for_documentation(self) -> None:
+        gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
+
+        self.assertIn("Classify changes", gate)
+        self.assertIn('path === "README.md" || path.startsWith("docs/")', gate)
+        self.assertIn("files.length < 3000", gate)
+        self.assertIn("file.previous_filename", gate)
+        self.assertIn("needs: classify-changes", gate)
+        self.assertIn("needs.classify-changes.outputs.runtime == 'true'", gate)
+        self.assertNotIn("paths-ignore:", gate)
+
     def test_e2e_snapshot_wait_allows_bounded_recovery(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
 

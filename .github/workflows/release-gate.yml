@@ -2,19 +2,66 @@ name: CamAdmiral release gate
 
 on:
   workflow_call:
+    inputs:
+      force_full:
+        description: Run the complete release gate regardless of changed paths
+        type: boolean
+        default: true
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run the complete release gate regardless of changed paths
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: camadmiral-release-gate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  classify-changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.classify.outputs.runtime }}
+    steps:
+      - name: Decide whether runtime validation is required
+        id: classify
+        uses: actions/github-script@v7
+        env:
+          FORCE_FULL: ${{ inputs.force_full }}
+        with:
+          script: |
+            if (process.env.FORCE_FULL === "true" || context.eventName !== "pull_request") {
+              core.setOutput("runtime", "true");
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const documentationPath = path => path === "README.md" || path.startsWith("docs/");
+            const documentationOnly = files.length > 0 && files.length < 3000 && files.every(file =>
+              documentationPath(file.filename) &&
+              (!file.previous_filename || documentationPath(file.previous_filename))
+            );
+            core.setOutput("runtime", documentationOnly ? "false" : "true");
+            core.info(documentationOnly
+              ? "Documentation-only change: skipping runtime validation."
+              : "Runtime-affecting or unknown change: running the complete release gate.");
+
   release-gate:
     name: Unit, component, and E2E
+    needs: classify-changes
+    if: needs.classify-changes.outputs.runtime == 'true'
     # Never execute code from a fork on Reefy's persistent infrastructure.
     # Trusted branches use the large runner so Docker and browser caches are
     # retained between release-gate runs.
