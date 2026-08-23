@@ -66,6 +66,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('f"admin:{password}"', launcher)
         self.assertIn('host_config.get("ReadonlyRootfs")', launcher)
         self.assertIn("Launcher replaced its existing admin password", launcher)
+        self.assertIn('ROOT / "stop-camadmiral.sh"', launcher)
+        self.assertIn("Stop launcher did not stop CamAdmiral", launcher)
+        self.assertIn("Restart replaced the existing admin password", launcher)
 
     def test_e2e_snapshot_wait_allows_bounded_recovery(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()

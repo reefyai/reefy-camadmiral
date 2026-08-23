@@ -113,6 +113,14 @@ starts one hardened container. It never replaces existing secrets or persistent 
 URL, admin credentials, and consumer API token are printed after startup. Secrets remain
 inside the `camadmiral-data` volume.
 
+Stop CamAdmiral without removing its container, credentials, or data:
+
+```console
+./stop-camadmiral.sh
+```
+
+Run `./start-camadmiral.sh` again to restart the preserved installation.
+
 ### Build and run from source
 
 To build the current source and start it through the same launcher:

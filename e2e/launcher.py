@@ -64,6 +64,9 @@ def run_launcher() -> None:
             script = directory / "start-camadmiral.sh"
             shutil.copy2(ROOT / "start-camadmiral.sh", script)
             script.chmod(0o755)
+            stop_script = directory / "stop-camadmiral.sh"
+            shutil.copy2(ROOT / "stop-camadmiral.sh", stop_script)
+            stop_script.chmod(0o755)
 
             first = subprocess.run(
                 [str(script)],
@@ -112,6 +115,43 @@ def run_launcher() -> None:
                 raise RuntimeError("Launcher container is not using host networking")
             if host_config.get("RestartPolicy", {}).get("Name") != "unless-stopped":
                 raise RuntimeError("Launcher container restart policy is incorrect")
+
+            stopped = subprocess.run(
+                [str(stop_script)],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            running = docker(
+                "container",
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                CONTAINER,
+                capture=True,
+            )
+            if running != "false":
+                raise RuntimeError("Stop launcher did not stop CamAdmiral")
+            if "camadmiral-data volume are preserved" not in stopped.stdout:
+                raise RuntimeError("Stop launcher did not explain that state was preserved")
+            if not exists("volume", VOLUME):
+                raise RuntimeError("Stop launcher removed the CamAdmiral data volume")
+
+            restarted = subprocess.run(
+                [str(script)],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            restarted_container = docker(
+                "inspect", "--format", "{{.Id}}", CONTAINER, capture=True
+            )
+            if restarted_container != container_before:
+                raise RuntimeError("Restart replaced the existing CamAdmiral container")
+            if f"Password: {password}" not in restarted.stdout:
+                raise RuntimeError("Restart replaced the existing admin password")
+            if not wait_for_health(password).get("version"):
+                raise RuntimeError("Restarted launcher did not become healthy")
     finally:
         if exists("container", CONTAINER):
             docker("rm", "--force", CONTAINER, check=False)
