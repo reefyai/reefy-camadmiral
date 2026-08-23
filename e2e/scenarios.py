@@ -1549,32 +1549,25 @@ def frigate() -> None:
             "Frigate removal did not leave a detectable restart-required state"
         )
 
-    uptime_before_deferred_restart = float(
-        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
-    )
-    restart_request = urllib.request.Request(
-        "http://camadmiral:5000/api/restart",
-        data=b"",
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(restart_request, timeout=30) as response:
-            restart_result = json.load(response)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise ScenarioFailure("Could not restart Frigate after deferred removal") from exc
-    if restart_result.get("success") is not True:
-        raise ScenarioFailure(f"Frigate rejected deferred restart: {restart_result}")
+    print("frigate: removal persisted and operator restart is required")
 
-    def deferred_restart_settled() -> float | bool:
-        uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
-        return uptime if 5 <= uptime < uptime_before_deferred_restart else False
 
-    wait_for(
-        "Frigate deferred-removal restart",
-        deferred_restart_settled,
-        timeout=180,
-        interval=1,
+def frigate_restart_verify() -> None:
+    def frigate_ready() -> bool:
+        try:
+            return bool(frigate_json("/api/stats").get("service"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return False
+
+    wait_for("Frigate after operator restart", frigate_ready, timeout=120, interval=1)
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        None,
     )
+    if target is None:
+        raise ScenarioFailure("Frigate integration missing after operator restart")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
     checked = request_json(
         f"/internal/frigate-targets/{target_id}/test",
         method="POST",
@@ -1679,6 +1672,7 @@ SCENARIOS = {
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
     "frigate": frigate,
+    "frigate-restart-verify": frigate_restart_verify,
     "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
     "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
     "relay-latency": relay_latency,

@@ -86,6 +86,8 @@ def main() -> int:
         ui_scenario()
         run("up", "--detach", "frigate", "frigate-api-proxy")
         scenario("frigate")
+        run("restart", "frigate")
+        scenario("frigate-restart-verify")
         scenario("frigate-ambiguous-delete-setup")
         run(
             "exec", "-T", "frigate", "python3", "-c",
