@@ -26,6 +26,21 @@ independently maintained compatibility database of RTSP URL paths sourced from p
 first-party vendor documentation. This lets CamAdmiral automatically try a bounded set of
 likely stream paths after the operator supplies the camera username and password.
 
+### How network discovery works
+
+CamAdmiral scans every connected private IPv4 LAN. ONVIF discovery sends multicast
+WS-Discovery probes for multiple dialects to `239.255.255.250:3702`. RTSP discovery probes
+ports `554` and `8554` and accepts only valid RTSP responses. Both run concurrently and do
+not try camera credentials.
+
+On LANs up to 1,024 hosts, unicast ONVIF and RTSP probes cover every address. Larger LANs
+use ONVIF multicast plus addresses already learned in the host ARP table, avoiding an
+unbounded sweep. Results are merged by IP and MAC. Adopted cameras are retained when absent,
+marked offline, and recovered after IP changes using ONVIF identity or a unique MAC.
+
+**Add camera** probes one explicit address without scanning the rest of the LAN. Detailed,
+timestamped protocol logs are available under scan details.
+
 ![CamAdmiral ONVIF and RTSP network scan details](docs/images/camadmiral-network-scan.png)
 
 Adoption validates the credentials and discovered streams before storing anything. ONVIF
