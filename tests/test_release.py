@@ -113,7 +113,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
-        self.assertIn('"Frigate stale camera worker cleanup"', scenarios)
+        self.assertIn("Frigate restarted while full sync removed stale resources", scenarios)
+        self.assertIn("Frigate restart recommendation was not persisted", scenarios)
         self.assertIn("restart: unless-stopped", compose)
         self.assertIn("test -f /config/config.yml || cp", compose)
 

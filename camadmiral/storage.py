@@ -236,6 +236,11 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX frigate_camera_selections_camera
         ON frigate_camera_selections(camera_uuid, target_id);
     """,
+    """
+    ALTER TABLE frigate_targets
+    ADD COLUMN restart_recommended INTEGER NOT NULL DEFAULT 0
+        CHECK(restart_recommended IN (0, 1));
+    """,
 )
 
 
@@ -1090,13 +1095,17 @@ class CameraRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
-                "t.last_error_code, t.last_checked_at, t.created_at, t.updated_at, "
+                "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
                 "ON s.target_id = t.target_id GROUP BY t.target_id "
                 "ORDER BY t.name COLLATE NOCASE, t.target_id"
             ).fetchall()
-        return [dict(row) for row in rows]
+        targets = [dict(row) for row in rows]
+        for target in targets:
+            target["restart_recommended"] = bool(target["restart_recommended"])
+        return targets
 
     def save_frigate_target(
         self,
@@ -1118,6 +1127,8 @@ class CameraRepository:
                 "THEN NULL ELSE frigate_targets.last_error_code END, "
                 "last_checked_at=CASE WHEN frigate_targets.api_url != excluded.api_url "
                 "THEN NULL ELSE frigate_targets.last_checked_at END, "
+                "restart_recommended=CASE WHEN frigate_targets.api_url != excluded.api_url "
+                "THEN 0 ELSE frigate_targets.restart_recommended END, "
                 "updated_at=excluded.updated_at",
                 (target_id, name, api_url, timestamp, timestamp),
             )
@@ -1127,7 +1138,8 @@ class CameraRepository:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
-                "t.last_error_code, t.last_checked_at, t.created_at, t.updated_at, "
+                "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
                 "ON s.target_id = t.target_id WHERE t.target_id = ? GROUP BY t.target_id",
@@ -1135,7 +1147,9 @@ class CameraRepository:
             ).fetchone()
         if row is None:
             return None
-        return dict(row)
+        target = dict(row)
+        target["restart_recommended"] = bool(target["restart_recommended"])
+        return target
 
     def select_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
         with self.connect() as connection:
@@ -1180,16 +1194,31 @@ class CameraRepository:
         *,
         status: str,
         error_code: str | None = None,
+        restart_recommended: bool | None = None,
     ) -> None:
         if status not in {"connected", "error"}:
             raise ValueError("Frigate target status is invalid")
         timestamp = _now()
         with self.connect() as connection:
-            connection.execute(
-                "UPDATE frigate_targets SET connection_status=?, last_error_code=?, "
-                "last_checked_at=?, updated_at=? WHERE target_id=?",
-                (status, error_code, timestamp, timestamp, target_id),
-            )
+            if restart_recommended is None:
+                connection.execute(
+                    "UPDATE frigate_targets SET connection_status=?, last_error_code=?, "
+                    "last_checked_at=?, updated_at=? WHERE target_id=?",
+                    (status, error_code, timestamp, timestamp, target_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE frigate_targets SET connection_status=?, last_error_code=?, "
+                    "restart_recommended=?, last_checked_at=?, updated_at=? WHERE target_id=?",
+                    (
+                        status,
+                        error_code,
+                        int(restart_recommended),
+                        timestamp,
+                        timestamp,
+                        target_id,
+                    ),
+                )
             connection.commit()
 
     def frigate_binding(self, target_id: str, camera_uuid: str) -> dict[str, Any] | None:

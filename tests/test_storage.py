@@ -73,6 +73,16 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn("sync_cameras", target)
         self.assertEqual(target["selected_cameras"], 0)
         self.assertEqual(target["connection_status"], "connected")
+        self.assertFalse(target["restart_recommended"])
+
+        self.repository.record_frigate_target_check(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=True,
+        )
+        self.assertTrue(
+            self.repository.frigate_target("frigate-synthetic")["restart_recommended"]
+        )
 
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-frigate", "display_name": "Synthetic camera"},

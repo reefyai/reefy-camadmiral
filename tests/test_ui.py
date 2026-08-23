@@ -295,6 +295,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('"row-action", "Sync"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
+        self.assertIn("CamAdmiral will not restart Frigate", self.html)
+        self.assertIn("Connected · restart recommended", self.html)
         self.assertIn("display_configuration", self.html)
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)

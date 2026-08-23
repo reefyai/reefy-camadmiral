@@ -401,7 +401,7 @@ class FrigateReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(self.client.restart_calls, 0)
 
-    def test_full_sync_restarts_when_removed_camera_worker_remains(self) -> None:
+    def test_full_sync_recommends_restart_without_interrupting_frigate(self) -> None:
         stale_camera = "camadmiral_stale_worker"
         stale_streams = {f"{stale_camera}_record", f"{stale_camera}_detect"}
         self.client.current_config["cameras"][stale_camera] = {"enabled": True}
@@ -424,9 +424,10 @@ class FrigateReconciliationTests(unittest.TestCase):
             )
 
         self.assertEqual(result["removed_cameras"], 1)
-        self.assertEqual(self.client.restart_calls, 1)
-        self.assertNotIn(stale_camera, self.client.current_stats)
-        self.assertIn(("restart",), self.client.operations)
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(stale_camera, self.client.current_stats)
+        self.assertNotIn(("restart",), self.client.operations)
 
     def test_full_sync_tolerates_configured_stream_missing_from_runtime(self) -> None:
         stale_camera = "camadmiral_partial_drift"
@@ -641,7 +642,14 @@ class FrigateReconciliationTests(unittest.TestCase):
         )
 
         key = frigate_camera_key(self.camera_uuid)
-        self.assertEqual(result, {"removed_cameras": 1, "removed_streams": 2})
+        self.assertEqual(
+            result,
+            {
+                "removed_cameras": 1,
+                "removed_streams": 2,
+                "restart_recommended": False,
+            },
+        )
         self.assertNotIn(key, self.client.current_config["cameras"])
         self.assertIn("operator_camera", self.client.current_config["cameras"])
         self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
@@ -651,6 +659,29 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertIsNone(
             self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         )
+
+    def test_remove_selected_camera_never_restarts_for_stale_worker(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        key = frigate_camera_key(self.camera_uuid)
+        self.client.retain_removed_camera_stats = True
+
+        with patch("camadmiral.frigate.CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS", 0):
+            result = remove_frigate_camera(
+                self.repository,
+                self.target,
+                self.camera_uuid,
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(key, self.client.current_stats)
+        self.assertNotIn(key, self.client.current_config["cameras"])
+        self.assertNotIn(("restart",), self.client.operations)
 
     def test_idle_role_stream_remains_valid_frigate_configuration(self) -> None:
         camera = self.repository.consumer_inventory()[0]

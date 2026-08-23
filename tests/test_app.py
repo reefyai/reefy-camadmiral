@@ -537,7 +537,13 @@ class FrigateTargetApiTests(unittest.TestCase):
             patch.object(
                 app_module,
                 "full_sync_frigate",
-                return_value={"removed_cameras": 2, "removed_streams": 4, "applied": 3, "pending": 0},
+                return_value={
+                    "removed_cameras": 2,
+                    "removed_streams": 4,
+                    "restart_recommended": True,
+                    "applied": 3,
+                    "pending": 0,
+                },
             ) as full_sync,
         ):
             response = app_module.apply_full_sync(
@@ -551,6 +557,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.record_frigate_target_check.assert_called_once_with(
             "frigate-synthetic",
             status="connected",
+            restart_recommended=True,
         )
 
     def test_full_sync_preview_returns_counts_without_resource_names(self) -> None:
@@ -655,7 +662,11 @@ class FrigateTargetApiTests(unittest.TestCase):
             patch.object(
                 app_module,
                 "remove_frigate_camera",
-                return_value={"removed_cameras": 1, "removed_streams": 2},
+                return_value={
+                    "removed_cameras": 1,
+                    "removed_streams": 2,
+                    "restart_recommended": True,
+                },
             ) as remove,
         ):
             response = app_module.remove_synced_frigate_camera(
@@ -667,6 +678,11 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(json.loads(response.body)["selected"])
         remove.assert_called_once()
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic",
+            status="connected",
+            restart_recommended=True,
+        )
 
 
 class ConsumerApiTests(unittest.TestCase):

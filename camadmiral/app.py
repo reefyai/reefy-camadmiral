@@ -1092,7 +1092,11 @@ def apply_full_sync(
         return _frigate_target_error(exc)
     finally:
         FRIGATE_LOCK.release()
-    repository.record_frigate_target_check(target_id, status="connected")
+    repository.record_frigate_target_check(
+        target_id,
+        status="connected",
+        restart_recommended=bool(result.get("restart_recommended")),
+    )
     return _secured_json({"status": "synchronized", **result})
 
 
@@ -1188,7 +1192,11 @@ def remove_synced_frigate_camera(
         return _frigate_target_error(exc)
     finally:
         FRIGATE_LOCK.release()
-    repository.record_frigate_target_check(target_id, status="connected")
+    repository.record_frigate_target_check(
+        target_id,
+        status="connected",
+        restart_recommended=bool(result.get("restart_recommended")),
+    )
     return _secured_json({"status": "removed", "selected": False, **result})
 
 

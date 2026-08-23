@@ -119,6 +119,7 @@
     .frigate-target-url { margin-top: 4px; color: #8ea2b3; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .frigate-target-meta { display: flex; gap: 7px 12px; margin-top: 6px; color: #7890a4; font-size: 11px; flex-wrap: wrap; }
     .frigate-target-state.connected { color: #86efac; }
+    .frigate-target-state.warning { color: #fcd34d; }
     .frigate-target-state.error { color: #fda4af; }
     .frigate-target-error { margin-top: 6px; color: #fda4af; font-size: 11px; overflow-wrap: anywhere; }
     .frigate-target-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
@@ -1253,12 +1254,14 @@
         addText(summary, "div", "frigate-target-name", target.name);
         addText(summary, "div", "frigate-target-url", target.api_url);
         const meta = addText(summary, "div", "frigate-target-meta", "");
-        const state = addText(meta, "span", `frigate-target-state ${target.connection_status}`, target.connection_status === "connected" ? "Connected" : target.connection_status === "error" ? "Connection failed" : "Checking");
+        const targetWarning = Boolean(target.restart_recommended);
+        const state = addText(meta, "span", `frigate-target-state ${targetWarning ? "warning" : target.connection_status}`, targetWarning ? "Connected · restart recommended" : target.connection_status === "connected" ? "Connected" : target.connection_status === "error" ? "Connection failed" : "Checking");
         if (target.last_error_code) state.title = target.last_error_code;
         addText(meta, "span", "", `${target.selected_cameras || 0} synced camera${target.selected_cameras === 1 ? "" : "s"}`);
         if (target.last_checked_at) addText(meta, "span", "", `Checked ${formatTime(target.last_checked_at)}`);
-        const errorDetail = addText(summary, "div", "frigate-target-error", target.last_error_code ? `Last error code: ${target.last_error_code}.` : "");
-        errorDetail.hidden = !target.last_error_code;
+        const warningMessage = targetWarning ? "Frigate kept a removed camera worker running. Restart Frigate when convenient to finish cleanup; other cameras remain available." : "";
+        const errorDetail = addText(summary, "div", targetWarning ? "setup-status warning" : "frigate-target-error", warningMessage || (target.last_error_code ? `Last error code: ${target.last_error_code}.` : ""));
+        errorDetail.hidden = !warningMessage && !target.last_error_code;
         const actions = addText(item, "div", "frigate-target-actions", "");
         const fullSync = addText(actions, "button", "row-action", "Full sync now");
         fullSync.type = "button";
@@ -1277,7 +1280,7 @@
             setText(fullSync, "Full sync now");
             showConfirmation({
               title: `Full sync ${target.name}?`,
-              message: `CamAdmiral will synchronize ${preview.managed_cameras} selected camera${preview.managed_cameras === 1 ? "" : "s"} and ${staleSummary}. Other Frigate cameras and streams will not be changed. Frigate may restart once if removed camera workers are still running.`,
+              message: `CamAdmiral will synchronize ${preview.managed_cameras} selected camera${preview.managed_cameras === 1 ? "" : "s"} and ${staleSummary}. Other Frigate cameras and streams will not be changed. CamAdmiral will not restart Frigate.`,
               actionLabel: "Full sync",
               trigger: fullSync,
               onConfirm: async () => {
@@ -1290,11 +1293,12 @@
                   });
                   const result = await response.json();
                   if (!response.ok) throw new Error(frigateFailureDetail(result, "Full sync failed."));
-                  setText(state, `Connected · removed ${result.removed_cameras} stale camera${result.removed_cameras === 1 ? "" : "s"}`);
-                  state.className = "frigate-target-state connected";
+                  setText(state, result.restart_recommended ? "Connected · restart recommended" : `Connected · removed ${result.removed_cameras} stale camera${result.removed_cameras === 1 ? "" : "s"}`);
+                  state.className = `frigate-target-state ${result.restart_recommended ? "warning" : "connected"}`;
                   state.title = "";
-                  setText(errorDetail, "");
-                  errorDetail.hidden = true;
+                  setText(errorDetail, result.restart_recommended ? "Frigate kept a removed camera worker running. Restart Frigate when convenient to finish cleanup; other cameras remain available." : "");
+                  errorDetail.className = result.restart_recommended ? "setup-status warning" : "frigate-target-error";
+                  errorDetail.hidden = !result.restart_recommended;
                 } catch (error) {
                   setText(state, "Full sync failed");
                   state.className = "frigate-target-state error";

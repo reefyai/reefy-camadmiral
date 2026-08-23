@@ -411,7 +411,7 @@ def full_sync_frigate(
     *,
     media_host: str = "127.0.0.1",
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
-) -> dict[str, int]:
+) -> dict[str, int | bool]:
     client = client_factory(target)
     try:
         client.capabilities()
@@ -506,9 +506,9 @@ def full_sync_frigate(
         )
 
     # Frigate 0.17.0 can save a camera removal while leaving the removed
-    # capture workers and shared-memory frames alive. Restart only when the
-    # stale workers remain after a short grace period for the documented
-    # dynamic update.
+    # capture workers and shared-memory frames alive. Do not restart the
+    # whole Frigate instance: that would interrupt every remaining camera.
+    restart_recommended = False
     if stale_cameras:
         try:
             stale_workers = _wait_for_camera_worker_cleanup(
@@ -518,23 +518,7 @@ def full_sync_frigate(
             )
         except FrigateApiError as exc:
             raise exc.with_context(stage="inspect_camera_workers") from exc
-        if stale_workers:
-            try:
-                client.restart()
-            except FrigateApiError as exc:
-                raise exc.with_context(stage="restart_frigate") from exc
-            try:
-                remaining_workers = _wait_for_camera_worker_cleanup(
-                    client, stale_workers
-                )
-            except FrigateApiError as exc:
-                raise exc.with_context(stage="wait_for_frigate_restart") from exc
-            if remaining_workers:
-                raise FrigateApiError(
-                    "verification_failed",
-                    stage="verify_camera_worker_cleanup",
-                    resource=remaining_workers[0],
-                )
+        restart_recommended = bool(stale_workers)
 
     try:
         verified = _full_sync_state(repository, client)
@@ -559,6 +543,7 @@ def full_sync_frigate(
     return {
         "removed_cameras": len(stale_cameras),
         "removed_streams": len(stale_streams),
+        "restart_recommended": restart_recommended,
         **reconciliation,
     }
 
@@ -569,11 +554,15 @@ def remove_frigate_camera(
     camera_uuid: str,
     *,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
-) -> dict[str, int]:
+) -> dict[str, int | bool]:
     binding = repository.frigate_binding(target.target_id, camera_uuid)
     if binding is None:
         repository.deselect_frigate_camera(target.target_id, camera_uuid)
-        return {"removed_cameras": 0, "removed_streams": 0}
+        return {
+            "removed_cameras": 0,
+            "removed_streams": 0,
+            "restart_recommended": False,
+        }
     camera_key = str(binding["frigate_camera_key"])
     if not camera_key.startswith(KEY_PREFIX):
         raise FrigateApiError("ownership_verification_failed")
@@ -632,22 +621,15 @@ def remove_frigate_camera(
             resource=stream_key,
         )
 
+    restart_recommended = False
     if camera_exists:
         try:
             stale_workers = _wait_for_camera_worker_cleanup(
                 client, [camera_key], timeout=CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS
             )
-            if stale_workers:
-                client.restart()
-                stale_workers = _wait_for_camera_worker_cleanup(client, stale_workers)
         except FrigateApiError as exc:
             raise exc.with_context(stage="verify_camera_worker_cleanup", resource=camera_key) from exc
-        if stale_workers:
-            raise FrigateApiError(
-                "verification_failed",
-                stage="verify_camera_worker_cleanup",
-                resource=camera_key,
-            )
+        restart_recommended = bool(stale_workers)
 
     try:
         verified = client.raw_config()
@@ -668,6 +650,7 @@ def remove_frigate_camera(
     return {
         "removed_cameras": int(camera_exists),
         "removed_streams": len(set(configured_aliases) | set(runtime_aliases)),
+        "restart_recommended": restart_recommended,
     }
 
 
