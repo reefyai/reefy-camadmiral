@@ -163,13 +163,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="confirm-modal" role="alertdialog"', self.html)
         self.assertNotIn("window.confirm", self.html)
 
-    def test_live_view_is_a_fast_table_action(self) -> None:
-        self.assertIn('addText(actionStack, "button", "row-action", "Live")', self.html)
-        self.assertIn('showLiveView(device.adoption.camera_uuid, device.display_name)', self.html)
-        self.assertLess(
-            self.html.index('addText(actionStack, "button", "row-action", "Details")'),
-            self.html.index('addText(actionStack, "button", "row-action", "Live")'),
-        )
+    def test_live_view_opens_from_the_recent_screenshot_without_a_duplicate_action(self) -> None:
+        self.assertNotIn('addText(actionStack, "button", "row-action", "Live")', self.html)
+        self.assertIn('previewCell.addEventListener("click", () => showLiveView', self.html)
         self.assertNotIn("function addLiveViewAction", self.html)
 
     def test_streams_have_a_separate_table_action_and_modal(self) -> None:
@@ -303,6 +299,14 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)
         self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
+
+    def test_successful_camera_sync_refreshes_the_open_dialog(self) -> None:
+        sync_handler = self.html.split('headers: {"X-CamAdmiral-Action": "sync-frigate-camera"}', 1)[1]
+        sync_handler = sync_handler.split("} catch (error) {", 1)[0]
+        self.assertIn("await refresh();", sync_handler)
+        self.assertIn("renderActiveCameraModal();", sync_handler)
+        self.assertNotIn("closeAppModal", sync_handler)
+        self.assertIn('["camera", "streams", "adopt", "frigate-sync"]', self.html)
 
 
 if __name__ == "__main__":

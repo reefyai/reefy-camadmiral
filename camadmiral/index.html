@@ -886,7 +886,7 @@
       if (appModal.hidden) return;
       dismissAvailabilityTooltip();
       if (appModalKind === "manual") addressPanel.hidden = true;
-      if (["camera", "adopt"].includes(appModalKind)) expandedCandidate = null;
+      if (["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind)) expandedCandidate = null;
       appModal.hidden = true;
       appModalKind = null;
       appModalBody.replaceChildren();
@@ -2188,8 +2188,8 @@
             );
             const result = await response.json();
             if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
-            closeAppModal(false);
             await refresh();
+            renderActiveCameraModal();
           } catch (error) {
             setText(meta, error.message);
             meta.className = "frigate-target-error";
@@ -2230,7 +2230,9 @@
     }
 
     function openCameraSync(device, trigger = null) {
-      if (!device.adoption?.camera_uuid) return;
+      const candidateId = device.candidate_uuid;
+      if (!candidateId || !device.adoption?.camera_uuid) return;
+      expandedCandidate = candidateId;
       openAppModal("frigate-sync", `Sync ${device.display_name || device.ip}`, frigateSyncDetails(device), trigger, "wide");
     }
 
@@ -2902,7 +2904,7 @@
     }
 
     function renderActiveCameraModal() {
-      if (!["camera", "streams", "adopt"].includes(appModalKind) || !expandedCandidate) return;
+      if (!["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind) || !expandedCandidate) return;
       const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
       if (!device) {
         closeAppModal(false);
@@ -2911,7 +2913,9 @@
       const cameraName = device.display_name || device.ip;
       const title = appModalKind === "adopt"
         ? `Adopt ${cameraName}`
-        : appModalKind === "streams" ? `${cameraName} streams` : cameraName;
+        : appModalKind === "streams"
+          ? `${cameraName} streams`
+          : appModalKind === "frigate-sync" ? `Sync ${cameraName}` : cameraName;
       appModalTitle.textContent = title;
       appModalTitle.title = title;
       appModalBody.replaceChildren(
@@ -2919,7 +2923,9 @@
           ? adoptionDetails(device)
           : appModalKind === "streams"
             ? streamDetails(device)
-            : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
+            : appModalKind === "frigate-sync"
+              ? frigateSyncDetails(device)
+              : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
       );
     }
 
@@ -3047,14 +3053,6 @@
           sync.type = "button";
           sync.setAttribute("aria-haspopup", "dialog");
           sync.addEventListener("click", () => openCameraSync(device, sync));
-        }
-        if (device.adoption?.camera_uuid && device.adoption.enabled !== false) {
-          const live = addText(actionStack, "button", "row-action", "Live");
-          live.type = "button";
-          live.setAttribute("aria-haspopup", "dialog");
-          live.setAttribute("aria-label", `Live view for ${device.display_name || "camera"}`);
-          live.title = "Open live view";
-          live.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
         }
         if (!device.adoption) {
           const adopt = addText(actionStack, "button", "row-action", "Adopt");

@@ -70,6 +70,13 @@ def assert_mobile_camera_actions(page: Page) -> None:
         missing = ", ".join(sorted(missing_protocols))
         raise UiScenarioFailure(f"Connectivity is missing protocol badges: {missing}")
 
+    if page.get_by_role("button", name="Live", exact=True).count():
+        raise UiScenarioFailure("Camera actions repeat the thumbnail live-view control")
+    page.locator("#camera-rows .preview-cell").first.click()
+    expect(page.locator("#live-modal")).to_be_visible()
+    expect(page.locator("#live-title")).to_contain_text("Live view")
+    page.locator("#live-close").click()
+
     failures: list[str] = page.locator("#camera-rows tr.camera-row").evaluate_all(
         """
         cards => {
@@ -116,6 +123,37 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
         "href", "/settings/integrations"
     )
+    page.locator("#app-modal-close").click()
+
+    page.route(
+        "**/internal/frigate-targets/synthetic-target/cameras/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"selected": true}',
+        ),
+    )
+    page.evaluate(
+        """
+        () => {
+          const device = devices.find(candidate => candidate.adoption?.camera_uuid);
+          device.adoption.frigate = [{
+            target_id: "synthetic-target",
+            target: "Synthetic Frigate",
+            selected: false,
+            status: null,
+            error_code: null,
+          }];
+        }
+        """
+    )
+    page.get_by_role("button", name="Sync", exact=True).first.click()
+    modal = page.locator("#app-modal")
+    expect(modal).to_be_visible()
+    modal.get_by_role("button", name="Sync", exact=True).click()
+    expect(modal).to_be_visible()
+    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(modal.get_by_text("Synthetic Frigate")).to_be_visible()
     page.locator("#app-modal-close").click()
 
 
