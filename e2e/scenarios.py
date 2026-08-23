@@ -1555,7 +1555,11 @@ def frigate() -> None:
 def frigate_restart_verify() -> None:
     def frigate_ready() -> bool:
         try:
-            return bool(frigate_json("/api/stats").get("service"))
+            with urllib.request.urlopen(
+                "http://camadmiral:5000/api/stats", timeout=8
+            ) as response:
+                payload = json.load(response)
+            return bool(payload.get("service"))
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return False
 
