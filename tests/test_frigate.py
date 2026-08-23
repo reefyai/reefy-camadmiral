@@ -28,7 +28,7 @@ from camadmiral.storage import CameraRepository
 class FakeFrigateClient:
     def __init__(self, target: FrigateTarget):
         self.target = target
-        self.current_config = {"cameras": {}}
+        self.current_config = {"version": "0.17-0", "cameras": {}}
         self.current_raw_paths = {"cameras": {}, "go2rtc": {"streams": {}}}
         self.current_runtime = {}
         self.current_stats = {}
@@ -106,6 +106,7 @@ class FakeFrigateClient:
                 current[key] = value
 
     def set_runtime_stream(self, stream_name, source):
+        self.operations.append(("set_runtime_stream", stream_name))
         self.runtime_writes.append((stream_name, source))
         self.current_runtime[stream_name] = {"producers": []}
 
@@ -333,12 +334,14 @@ class FrigateReconciliationTests(unittest.TestCase):
             {
                 stale_camera: {"enabled": True},
                 "operator_camera": {"enabled": True},
+                "operator_camera_two": {"enabled": False},
             }
         )
         self.client.current_raw_paths["cameras"].update(
             {
                 stale_camera: {"ffmpeg": {"inputs": []}},
                 "operator_camera": {"ffmpeg": {"inputs": []}},
+                "operator_camera_two": {"ffmpeg": {"inputs": []}},
             }
         )
         self.client.current_raw_paths["go2rtc"]["streams"].update(
@@ -677,6 +680,57 @@ class FrigateReconciliationTests(unittest.TestCase):
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
+
+    def test_frigate_017_restarts_only_when_adding_second_configured_camera(self) -> None:
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
+
+        with patch("camadmiral.frigate.time.sleep"):
+            result = reconcile_frigate(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 1)
+        restart_index = self.client.operations.index(("restart",))
+        runtime_indexes = [
+            index
+            for index, operation in enumerate(self.client.operations)
+            if operation[0] == "set_runtime_stream"
+        ]
+        self.assertTrue(runtime_indexes)
+        self.assertLess(max(runtime_indexes), restart_index)
+
+    def test_frigate_017_does_not_restart_when_adding_third_configured_camera(self) -> None:
+        self.client.current_config["cameras"].update(
+            {
+                "operator_camera_one": {"enabled": False},
+                "operator_camera_two": {"enabled": False},
+            }
+        )
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 0)
+
+    def test_frigate_018_does_not_restart_when_adding_second_configured_camera(self) -> None:
+        self.client.current_config["version"] = "0.18-0"
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 0)
 
     def test_missed_hot_add_waits_without_starting_duplicate_workers(self) -> None:
         self.client.drop_add_events = 1

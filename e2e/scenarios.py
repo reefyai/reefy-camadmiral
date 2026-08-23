@@ -1198,16 +1198,6 @@ def frigate() -> None:
     if target is None:
         raise ScenarioFailure("Frigate integration disappeared before camera selection")
     target_id = urllib.parse.quote(str(target["target_id"]), safe="")
-    for camera_uuid in (state["open_camera_uuid"], state["auth_camera_uuid"]):
-        selected = request_json(
-            f"/internal/frigate-targets/{target_id}/cameras/"
-            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
-            method="POST",
-            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-            timeout=120,
-        )
-        if selected.get("selected") is not True:
-            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
 
     def frigate_json(path: str) -> dict[str, object]:
         try:
@@ -1230,6 +1220,56 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
 
+    # Leave exactly one operator-owned camera running before camera injection.
+    # Frigate 0.17.x requires one restart when the next camera is hot-added.
+    initial_cleanup = request_json(
+        f"/internal/frigate-targets/{target_id}/full-sync",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
+        timeout=120,
+    )
+    if initial_cleanup.get("removed_cameras") != 1:
+        raise ScenarioFailure(
+            f"Could not prepare the Frigate 0.17 one-camera fixture: {initial_cleanup}"
+        )
+
+    first_camera_uuid = state["open_camera_uuid"]
+    selected = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+        timeout=120,
+    )
+    if selected.get("selected") is not True:
+        raise ScenarioFailure(f"First per-camera Frigate selection failed: {selected}")
+
+    def settled_uptime() -> float | bool:
+        uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
+        return uptime if uptime >= 5 else False
+
+    uptime_after_required_restart = float(
+        wait_for("Frigate restart settlement", settled_uptime, timeout=90, interval=1)
+    )
+
+    second_camera_uuid = state["auth_camera_uuid"]
+    for camera_uuid in (second_camera_uuid,):
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            timeout=120,
+        )
+        if selected.get("selected") is not True:
+            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
+
+    uptime_after_third_camera = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    if uptime_after_third_camera < uptime_after_required_restart:
+        raise ScenarioFailure("Frigate restarted while adding a third configured camera")
+
     def applied() -> tuple[dict[str, object], dict[str, object]] | None:
         config = frigate_json("/api/config")
         streams = frigate_json("/api/go2rtc/streams")
@@ -1251,7 +1291,7 @@ def frigate() -> None:
 
     config, streams = wait_for("Frigate camera injection", applied, timeout=180, interval=2)
     camera_key = "camadmiral_" + re.sub(
-        r"[^a-zA-Z0-9_]", "_", str(state["open_camera_uuid"])
+        r"[^a-zA-Z0-9_]", "_", str(first_camera_uuid)
     )
     if not config["cameras"][camera_key].get("live", {}).get("streams", {}):
         raise ScenarioFailure("Frigate camera has no live stream mapping")
@@ -1282,12 +1322,108 @@ def frigate() -> None:
             f"{exc}; stats={last_stats}; runtime={runtime_summary}"
         ) from exc
 
+    expected_camera_keys = [
+        "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", str(camera_uuid))
+        for camera_uuid in (first_camera_uuid, second_camera_uuid)
+    ]
+
+    def latest_frames_are_visible() -> bool:
+        for expected_key in expected_camera_keys:
+            decoded = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    f"http://camadmiral:5000/api/{expected_key}/latest.webp",
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=32:18,format=gray",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "gray",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            if decoded.returncode != 0 or not decoded.stdout:
+                return False
+            if statistics.fmean(decoded.stdout) < 5:
+                return False
+        return True
+
+    wait_for(
+        "visible Frigate frames after the 0.17 second-camera restart",
+        latest_frames_are_visible,
+        timeout=90,
+        interval=2,
+    )
+
     stale_camera = "camadmiral_synthetic_stale"
     operator_camera = "operator_camera"
     stale_streams = {
         "camadmiral_synthetic_stale_record",
         "camadmiral_synthetic_stale_detect",
     }
+
+    stale_sources = {
+        "camadmiral_synthetic_stale_record": ["rtsp://camera-open:8554/main"],
+        "camadmiral_synthetic_stale_detect": ["rtsp://camera-open:8554/sub"],
+    }
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {"go2rtc": {"streams": stale_sources}},
+        },
+    )
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed stale Frigate streams")
+    for stream_name, sources in stale_sources.items():
+        update_frigate(
+            f"/api/go2rtc/streams/{stream_name}?"
+            + urllib.parse.urlencode({"src": sources[0]}),
+            {},
+        )
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 1,
+            "update_topic": f"config/cameras/{stale_camera}/add",
+            "config_data": {
+                "cameras": {
+                    stale_camera: {
+                        "enabled": False,
+                        "ffmpeg": {
+                            "inputs": [
+                                {
+                                    "path": (
+                                        "rtsp://127.0.0.1:8554/"
+                                        "camadmiral_synthetic_stale_record"
+                                    ),
+                                    "input_args": "preset-rtsp-restream",
+                                    "roles": ["record", "detect"],
+                                }
+                            ]
+                        },
+                        "detect": {"width": 1280, "height": 720, "fps": 5},
+                        "live": {
+                            "streams": {
+                                "Record": "camadmiral_synthetic_stale_record",
+                                "Detect": "camadmiral_synthetic_stale_detect",
+                            }
+                        },
+                    }
+                }
+            },
+        },
+    )
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed stale Frigate camera")
 
     preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
     if preview.get("stale_cameras") != 1 or preview.get("stale_streams") != 2:

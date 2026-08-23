@@ -24,6 +24,7 @@ RUNTIME_CLEANUP_POLL_SECONDS = 0.25
 CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS = 60.0
 CAMERA_WORKER_CLEANUP_POLL_SECONDS = 0.5
 CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS = 5.0
+FRIGATE_RESTART_SETTLE_SECONDS = 2.0
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -367,6 +368,41 @@ def _wait_for_camera_worker_cleanup(
             if not remaining or time.monotonic() >= deadline:
                 return remaining
         time.sleep(CAMERA_WORKER_CLEANUP_POLL_SECONDS)
+
+
+def _wait_for_camera_workers(
+    client: FrigateClient,
+    camera_keys: list[str],
+    *,
+    timeout: float = CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS,
+) -> list[str]:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stats = client.stats()
+        except FrigateApiError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            missing = [camera_key for camera_key in camera_keys if camera_key not in stats]
+            if not missing or time.monotonic() >= deadline:
+                return missing
+        time.sleep(CAMERA_WORKER_CLEANUP_POLL_SECONDS)
+
+
+def _requires_frigate_017_second_camera_restart(
+    config: dict[str, Any],
+    *,
+    camera_exists: bool,
+) -> bool:
+    version = str(config.get("version") or "")
+    cameras = config.get("cameras")
+    return (
+        re.match(r"^0\.17(?:[.-]|$)", version) is not None
+        and isinstance(cameras, dict)
+        and len(cameras) == 1
+        and not camera_exists
+    )
 
 
 def full_sync_frigate(
@@ -958,6 +994,10 @@ def reconcile_frigate(
                     for field, value in camera_update.items()
                     if field != "enabled"
                 }
+            restart_for_second_camera = _requires_frigate_017_second_camera_restart(
+                config,
+                camera_exists=camera_exists,
+            )
             client.set_config(
                 {"cameras": {desired["key"]: camera_update}},
                 update_topic=(
@@ -974,6 +1014,12 @@ def reconcile_frigate(
             client.set_config({"go2rtc": {"streams": desired["streams"]}})
             for alias, sources in desired["streams"].items():
                 client.set_runtime_stream(alias, sources[0])
+            if restart_for_second_camera:
+                client.restart()
+                time.sleep(FRIGATE_RESTART_SETTLE_SECONDS)
+                missing_workers = _wait_for_camera_workers(client, [desired["key"]])
+                if missing_workers:
+                    raise FrigateApiError("camera_start_pending")
             verified_config = client.config()
             verified_raw_paths = client.raw_paths()
             verified_runtime = client.runtime_streams()

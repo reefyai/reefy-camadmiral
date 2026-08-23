@@ -302,6 +302,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("display_configuration", self.html)
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)
+        self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
 
 
 if __name__ == "__main__":
