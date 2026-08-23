@@ -1183,7 +1183,6 @@ def frigate() -> None:
             payload={
                 "name": "Synthetic Frigate",
                 "api_url": "http://127.0.0.1:5000",
-                "sync_cameras": True,
             },
             headers={"X-CamAdmiral-Action": "add-frigate-target"},
             timeout=10,
@@ -1191,6 +1190,14 @@ def frigate() -> None:
         return status == 201
 
     wait_for("Frigate integration setup", integration_connected, timeout=180, interval=2)
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        None,
+    )
+    if target is None:
+        raise ScenarioFailure("Frigate integration disappeared before camera selection")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
 
     def frigate_json(path: str) -> dict[str, object]:
         try:
@@ -1213,6 +1220,45 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
 
+    # The fixture starts with exactly one operator-owned camera. Frigate
+    # 0.17.x requires one restart when the next camera is hot-added.
+    first_camera_uuid = state["open_camera_uuid"]
+    selected = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+        timeout=120,
+    )
+    if selected.get("selected") is not True:
+        raise ScenarioFailure(f"First per-camera Frigate selection failed: {selected}")
+
+    def settled_uptime() -> float | bool:
+        uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
+        return uptime if uptime >= 5 else False
+
+    uptime_after_required_restart = float(
+        wait_for("Frigate restart settlement", settled_uptime, timeout=90, interval=1)
+    )
+
+    second_camera_uuid = state["auth_camera_uuid"]
+    for camera_uuid in (second_camera_uuid,):
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            timeout=120,
+        )
+        if selected.get("selected") is not True:
+            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
+
+    uptime_after_third_camera = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    if uptime_after_third_camera < uptime_after_required_restart:
+        raise ScenarioFailure("Frigate restarted while adding a third configured camera")
+
     def applied() -> tuple[dict[str, object], dict[str, object]] | None:
         config = frigate_json("/api/config")
         streams = frigate_json("/api/go2rtc/streams")
@@ -1234,7 +1280,7 @@ def frigate() -> None:
 
     config, streams = wait_for("Frigate camera injection", applied, timeout=180, interval=2)
     camera_key = "camadmiral_" + re.sub(
-        r"[^a-zA-Z0-9_]", "_", str(state["open_camera_uuid"])
+        r"[^a-zA-Z0-9_]", "_", str(first_camera_uuid)
     )
     if not config["cameras"][camera_key].get("live", {}).get("streams", {}):
         raise ScenarioFailure("Frigate camera has no live stream mapping")
@@ -1265,6 +1311,47 @@ def frigate() -> None:
             f"{exc}; stats={last_stats}; runtime={runtime_summary}"
         ) from exc
 
+    expected_camera_keys = [
+        "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", str(camera_uuid))
+        for camera_uuid in (first_camera_uuid, second_camera_uuid)
+    ]
+
+    def latest_frames_are_visible() -> bool:
+        for expected_key in expected_camera_keys:
+            decoded = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    f"http://camadmiral:5000/api/{expected_key}/latest.webp",
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=32:18,format=gray",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "gray",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            if decoded.returncode != 0 or not decoded.stdout:
+                return False
+            if statistics.fmean(decoded.stdout) < 5:
+                return False
+        return True
+
+    wait_for(
+        "visible Frigate frames after the 0.17 second-camera restart",
+        latest_frames_are_visible,
+        timeout=90,
+        interval=2,
+    )
+
     stale_camera = "camadmiral_synthetic_stale"
     operator_camera = "operator_camera"
     stale_streams = {
@@ -1272,17 +1359,67 @@ def frigate() -> None:
         "camadmiral_synthetic_stale_detect",
     }
 
-    targets = request_json("/internal/frigate-targets").get("targets", [])
-    target = next(
-        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
-        None,
+    stale_sources = {
+        "camadmiral_synthetic_stale_record": ["rtsp://camera-open:8554/main"],
+        "camadmiral_synthetic_stale_detect": ["rtsp://camera-open:8554/sub"],
+    }
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {"go2rtc": {"streams": stale_sources}},
+        },
     )
-    if target is None:
-        raise ScenarioFailure("Frigate integration disappeared before full sync")
-    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed stale Frigate streams")
+    for stream_name, sources in stale_sources.items():
+        update_frigate(
+            f"/api/go2rtc/streams/{stream_name}?"
+            + urllib.parse.urlencode({"src": sources[0]}),
+            {},
+        )
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 1,
+            "update_topic": f"config/cameras/{stale_camera}/add",
+            "config_data": {
+                "cameras": {
+                    stale_camera: {
+                        "enabled": False,
+                        "ffmpeg": {
+                            "inputs": [
+                                {
+                                    "path": (
+                                        "rtsp://127.0.0.1:8554/"
+                                        "camadmiral_synthetic_stale_record"
+                                    ),
+                                    "input_args": "preset-rtsp-restream",
+                                    "roles": ["record", "detect"],
+                                }
+                            ]
+                        },
+                        "detect": {"width": 1280, "height": 720, "fps": 5},
+                        "live": {
+                            "streams": {
+                                "Record": "camadmiral_synthetic_stale_record",
+                                "Detect": "camadmiral_synthetic_stale_detect",
+                            }
+                        },
+                    }
+                }
+            },
+        },
+    )
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed stale Frigate camera")
+
     preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
     if preview.get("stale_cameras") != 1 or preview.get("stale_streams") != 2:
         raise ScenarioFailure(f"Full sync preview returned unexpected counts: {preview}")
+    uptime_before_full_sync = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
     result = request_json(
         f"/internal/frigate-targets/{target_id}/full-sync",
         method="POST",
@@ -1291,6 +1428,11 @@ def frigate() -> None:
     )
     if result.get("removed_cameras") != 1 or result.get("removed_streams") != 2:
         raise ScenarioFailure(f"Full sync returned unexpected counts: {result}")
+    uptime_after_full_sync = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    if uptime_after_full_sync < uptime_before_full_sync:
+        raise ScenarioFailure("Frigate restarted while full sync removed stale resources")
     cleaned_config = frigate_saved_config()
     cleaned_cameras = cleaned_config.get("cameras", {})
     if stale_camera in cleaned_cameras:
@@ -1303,16 +1445,21 @@ def frigate() -> None:
     if "operator_stream" not in cleaned_streams:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate stream")
 
-    def stale_worker_stopped() -> bool:
-        cameras = frigate_json("/api/stats").get("cameras", {})
-        return isinstance(cameras, dict) and stale_camera not in cameras
-
-    wait_for(
-        "Frigate stale camera worker cleanup",
-        stale_worker_stopped,
-        timeout=90,
-        interval=2,
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    refreshed_target = next(
+        (
+            item
+            for item in targets
+            if str(item.get("target_id")) == urllib.parse.unquote(target_id)
+        ),
+        None,
     )
+    if refreshed_target is None:
+        raise ScenarioFailure("Frigate integration disappeared after full sync")
+    if bool(refreshed_target.get("restart_recommended")) != bool(
+        result.get("restart_recommended")
+    ):
+        raise ScenarioFailure("Frigate restart-required state was not persisted")
 
     partial_drift_stream = "camadmiral_synthetic_partial_drift"
     partial_drift_source = "rtsp://camera-open:8554/sub"
@@ -1362,6 +1509,78 @@ def frigate() -> None:
     drift_paths = frigate_json("/api/config/raw_paths")
     if partial_drift_stream in drift_paths.get("go2rtc", {}).get("streams", {}):
         raise ScenarioFailure("Full sync left the partial-drift stream in Frigate config")
+
+    uptime_before_removal = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    removed = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(second_camera_uuid), safe='')}",
+        method="DELETE",
+        headers={"X-CamAdmiral-Action": "remove-frigate-camera"},
+        timeout=30,
+    )
+    if removed.get("selected") is not False:
+        raise ScenarioFailure(f"Per-camera Frigate removal failed: {removed}")
+    if removed.get("restart_recommended") is not True:
+        raise ScenarioFailure("Frigate 0.17 removal did not require a deferred restart")
+    uptime_after_removal = float(
+        frigate_json("/api/stats").get("service", {}).get("uptime") or 0
+    )
+    if uptime_after_removal < uptime_before_removal:
+        raise ScenarioFailure("Frigate restarted while removing a managed camera")
+    expected_camera_keys = expected_camera_keys[:1]
+    wait_for(
+        "remaining Frigate camera after managed camera removal",
+        latest_frames_are_visible,
+        timeout=30,
+        interval=2,
+    )
+
+    removed_key = "camadmiral_" + re.sub(
+        r"[^a-zA-Z0-9_]", "_", str(second_camera_uuid)
+    )
+    saved_after_removal = frigate_saved_config()
+    if removed_key in saved_after_removal.get("cameras", {}):
+        raise ScenarioFailure("Deferred removal remained in saved Frigate config")
+    live_after_removal = frigate_json("/api/config").get("cameras", {})
+    if removed_key not in live_after_removal:
+        raise ScenarioFailure(
+            "Frigate removal did not leave a detectable restart-required state"
+        )
+
+    print("frigate: removal persisted and operator restart is required")
+
+
+def frigate_restart_verify() -> None:
+    def frigate_ready() -> bool:
+        try:
+            with urllib.request.urlopen(
+                "http://camadmiral:5000/api/stats", timeout=8
+            ) as response:
+                payload = json.load(response)
+            return bool(payload.get("service"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return False
+
+    wait_for("Frigate after operator restart", frigate_ready, timeout=120, interval=1)
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        None,
+    )
+    if target is None:
+        raise ScenarioFailure("Frigate integration missing after operator restart")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+    checked = request_json(
+        f"/internal/frigate-targets/{target_id}/test",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "test-frigate-target"},
+        timeout=30,
+    )
+    checked_target = checked.get("target", {})
+    if checked_target.get("restart_recommended") is not False:
+        raise ScenarioFailure("Frigate restart-required state did not clear after restart")
     print("frigate: injection, processing, and CamAdmiral-only full sync passed")
 
 
@@ -1418,7 +1637,8 @@ def frigate_ambiguous_delete_verify() -> None:
         raise ScenarioFailure("Frigate integration missing for ambiguous-delete test")
     target_id = urllib.parse.quote(str(target["target_id"]), safe="")
     preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
-    if preview.get("stale_streams") != 1:
+    stale_stream_count = int(preview.get("stale_streams") or 0)
+    if stale_stream_count < 1:
         raise ScenarioFailure(f"Ambiguous-delete preview was unexpected: {preview}")
     result = request_json(
         f"/internal/frigate-targets/{target_id}/full-sync",
@@ -1426,7 +1646,7 @@ def frigate_ambiguous_delete_verify() -> None:
         headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
         timeout=120,
     )
-    if result.get("removed_streams") != 1:
+    if result.get("removed_streams") != stale_stream_count:
         raise ScenarioFailure(f"Ambiguous-delete full sync failed: {result}")
 
     with urllib.request.urlopen(
@@ -1456,6 +1676,7 @@ SCENARIOS = {
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
     "frigate": frigate,
+    "frigate-restart-verify": frigate_restart_verify,
     "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
     "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
     "relay-latency": relay_latency,

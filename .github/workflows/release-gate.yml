@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       runtime: ${{ steps.classify.outputs.runtime }}
+      e2e: ${{ steps.classify.outputs.e2e }}
     steps:
       - name: Decide whether runtime validation is required
         id: classify
@@ -39,24 +40,49 @@ jobs:
           script: |
             if (process.env.FORCE_FULL === "true" || context.eventName !== "pull_request") {
               core.setOutput("runtime", "true");
+              core.setOutput("e2e", "true");
               return;
             }
 
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              per_page: 100,
-            });
+            const files = [];
+            let complete = false;
+            for (let page = 1; page <= 30; page += 1) {
+              const response = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: context.payload.pull_request.head.sha,
+                per_page: 100,
+                page,
+              });
+              const pageFiles = response.data.files || [];
+              files.push(...pageFiles);
+              if (pageFiles.length < 100) {
+                complete = true;
+                break;
+              }
+            }
             const documentationPath = path => path === "README.md" || path.startsWith("docs/");
-            const documentationOnly = files.length > 0 && files.length < 3000 && files.every(file =>
+            const documentationOnly = files.length > 0 && complete && files.every(file =>
               documentationPath(file.filename) &&
               (!file.previous_filename || documentationPath(file.previous_filename))
             );
-            core.setOutput("runtime", documentationOnly ? "false" : "true");
-            core.info(documentationOnly
-              ? "Documentation-only change: skipping runtime validation."
-              : "Runtime-affecting or unknown change: running the complete release gate.");
+            if (documentationOnly) {
+              core.setOutput("runtime", "false");
+              core.setOutput("e2e", "false");
+              core.info("Documentation-only commit: skipping runtime validation.");
+              return;
+            }
+
+            const releaseCandidate = complete && files.some(file =>
+              file.filename === "VERSION" || file.previous_filename === "VERSION"
+            );
+            core.setOutput("runtime", "true");
+            core.setOutput("e2e", releaseCandidate || !complete ? "true" : "false");
+            core.info(releaseCandidate
+              ? "Versioned release-candidate commit: running the complete E2E gate."
+              : complete
+                ? "Development commit: running fast validation only."
+                : "Large or incomplete commit: running the complete E2E gate.");
 
   release-gate:
     name: Unit, component, and E2E
@@ -82,12 +108,14 @@ jobs:
         run: python -m pip install -r requirements.txt -r e2e/requirements.txt
 
       - name: Install browser for UI E2E
+        if: needs.classify-changes.outputs.e2e == 'true'
         run: python -m playwright install --with-deps webkit
 
       - name: Run unit and component tests
         run: python -m unittest discover -s tests -v
 
       - name: Run isolated E2E lab
+        if: needs.classify-changes.outputs.e2e == 'true'
         run: python3 e2e/run.py
 
       - name: Upload UI E2E failure screenshot
@@ -99,7 +127,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Remove E2E resources
-        if: always()
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
         run: >-
           docker compose --project-name camadmiral-e2e --file e2e/compose.yaml
           --profile moved --profile rotated down --volumes --remove-orphans

@@ -30,11 +30,33 @@ jobs:
                 per_page: 100,
               },
             );
-            const match = runs.find(run => run.head_sha === context.sha);
+            const candidates = runs.filter(run => run.head_sha === context.sha);
+            let match = null;
+            for (const run of candidates) {
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                  filter: "latest",
+                  per_page: 100,
+                },
+              );
+              const passedE2E = jobs.some(job =>
+                (job.steps || []).some(step =>
+                  step.name === "Run isolated E2E lab" && step.conclusion === "success"
+                )
+              );
+              if (passedE2E) {
+                match = run;
+                break;
+              }
+            }
             if (!match) {
               core.setFailed(
-                `Commit ${context.sha} has not passed the CamAdmiral release gate. ` +
-                "Run the release gate for this exact commit before publishing.",
+                `Commit ${context.sha} has not passed the complete CamAdmiral E2E gate. ` +
+                "Prepare the version on the release commit, then run the gate for that exact commit.",
               );
               return;
             }

@@ -11,13 +11,16 @@ from camadmiral.frigate import (
     FrigateClient,
     FrigateTarget,
     desired_camera,
+    frigate_camera_configuration,
     full_sync_frigate,
     full_sync_preview,
     frigate_camera_key,
+    frigate_restart_required,
     load_frigate_targets,
     media_host_from_inventory,
     normalize_frigate_api_url,
     reconcile_frigate,
+    remove_frigate_camera,
 )
 from camadmiral.media import ProbeResult
 from camadmiral.storage import CameraRepository
@@ -26,12 +29,13 @@ from camadmiral.storage import CameraRepository
 class FakeFrigateClient:
     def __init__(self, target: FrigateTarget):
         self.target = target
-        self.current_config = {"cameras": {}}
+        self.current_config = {"version": "0.17-0", "cameras": {}}
         self.current_raw_paths = {"cameras": {}, "go2rtc": {"streams": {}}}
         self.current_runtime = {}
         self.current_stats = {}
         self.capability_checks = 0
         self.config_writes = []
+        self.restart_config_writes = []
         self.runtime_writes = []
         self.runtime_deletes = []
         self.runtime_delete_failures = {}
@@ -59,16 +63,19 @@ class FakeFrigateClient:
     def stats(self):
         return self.current_stats
 
-    def set_config(self, config_data, *, update_topic=None):
+    def set_config(self, config_data, *, update_topic=None, requires_restart=False):
         self.operations.append(("set_config", config_data))
         self.config_writes.append((config_data, update_topic))
+        if requires_restart:
+            self.restart_config_writes.append(config_data)
         for key, update in config_data.get("cameras", {}).items():
             if update is None or update == "":
-                self.current_config["cameras"].pop(key, None)
                 self.current_raw_paths["cameras"].pop(key, None)
-                if not self.retain_removed_camera_stats:
-                    self.current_stats.pop(key, None)
-                self.runtime_enabled.pop(key, None)
+                if not requires_restart or update_topic is not None:
+                    self.current_config["cameras"].pop(key, None)
+                    if not self.retain_removed_camera_stats:
+                        self.current_stats.pop(key, None)
+                    self.runtime_enabled.pop(key, None)
                 continue
             camera = self.current_config["cameras"].setdefault(key, {})
             self._merge(camera, update)
@@ -104,6 +111,7 @@ class FakeFrigateClient:
                 current[key] = value
 
     def set_runtime_stream(self, stream_name, source):
+        self.operations.append(("set_runtime_stream", stream_name))
         self.runtime_writes.append((stream_name, source))
         self.current_runtime[stream_name] = {"producers": []}
 
@@ -135,6 +143,32 @@ class FakeFrigateClient:
 
 
 class FrigateTargetTests(unittest.TestCase):
+    def test_restart_required_config_write_does_not_publish_update_topic(self) -> None:
+        target = FrigateTarget(
+            "frigate-primary",
+            "Primary Frigate",
+            "http://127.0.0.1:20001",
+        )
+        client = FrigateClient(target)
+        with patch.object(
+            client,
+            "_request",
+            return_value={"success": True, "message": "Config successfully updated"},
+        ) as request:
+            client.set_config(
+                {"cameras": {"camadmiral_synthetic": ""}},
+                requires_restart=True,
+            )
+
+        request.assert_called_once_with(
+            "PUT",
+            "/api/config/set",
+            {
+                "requires_restart": 1,
+                "config_data": {"cameras": {"camadmiral_synthetic": ""}},
+            },
+        )
+
     def test_restart_uses_supported_frigate_endpoint(self) -> None:
         target = FrigateTarget(
             "frigate-primary",
@@ -226,7 +260,7 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertIn("rtsp://***@192.0.2.20/live", raised.exception.upstream_detail)
         self.assertNotIn("synthetic-secret", raised.exception.upstream_detail)
 
-    def test_only_targets_with_camera_sync_enabled_are_loaded(self) -> None:
+    def test_all_configured_targets_are_loaded(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = [
             {
@@ -239,7 +273,7 @@ class FrigateTargetTests(unittest.TestCase):
 
         self.assertEqual([target.target_id for target in targets], ["frigate-primary"])
         self.assertEqual(targets[0].api_url, "http://127.0.0.1:20001")
-        repository.frigate_targets.assert_called_once_with(sync_only=True)
+        repository.frigate_targets.assert_called_once_with()
 
     def test_frigate_url_is_normalized_and_restricted_to_loopback(self) -> None:
         self.assertEqual(
@@ -313,24 +347,32 @@ class FrigateReconciliationTests(unittest.TestCase):
             "Primary Frigate",
             "http://127.0.0.1:20001",
         )
+        self.repository.save_frigate_target(
+            self.target.target_id,
+            self.target.name,
+            self.target.api_url,
+        )
+        self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
         self.client = FakeFrigateClient(self.target)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_full_sync_removes_only_stale_camadmiral_resources(self) -> None:
+    def test_full_sync_persists_017_removal_without_hot_removing_camera(self) -> None:
         stale_camera = "camadmiral_stale_camera"
         stale_streams = {f"{stale_camera}_record", f"{stale_camera}_detect"}
         self.client.current_config["cameras"].update(
             {
                 stale_camera: {"enabled": True},
                 "operator_camera": {"enabled": True},
+                "operator_camera_two": {"enabled": False},
             }
         )
         self.client.current_raw_paths["cameras"].update(
             {
                 stale_camera: {"ffmpeg": {"inputs": []}},
                 "operator_camera": {"ffmpeg": {"inputs": []}},
+                "operator_camera_two": {"ffmpeg": {"inputs": []}},
             }
         )
         self.client.current_raw_paths["go2rtc"]["streams"].update(
@@ -357,40 +399,33 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(set(preview["stale_streams"]), stale_streams)
         self.assertEqual(result["removed_cameras"], 1)
         self.assertEqual(result["removed_streams"], 2)
+        self.assertTrue(result["restart_recommended"])
         self.assertIn("operator_camera", self.client.current_config["cameras"])
         self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
-        self.assertNotIn(stale_camera, self.client.current_config["cameras"])
+        self.assertIn(stale_camera, self.client.current_config["cameras"])
+        self.assertNotIn(stale_camera, self.client.current_raw_paths["cameras"])
         self.assertTrue(stale_streams.isdisjoint(self.client.current_raw_paths["go2rtc"]["streams"]))
-        self.assertEqual(set(self.client.runtime_deletes), stale_streams)
+        self.assertTrue(stale_streams.issubset(self.client.current_runtime))
+        self.assertEqual(self.client.runtime_deletes, [])
         self.assertIn(
-            ({"cameras": {stale_camera: ""}}, f"config/cameras/{stale_camera}/remove"),
+            ({"cameras": {stale_camera: ""}}, None),
             self.client.config_writes,
         )
         self.assertIn(
             ({"go2rtc": {"streams": {name: "" for name in stale_streams}}}, None),
             self.client.config_writes,
         )
-        stream_config_index = next(
-            index
-            for index, operation in enumerate(self.client.operations)
-            if operation
-            == (
-                "set_config",
-                {"go2rtc": {"streams": {name: "" for name in stale_streams}}},
-            )
+        self.assertIn(
+            {"cameras": {stale_camera: ""}},
+            self.client.restart_config_writes,
         )
-        runtime_delete_indexes = [
-            index
-            for index, operation in enumerate(self.client.operations)
-            if operation[0] == "delete_runtime_stream"
-        ]
-        self.assertTrue(runtime_delete_indexes)
-        self.assertTrue(
-            all(stream_config_index < index for index in runtime_delete_indexes)
+        self.assertIn(
+            {"go2rtc": {"streams": {name: "" for name in stale_streams}}},
+            self.client.restart_config_writes,
         )
         self.assertEqual(self.client.restart_calls, 0)
 
-    def test_full_sync_restarts_when_removed_camera_worker_remains(self) -> None:
+    def test_full_sync_recommends_restart_without_interrupting_frigate(self) -> None:
         stale_camera = "camadmiral_stale_worker"
         stale_streams = {f"{stale_camera}_record", f"{stale_camera}_detect"}
         self.client.current_config["cameras"][stale_camera] = {"enabled": True}
@@ -413,9 +448,34 @@ class FrigateReconciliationTests(unittest.TestCase):
             )
 
         self.assertEqual(result["removed_cameras"], 1)
-        self.assertEqual(self.client.restart_calls, 1)
-        self.assertNotIn(stale_camera, self.client.current_stats)
-        self.assertIn(("restart",), self.client.operations)
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(stale_camera, self.client.current_stats)
+        self.assertNotIn(("restart",), self.client.operations)
+
+    def test_full_sync_keeps_restart_warning_for_orphaned_worker(self) -> None:
+        orphaned_camera = "camadmiral_orphaned_worker"
+        orphaned_streams = {
+            f"{orphaned_camera}_record",
+            f"{orphaned_camera}_detect",
+        }
+        self.client.current_runtime.update({name: {} for name in orphaned_streams})
+        self.client.current_stats[orphaned_camera] = {"camera_fps": 0.0}
+        self.client.retain_removed_camera_stats = True
+
+        with patch("camadmiral.frigate.CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS", 0):
+            result = full_sync_frigate(
+                self.repository,
+                self.target,
+                media_host="192.168.50.12",
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(result["removed_cameras"], 0)
+        self.assertEqual(result["removed_streams"], 2)
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(orphaned_camera, self.client.current_stats)
 
     def test_full_sync_tolerates_configured_stream_missing_from_runtime(self) -> None:
         stale_camera = "camadmiral_partial_drift"
@@ -582,6 +642,162 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.assertNotIn("upstream-secret", sources[0])
         self.assertEqual(desired["camera_config"]["detect"], {"width": 640, "height": 360, "fps": 10})
 
+    def test_config_preview_masks_password_but_keeps_plaintext_for_copy(self) -> None:
+        preview = frigate_camera_configuration(
+            self.repository,
+            self.target,
+            self.camera_uuid,
+            media_host="192.168.50.12",
+        )
+
+        password = self.repository.rtsp_access_password()
+        self.assertIn(password, preview["configuration"])
+        self.assertNotIn(password, preview["display_configuration"])
+        self.assertIn("********", preview["display_configuration"])
+
+    def test_unselected_camera_is_not_reconciled(self) -> None:
+        self.repository.deselect_frigate_camera(self.target.target_id, self.camera_uuid)
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 0, "pending": 0})
+        self.assertEqual(self.client.capability_checks, 0)
+        self.assertEqual(self.client.config_writes, [])
+
+    def test_remove_selected_camera_persists_017_cleanup_and_requires_restart(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": True}
+        self.client.current_raw_paths["cameras"]["operator_camera"] = {
+            "ffmpeg": {"inputs": []}
+        }
+        self.client.current_raw_paths["go2rtc"]["streams"]["operator_stream"] = [
+            "rtsp://camera.invalid/main"
+        ]
+
+        result = remove_frigate_camera(
+            self.repository,
+            self.target,
+            self.camera_uuid,
+            client_factory=lambda _target: self.client,
+        )
+
+        key = frigate_camera_key(self.camera_uuid)
+        self.assertEqual(
+            result,
+            {
+                "removed_cameras": 1,
+                "removed_streams": 2,
+                "restart_recommended": True,
+            },
+        )
+        self.assertIn(key, self.client.current_config["cameras"])
+        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
+        self.assertIn("operator_camera", self.client.current_config["cameras"])
+        self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
+        self.assertEqual(self.client.runtime_deletes, [])
+        self.assertIn({"cameras": {key: ""}}, self.client.restart_config_writes)
+        self.assertEqual(
+            self.repository.selected_frigate_camera_uuids(self.target.target_id), []
+        )
+        self.assertIsNone(
+            self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
+        )
+
+    def test_remove_selected_camera_never_restarts_for_stale_worker(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        key = frigate_camera_key(self.camera_uuid)
+        self.client.retain_removed_camera_stats = True
+
+        with patch("camadmiral.frigate.CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS", 0):
+            result = remove_frigate_camera(
+                self.repository,
+                self.target,
+                self.camera_uuid,
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertTrue(result["restart_recommended"])
+        self.assertEqual(self.client.restart_calls, 0)
+        self.assertIn(key, self.client.current_stats)
+        self.assertIn(key, self.client.current_config["cameras"])
+        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
+        self.assertNotIn(("restart",), self.client.operations)
+
+    def test_remove_selected_camera_requires_restart_on_newer_frigate_too(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        self.client.current_config["version"] = "0.18.0"
+
+        result = remove_frigate_camera(
+            self.repository,
+            self.target,
+            self.camera_uuid,
+            client_factory=lambda _target: self.client,
+        )
+
+        key = frigate_camera_key(self.camera_uuid)
+        self.assertTrue(result["restart_recommended"])
+        self.assertIn(key, self.client.current_config["cameras"])
+        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
+        self.assertIn(
+            {"cameras": {key: ""}},
+            self.client.restart_config_writes,
+        )
+
+    def test_restart_required_clears_after_removed_runtime_resources_stop(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        key = frigate_camera_key(self.camera_uuid)
+        self.repository.deselect_frigate_camera(self.target.target_id, self.camera_uuid)
+
+        self.assertTrue(
+            frigate_restart_required(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+        )
+
+        self.client.current_stats.pop(key)
+        self.client.current_runtime.pop(f"{key}_record")
+        self.client.current_runtime.pop(f"{key}_detect")
+
+        self.assertTrue(
+            frigate_restart_required(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+        )
+
+        self.client.current_config["cameras"].pop(key)
+
+        self.assertFalse(
+            frigate_restart_required(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+        )
+
     def test_idle_role_stream_remains_valid_frigate_configuration(self) -> None:
         camera = self.repository.consumer_inventory()[0]
         record = next(stream for stream in camera["streams"] if "record" in stream["roles"])
@@ -610,6 +826,57 @@ class FrigateReconciliationTests(unittest.TestCase):
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
+
+    def test_frigate_017_restarts_only_when_adding_second_configured_camera(self) -> None:
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
+
+        with patch("camadmiral.frigate.time.sleep"):
+            result = reconcile_frigate(
+                self.repository,
+                self.target,
+                client_factory=lambda _target: self.client,
+            )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 1)
+        restart_index = self.client.operations.index(("restart",))
+        runtime_indexes = [
+            index
+            for index, operation in enumerate(self.client.operations)
+            if operation[0] == "set_runtime_stream"
+        ]
+        self.assertTrue(runtime_indexes)
+        self.assertLess(max(runtime_indexes), restart_index)
+
+    def test_frigate_017_does_not_restart_when_adding_third_configured_camera(self) -> None:
+        self.client.current_config["cameras"].update(
+            {
+                "operator_camera_one": {"enabled": False},
+                "operator_camera_two": {"enabled": False},
+            }
+        )
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 0)
+
+    def test_frigate_018_does_not_restart_when_adding_second_configured_camera(self) -> None:
+        self.client.current_config["version"] = "0.18-0"
+        self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(self.client.restart_calls, 0)
 
     def test_missed_hot_add_waits_without_starting_duplicate_workers(self) -> None:
         self.client.drop_add_events = 1

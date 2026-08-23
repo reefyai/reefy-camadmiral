@@ -31,6 +31,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("run.head_sha === context.sha", publish)
         self.assertIn('workflow_id: "release-gate.yml"', publish)
         self.assertIn('status: "success"', publish)
+        self.assertIn("listJobsForWorkflowRun", publish)
+        self.assertIn('step.name === "Run isolated E2E lab"', publish)
+        self.assertIn('step.conclusion === "success"', publish)
         self.assertIn("needs: verify-release-gate", publish)
         self.assertIn("platforms: linux/amd64", publish)
         self.assertNotIn("linux/arm64", publish)
@@ -45,15 +48,19 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('["ubuntu-latest"]', gate)
         self.assertNotIn('tags: ["v*"]', gate)
 
-    def test_release_gate_skips_runtime_work_only_for_documentation(self) -> None:
+    def test_release_gate_runs_e2e_only_for_versioned_release_commits(self) -> None:
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
 
         self.assertIn("Classify changes", gate)
         self.assertIn('path === "README.md" || path.startsWith("docs/")', gate)
-        self.assertIn("files.length < 3000", gate)
+        self.assertIn("github.rest.repos.getCommit", gate)
+        self.assertIn('file.filename === "VERSION"', gate)
+        self.assertIn('core.setOutput("e2e", releaseCandidate || !complete', gate)
         self.assertIn("file.previous_filename", gate)
         self.assertIn("needs: classify-changes", gate)
         self.assertIn("needs.classify-changes.outputs.runtime == 'true'", gate)
+        self.assertIn("needs.classify-changes.outputs.e2e == 'true'", gate)
+        self.assertIn("Development commit: running fast validation only.", gate)
         self.assertNotIn("paths-ignore:", gate)
 
     def test_e2e_runs_the_docker_only_launcher(self) -> None:
@@ -108,12 +115,15 @@ class ReleaseMetadataTests(unittest.TestCase):
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         self.assertIn('stale_camera = "camadmiral_synthetic_stale"', scenarios)
         self.assertIn('operator_camera = "operator_camera"', scenarios)
-        self.assertIn("camadmiral_synthetic_stale_record:", fixture)
+        self.assertIn('"camadmiral_synthetic_stale_record":', scenarios)
         self.assertIn("operator_stream:", fixture)
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate camera", scenarios)
         self.assertIn("Full sync removed an operator-owned Frigate stream", scenarios)
-        self.assertIn('"Frigate stale camera worker cleanup"', scenarios)
+        self.assertIn("Frigate restarted while full sync removed stale resources", scenarios)
+        self.assertIn("Frigate restart-required state was not persisted", scenarios)
+        self.assertIn("Frigate 0.17 removal did not require a deferred restart", scenarios)
+        self.assertIn("Frigate restart-required state did not clear after restart", scenarios)
         self.assertIn("restart: unless-stopped", compose)
         self.assertIn("test -f /config/config.yml || cp", compose)
 

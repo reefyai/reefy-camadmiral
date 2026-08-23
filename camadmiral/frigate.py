@@ -24,6 +24,7 @@ RUNTIME_CLEANUP_POLL_SECONDS = 0.25
 CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS = 60.0
 CAMERA_WORKER_CLEANUP_POLL_SECONDS = 0.5
 CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS = 5.0
+FRIGATE_RESTART_SETTLE_SECONDS = 2.0
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -91,7 +92,7 @@ def normalize_frigate_api_url(value: object) -> str:
 def load_frigate_targets(repository: Any) -> list[FrigateTarget]:
     return [
         FrigateTarget(str(target["target_id"]), str(target["name"]), str(target["api_url"]))
-        for target in repository.frigate_targets(sync_only=True)
+        for target in repository.frigate_targets()
     ]
 
 
@@ -225,8 +226,17 @@ class FrigateClient:
             raise FrigateApiError("invalid_response")
         return cameras
 
-    def set_config(self, config_data: dict[str, Any], *, update_topic: str | None = None) -> None:
-        payload: dict[str, Any] = {"requires_restart": 0, "config_data": config_data}
+    def set_config(
+        self,
+        config_data: dict[str, Any],
+        *,
+        update_topic: str | None = None,
+        requires_restart: bool = False,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "requires_restart": int(requires_restart),
+            "config_data": config_data,
+        }
         if update_topic is not None:
             payload["requires_restart"] = 1
             payload["update_topic"] = update_topic
@@ -258,10 +268,21 @@ def frigate_camera_key(camera_uuid: str) -> str:
     return f"{KEY_PREFIX}{normalized}"
 
 
-def desired_resource_keys(repository: Any) -> tuple[set[str], set[str]]:
+def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str, Any]]:
+    selected = set(repository.selected_frigate_camera_uuids(target_id))
+    if not selected:
+        return []
+    return [
+        camera
+        for camera in repository.consumer_inventory()
+        if str(camera["camera_uuid"]) in selected
+    ]
+
+
+def desired_resource_keys(repository: Any, target_id: str) -> tuple[set[str], set[str]]:
     camera_keys = {
         frigate_camera_key(str(camera["camera_uuid"]))
-        for camera in repository.consumer_inventory()
+        for camera in selected_camera_inventory(repository, target_id)
     }
     stream_keys = {
         stream_key
@@ -290,7 +311,7 @@ def full_sync_preview(
 def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     saved_config = client.raw_config()
     runtime_streams = client.runtime_streams()
-    desired_cameras, desired_streams = desired_resource_keys(repository)
+    desired_cameras, desired_streams = desired_resource_keys(repository, client.target.target_id)
     configured_cameras = saved_config.get("cameras", {})
     configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
     if (
@@ -316,6 +337,7 @@ def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     }
     return {
         "managed_cameras": len(desired_cameras),
+        "desired_cameras": desired_cameras,
         "stale_cameras": stale_cameras,
         "stale_config_streams": sorted(stale_config_streams),
         "stale_runtime_streams": sorted(stale_runtime_streams),
@@ -358,28 +380,107 @@ def _wait_for_camera_worker_cleanup(
         time.sleep(CAMERA_WORKER_CLEANUP_POLL_SECONDS)
 
 
+def _wait_for_camera_workers(
+    client: FrigateClient,
+    camera_keys: list[str],
+    *,
+    timeout: float = CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS,
+) -> list[str]:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stats = client.stats()
+        except FrigateApiError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            missing = [camera_key for camera_key in camera_keys if camera_key not in stats]
+            if not missing or time.monotonic() >= deadline:
+                return missing
+        time.sleep(CAMERA_WORKER_CLEANUP_POLL_SECONDS)
+
+
+def _requires_frigate_017_second_camera_restart(
+    config: dict[str, Any],
+    *,
+    camera_exists: bool,
+) -> bool:
+    version = str(config.get("version") or "")
+    cameras = config.get("cameras")
+    return (
+        re.match(r"^0\.17(?:[.-]|$)", version) is not None
+        and isinstance(cameras, dict)
+        and len(cameras) == 1
+        and not camera_exists
+    )
+
+
+def frigate_restart_required(
+    repository: Any,
+    target: FrigateTarget,
+    *,
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> bool:
+    """Return whether removed CamAdmiral resources are still running."""
+    client = client_factory(target)
+    client.capabilities()
+    live_config = client.config()
+    state = _full_sync_state(repository, client)
+    desired_cameras = state["desired_cameras"]
+    live_cameras = live_config.get("cameras", {})
+    if not isinstance(live_cameras, dict):
+        raise FrigateApiError("invalid_response")
+    stale_live_cameras = {
+        camera_key
+        for camera_key in live_cameras
+        if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+    }
+    worker_stats = client.stats()
+    stale_workers = {
+        camera_key
+        for camera_key in worker_stats
+        if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+    }
+    return bool(
+        stale_live_cameras or stale_workers or state["stale_runtime_streams"]
+    )
+
+
 def full_sync_frigate(
     repository: Any,
     target: FrigateTarget,
     *,
     media_host: str = "127.0.0.1",
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
-) -> dict[str, int]:
+) -> dict[str, int | bool]:
     client = client_factory(target)
     try:
         client.capabilities()
         state = _full_sync_state(repository, client)
+        worker_stats = client.stats()
     except FrigateApiError as exc:
         raise exc.with_context(stage="inspect_configuration") from exc
     stale_cameras = state["stale_cameras"]
+    desired_cameras = state["desired_cameras"]
     stale_config_streams = state["stale_config_streams"]
     stale_streams = state["stale_streams"]
+    stale_workers = {
+        camera_key
+        for camera_key in worker_stats
+        if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+    }
+    restart_recommended = bool(stale_cameras or stale_workers)
 
     for camera_key in stale_cameras:
         try:
+            # Frigate 0.17 shares one mutable camera configuration across
+            # several dynamic-update subscribers. Hot removal lets the first
+            # subscriber remove the camera and crashes the others with
+            # KeyError. Camera removal is therefore always persisted for the
+            # next operator-controlled restart instead of attempted live.
             client.set_config(
                 {"cameras": {camera_key: ""}},
-                update_topic=f"config/cameras/{camera_key}/remove",
+                requires_restart=True,
             )
         except FrigateApiError as exc:
             raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
@@ -396,7 +497,8 @@ def full_sync_frigate(
                             stream_key: "" for stream_key in stale_config_streams
                         }
                     }
-                }
+                },
+                requires_restart=restart_recommended,
             )
             saved_config = client.raw_config()
         except FrigateApiError as exc:
@@ -418,82 +520,48 @@ def full_sync_frigate(
                 resource=remaining_config[0],
             )
 
-    try:
-        runtime_streams = client.runtime_streams()
-    except FrigateApiError as exc:
-        raise exc.with_context(stage="inspect_runtime_streams") from exc
-    delete_errors: dict[str, FrigateApiError] = {}
-    for stream_key in stale_streams:
-        if stream_key not in runtime_streams:
-            continue
+    if not restart_recommended:
         try:
-            client.delete_runtime_stream(stream_key)
+            runtime_streams = client.runtime_streams()
         except FrigateApiError as exc:
-            # go2rtc removes the live stream before patching its writable
-            # primary YAML. Streams loaded from Frigate's generated secondary
-            # config can therefore return HTTP 400 ("yaml: path not exist")
-            # after the requested runtime deletion has already succeeded.
-            # Preserve the response for diagnostics, but decide success from
-            # the resulting runtime state below.
-            delete_errors[stream_key] = exc
+            raise exc.with_context(stage="inspect_runtime_streams") from exc
+        delete_errors: dict[str, FrigateApiError] = {}
+        for stream_key in stale_streams:
+            if stream_key not in runtime_streams:
+                continue
+            try:
+                client.delete_runtime_stream(stream_key)
+            except FrigateApiError as exc:
+                delete_errors[stream_key] = exc
 
-    try:
-        remaining_runtime_streams = _wait_for_runtime_cleanup(client, stale_streams)
-    except FrigateApiError as exc:
-        if delete_errors:
-            stream_key, delete_error = next(iter(delete_errors.items()))
-            raise delete_error.with_context(
-                stage="remove_runtime_stream", resource=stream_key
-            ) from exc
-        raise exc.with_context(stage="verify_runtime_cleanup") from exc
-    if remaining_runtime_streams:
-        stream_key = remaining_runtime_streams[0]
-        if stream_key in delete_errors:
-            raise delete_errors[stream_key].with_context(
-                stage="remove_runtime_stream", resource=stream_key
-            )
-        raise FrigateApiError(
-            "verification_failed",
-            stage="verify_runtime_cleanup",
-            resource=stream_key,
-        )
-
-    # Frigate 0.17.0 can save a camera removal while leaving the removed
-    # capture workers and shared-memory frames alive. Restart only when the
-    # stale workers remain after a short grace period for the documented
-    # dynamic update.
-    if stale_cameras:
         try:
-            stale_workers = _wait_for_camera_worker_cleanup(
-                client,
-                stale_cameras,
-                timeout=CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS,
-            )
+            remaining_runtime_streams = _wait_for_runtime_cleanup(client, stale_streams)
         except FrigateApiError as exc:
-            raise exc.with_context(stage="inspect_camera_workers") from exc
-        if stale_workers:
-            try:
-                client.restart()
-            except FrigateApiError as exc:
-                raise exc.with_context(stage="restart_frigate") from exc
-            try:
-                remaining_workers = _wait_for_camera_worker_cleanup(
-                    client, stale_workers
+            if delete_errors:
+                stream_key, delete_error = next(iter(delete_errors.items()))
+                raise delete_error.with_context(
+                    stage="remove_runtime_stream", resource=stream_key
+                ) from exc
+            raise exc.with_context(stage="verify_runtime_cleanup") from exc
+        if remaining_runtime_streams:
+            stream_key = remaining_runtime_streams[0]
+            if stream_key in delete_errors:
+                raise delete_errors[stream_key].with_context(
+                    stage="remove_runtime_stream", resource=stream_key
                 )
-            except FrigateApiError as exc:
-                raise exc.with_context(stage="wait_for_frigate_restart") from exc
-            if remaining_workers:
-                raise FrigateApiError(
-                    "verification_failed",
-                    stage="verify_camera_worker_cleanup",
-                    resource=remaining_workers[0],
-                )
+            raise FrigateApiError(
+                "verification_failed",
+                stage="verify_runtime_cleanup",
+                resource=stream_key,
+            )
 
     try:
         verified = _full_sync_state(repository, client)
     except FrigateApiError as exc:
         raise exc.with_context(stage="verify_cleanup") from exc
-    remaining = [*verified["stale_cameras"], *verified["stale_streams"]]
+    remaining = [*verified["stale_cameras"], *verified["stale_config_streams"]]
+    if not restart_recommended:
+        remaining.extend(verified["stale_runtime_streams"])
     if remaining:
         raise FrigateApiError(
             "verification_failed",
@@ -506,13 +574,115 @@ def full_sync_frigate(
             target,
             media_host=media_host,
             client_factory=lambda _target: client,
+            allow_restart=not restart_recommended,
         )
     except FrigateApiError as exc:
         raise exc.with_context(stage="reconcile_current_cameras") from exc
     return {
         "removed_cameras": len(stale_cameras),
         "removed_streams": len(stale_streams),
+        "restart_recommended": restart_recommended,
         **reconciliation,
+    }
+
+
+def remove_frigate_camera(
+    repository: Any,
+    target: FrigateTarget,
+    camera_uuid: str,
+    *,
+    client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+) -> dict[str, int | bool]:
+    binding = repository.frigate_binding(target.target_id, camera_uuid)
+    if binding is None:
+        repository.deselect_frigate_camera(target.target_id, camera_uuid)
+        return {
+            "removed_cameras": 0,
+            "removed_streams": 0,
+            "restart_recommended": False,
+        }
+    camera_key = str(binding["frigate_camera_key"])
+    if not camera_key.startswith(KEY_PREFIX):
+        raise FrigateApiError("ownership_verification_failed")
+    stream_keys = [f"{camera_key}_record", f"{camera_key}_detect"]
+    client = client_factory(target)
+    try:
+        client.capabilities()
+        saved_config = client.raw_config()
+        runtime_streams = client.runtime_streams()
+        worker_stats = client.stats()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="inspect_configuration") from exc
+
+    configured_cameras = saved_config.get("cameras", {})
+    configured_streams = saved_config.get("go2rtc", {}).get("streams", {})
+    if not isinstance(configured_cameras, dict) or not isinstance(configured_streams, dict):
+        raise FrigateApiError("invalid_response", stage="inspect_configuration")
+    camera_exists = camera_key in configured_cameras
+    configured_aliases = [name for name in stream_keys if name in configured_streams]
+    runtime_aliases = [name for name in stream_keys if name in runtime_streams]
+    restart_recommended = camera_exists or camera_key in worker_stats
+
+    if camera_exists:
+        try:
+            client.set_config(
+                {"cameras": {camera_key: ""}},
+                requires_restart=True,
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
+    if configured_aliases:
+        try:
+            client.set_config(
+                {"go2rtc": {"streams": {name: "" for name in configured_aliases}}},
+                requires_restart=restart_recommended,
+            )
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="remove_stream_configuration") from exc
+
+    if not restart_recommended:
+        delete_errors: dict[str, FrigateApiError] = {}
+        for stream_key in runtime_aliases:
+            try:
+                client.delete_runtime_stream(stream_key)
+            except FrigateApiError as exc:
+                delete_errors[stream_key] = exc
+        try:
+            remaining_runtime = _wait_for_runtime_cleanup(client, runtime_aliases)
+        except FrigateApiError as exc:
+            raise exc.with_context(stage="verify_runtime_cleanup") from exc
+        if remaining_runtime:
+            stream_key = remaining_runtime[0]
+            if stream_key in delete_errors:
+                raise delete_errors[stream_key].with_context(
+                    stage="remove_runtime_stream", resource=stream_key
+                )
+            raise FrigateApiError(
+                "verification_failed",
+                stage="verify_runtime_cleanup",
+                resource=stream_key,
+            )
+
+    try:
+        verified = client.raw_config()
+        verified_runtime = client.runtime_streams()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage="verify_cleanup") from exc
+    if camera_key in verified.get("cameras", {}):
+        raise FrigateApiError("verification_failed", stage="verify_cleanup", resource=camera_key)
+    verified_streams = verified.get("go2rtc", {}).get("streams", {})
+    remaining = [name for name in stream_keys if name in verified_streams]
+    if not restart_recommended:
+        remaining.extend(name for name in stream_keys if name in verified_runtime)
+    if remaining:
+        raise FrigateApiError("verification_failed", stage="verify_cleanup", resource=remaining[0])
+
+    repository.deselect_frigate_camera(target.target_id, camera_uuid)
+    repository.remove_frigate_binding(target.target_id, camera_uuid)
+    return {
+        "removed_cameras": int(camera_exists),
+        "removed_streams": len(set(configured_aliases) | set(runtime_aliases)),
+        "restart_recommended": restart_recommended,
     }
 
 
@@ -619,6 +789,39 @@ def desired_camera(
     }
 
 
+def frigate_camera_configuration(
+    repository: Any,
+    target: FrigateTarget,
+    camera_uuid: str,
+    *,
+    media_host: str = "127.0.0.1",
+) -> dict[str, str]:
+    camera = next(
+        (
+            item
+            for item in repository.consumer_inventory()
+            if str(item["camera_uuid"]) == camera_uuid
+        ),
+        None,
+    )
+    if camera is None:
+        raise FrigateApiError("camera_not_found")
+    password = repository.rtsp_access_password()
+    desired = desired_camera(camera, password, media_host)
+    if desired is None:
+        raise FrigateApiError("streams_unavailable")
+    payload = {
+        "cameras": {desired["key"]: desired["camera_config"]},
+        "go2rtc": {"streams": desired["streams"]},
+    }
+    configuration = yaml.safe_dump(payload, sort_keys=False).strip()
+    encoded_password = urllib.parse.quote(password, safe="")
+    return {
+        "configuration": configuration,
+        "display_configuration": configuration.replace(encoded_password, "********"),
+    }
+
+
 def _owned_camera_matches(actual: object, desired: dict[str, Any], raw_paths: dict[str, Any]) -> bool:
     if not isinstance(actual, dict):
         return False
@@ -665,7 +868,11 @@ def reconcile_frigate(
     *,
     media_host: str = "127.0.0.1",
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
+    allow_restart: bool = True,
 ) -> dict[str, int]:
+    cameras = selected_camera_inventory(repository, target.target_id)
+    if not cameras:
+        return {"applied": 0, "pending": 0}
     client = client_factory(target)
     client.capabilities()
     config = client.config()
@@ -675,7 +882,7 @@ def reconcile_frigate(
     password = repository.rtsp_access_password()
     applied = 0
     pending = 0
-    for camera in repository.consumer_inventory():
+    for camera in cameras:
         binding = repository.frigate_binding(target.target_id, camera["camera_uuid"])
         if not camera.get("enabled", True):
             if binding is None:
@@ -803,6 +1010,10 @@ def reconcile_frigate(
                     for field, value in camera_update.items()
                     if field != "enabled"
                 }
+            restart_for_second_camera = _requires_frigate_017_second_camera_restart(
+                config,
+                camera_exists=camera_exists,
+            )
             client.set_config(
                 {"cameras": {desired["key"]: camera_update}},
                 update_topic=(
@@ -819,6 +1030,12 @@ def reconcile_frigate(
             client.set_config({"go2rtc": {"streams": desired["streams"]}})
             for alias, sources in desired["streams"].items():
                 client.set_runtime_stream(alias, sources[0])
+            if restart_for_second_camera and allow_restart:
+                client.restart()
+                time.sleep(FRIGATE_RESTART_SETTLE_SECONDS)
+                missing_workers = _wait_for_camera_workers(client, [desired["key"]])
+                if missing_workers:
+                    raise FrigateApiError("camera_start_pending")
             verified_config = client.config()
             verified_raw_paths = client.raw_paths()
             verified_runtime = client.runtime_streams()
