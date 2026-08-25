@@ -201,7 +201,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("urlText.title = url", self.html)
         self.assertNotIn('`Downstream URL: ${url}`', self.html)
         self.assertIn("urlText.tabIndex = 0", self.html)
-        self.assertIn(".stream-access { min-width: 0; }", self.html)
+        self.assertIn(".stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0;", self.html)
         self.assertIn("overflow-x: auto; overflow-y: hidden", self.html)
         self.assertIn("user-select: text; white-space: nowrap", self.html)
 
@@ -211,6 +211,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("metadata.append(source)", self.html)
         self.assertIn('addText(metadata, "div", `media-state', self.html)
         self.assertNotIn('addText(endpoint, "div", `media-state', self.html)
+
+    def test_stream_rows_keep_metadata_clear_of_long_profile_names(self) -> None:
+        self.assertIn("grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.6fr)", self.html)
+        self.assertIn(".profile-name { color: #e0eaf0; font-weight: 700; overflow-wrap: anywhere; }", self.html)
+        self.assertIn(".stream-access { grid-column: 2; grid-row: 1 / span 2;", self.html)
+        self.assertIn(".stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }", self.html)
 
     def test_frigate_status_explains_automatic_retry(self) -> None:
         self.assertIn("Waiting for camera process", self.html)
@@ -292,7 +298,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
 
     def test_camera_actions_offer_per_target_sync_and_masked_config_preview(self) -> None:
-        self.assertIn('"row-action", "Sync"', self.html)
+        self.assertIn('"Frigate destinations"', self.html)
+        self.assertIn("frigate.append(frigateSyncDetails(device))", self.html)
+        self.assertNotIn("function openCameraSync", self.html)
         self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
         self.assertIn("CamAdmiral will not restart Frigate", self.html)
@@ -312,7 +320,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("await refresh();", sync_handler)
         self.assertIn("renderActiveCameraModal();", sync_handler)
         self.assertNotIn("closeAppModal", sync_handler)
-        self.assertIn('["camera", "streams", "adopt", "frigate-sync"]', self.html)
+        self.assertIn('["camera", "streams", "adopt"]', self.html)
+        self.assertNotIn('appModalKind === "frigate-sync"', self.html)
 
 
 if __name__ == "__main__":

@@ -484,17 +484,17 @@
     .media-state.unavailable { color: #fbbf24; }
     .profile-list { display: grid; gap: 9px; }
     .profile {
-      display: grid; grid-template-columns: minmax(140px, .65fr) minmax(170px, .75fr) minmax(320px, 1.7fr);
-      gap: 16px; align-items: start; padding: 11px; border: 1px solid rgba(148, 163, 184, .1);
+      display: grid; grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.6fr);
+      gap: 6px 20px; align-items: start; padding: 11px; border: 1px solid rgba(148, 163, 184, .1);
       border-radius: 9px; background: rgba(5, 15, 27, .38); color: #91a5b5; font-size: 12px;
     }
-    .stream-identity { min-width: 0; }
-    .profile-name { color: #e0eaf0; font-weight: 700; }
-    .profile-metadata { min-width: 0; }
+    .stream-identity { grid-column: 1; grid-row: 1; min-width: 0; }
+    .profile-name { color: #e0eaf0; font-weight: 700; overflow-wrap: anywhere; }
+    .profile-metadata { grid-column: 1; grid-row: 2; min-width: 0; }
     .profile-specs { color: #91a5b5; line-height: 1.45; }
     .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
     .endpoint + .endpoint { margin-top: 5px; }
-    .stream-access { min-width: 0; }
+    .stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0; align-self: center; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .downstream-row {
       display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px 5px 8px;
@@ -596,6 +596,7 @@
       .secondary-action { align-self: flex-start; padding: 5px 0; }
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
+      .stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }
       .integration-row { grid-template-columns: 1fr; gap: 4px; }
       .camera-summary-top { align-items: flex-start; }
       .availability-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -894,7 +895,7 @@
       if (appModal.hidden) return;
       dismissAvailabilityTooltip();
       if (appModalKind === "manual") addressPanel.hidden = true;
-      if (["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind)) expandedCandidate = null;
+      if (["camera", "streams", "adopt"].includes(appModalKind)) expandedCandidate = null;
       appModal.hidden = true;
       appModalKind = null;
       appModalBody.replaceChildren();
@@ -2266,13 +2267,6 @@
       return wrapper;
     }
 
-    function openCameraSync(device, trigger = null) {
-      const candidateId = device.candidate_uuid;
-      if (!candidateId || !device.adoption?.camera_uuid) return;
-      expandedCandidate = candidateId;
-      openAppModal("frigate-sync", `Sync ${device.display_name || device.ip}`, frigateSyncDetails(device), trigger, "wide");
-    }
-
     async function updateCameraName(device, input) {
       const name = input.value.trim();
       if (!name) {
@@ -2582,6 +2576,14 @@
           addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
+      const integrations = adoption.frigate || [];
+      const integrationCount = integrations.length;
+      const frigate = addDetailSection(
+        wrapper,
+        "Frigate destinations",
+        `${integrationCount} target${integrationCount === 1 ? "" : "s"}`
+      );
+      frigate.append(frigateSyncDetails(device));
       return wrapper;
     }
 
@@ -2941,7 +2943,7 @@
     }
 
     function renderActiveCameraModal() {
-      if (!["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind) || !expandedCandidate) return;
+      if (!["camera", "streams", "adopt"].includes(appModalKind) || !expandedCandidate) return;
       const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
       if (!device) {
         closeAppModal(false);
@@ -2952,7 +2954,7 @@
         ? `Adopt ${cameraName}`
         : appModalKind === "streams"
           ? `${cameraName} streams`
-          : appModalKind === "frigate-sync" ? `Sync ${cameraName}` : cameraName;
+          : cameraName;
       appModalTitle.textContent = title;
       appModalTitle.title = title;
       appModalBody.replaceChildren(
@@ -2960,9 +2962,7 @@
           ? adoptionDetails(device)
           : appModalKind === "streams"
             ? streamDetails(device)
-            : appModalKind === "frigate-sync"
-              ? frigateSyncDetails(device)
-              : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
+            : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
       );
     }
 
@@ -3086,10 +3086,6 @@
           streams.type = "button";
           streams.setAttribute("aria-haspopup", "dialog");
           streams.addEventListener("click", () => openCameraStreams(device, streams));
-          const sync = addText(actionStack, "button", "row-action", "Sync");
-          sync.type = "button";
-          sync.setAttribute("aria-haspopup", "dialog");
-          sync.addEventListener("click", () => openCameraSync(device, sync));
         }
         if (!device.adoption) {
           const adopt = addText(actionStack, "button", "row-action", "Adopt");

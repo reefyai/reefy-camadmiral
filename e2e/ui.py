@@ -114,10 +114,11 @@ def assert_mobile_camera_actions(page: Page) -> None:
     if failures:
         raise UiScenarioFailure("; ".join(failures))
 
-    sync = page.get_by_role("button", name="Sync").first
-    expect(sync).to_be_visible()
-    sync.click()
-    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    streams = page.get_by_role("button", name="Streams").first
+    expect(streams).to_be_visible()
+    streams.click()
+    expect(page.locator("#app-modal-title")).to_contain_text("streams")
+    expect(page.get_by_text("Frigate destinations")).to_be_visible()
     expect(page.get_by_text("No Frigate integrations configured.")).to_be_visible()
     expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
         "href", "/settings/integrations"
@@ -143,7 +144,7 @@ def assert_mobile_camera_actions(page: Page) -> None:
             status: null,
             error_code: null,
           }];
-          openCameraSync(device);
+          openCameraStreams(device);
         }
         """
     )
@@ -151,7 +152,7 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(modal).to_be_visible()
     modal.get_by_role("button", name="Sync", exact=True).click()
     expect(modal).to_be_visible()
-    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(page.locator("#app-modal-title")).to_contain_text("streams")
     expect(modal.get_by_text("Synthetic Frigate")).to_be_visible()
     page.locator("#app-modal-close").click()
 
@@ -208,6 +209,30 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL does not contain its real password")
     if "********" in copied:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
+
+
+def assert_desktop_stream_layout(page: Page) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
+    )
+    page.get_by_role("button", name="Streams").first.click()
+    expect(page.get_by_text("Frigate destinations")).to_be_visible()
+    page.locator("#app-modal-body .profile-name").first.evaluate(
+        "node => { node.textContent = 'MediaProfile_Channel1_MainStream_With_A_Long_Technical_Name'; }"
+    )
+    collisions = page.locator("#app-modal-body .profile").evaluate_all(
+        """
+        profiles => profiles.filter(profile => {
+          const identity = profile.querySelector('.stream-identity').getBoundingClientRect();
+          const metadata = profile.querySelector('.profile-metadata').getBoundingClientRect();
+          const access = profile.querySelector('.stream-access').getBoundingClientRect();
+          return identity.right > access.left + 0.5 || metadata.right > access.left + 0.5;
+        }).length
+        """
+    )
+    if collisions:
+        raise UiScenarioFailure("Stream profile details overlap the downstream URL column")
 
 
 def assert_mobile_settings(page: Page) -> None:
@@ -269,7 +294,24 @@ def main() -> int:
         finally:
             context.close()
             browser.close()
-    print("CamAdmiral mobile browser E2E passed")
+        desktop_browser = playwright.webkit.launch(headless=True)
+        desktop_context = desktop_browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            http_credentials={"username": "admin", "password": ADMIN_PASSWORD},
+        )
+        desktop_page = desktop_context.new_page()
+        try:
+            assert_desktop_stream_layout(desktop_page)
+        except Exception:
+            desktop_page.screenshot(
+                path=str(ARTIFACT_DIR / "desktop-stream-layout.png"),
+                full_page=True,
+            )
+            raise
+        finally:
+            desktop_context.close()
+            desktop_browser.close()
+    print("CamAdmiral browser E2E passed")
     return 0
 
 
