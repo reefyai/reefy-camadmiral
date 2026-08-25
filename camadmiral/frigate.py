@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 import yaml
 
+from .discovery import default_lan_interface
+
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
@@ -35,6 +37,7 @@ REQUIRED_CAPABILITIES = {
     "/restart": "post",
     "/stats": "get",
 }
+FRIGATE_ADDRESS_MODES = {"lan", "localhost"}
 
 
 class FrigateApiError(RuntimeError):
@@ -269,13 +272,16 @@ def frigate_camera_key(camera_uuid: str) -> str:
 
 
 def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str, Any]]:
-    selected = set(repository.selected_frigate_camera_uuids(target_id))
-    if not selected:
+    selections = {
+        str(selection["camera_uuid"]): str(selection["address_mode"])
+        for selection in repository.frigate_camera_selections(target_id)
+    }
+    if not selections:
         return []
     return [
-        camera
+        {**camera, "frigate_address_mode": selections[str(camera["camera_uuid"])]}
         for camera in repository.consumer_inventory()
-        if str(camera["camera_uuid"]) in selected
+        if str(camera["camera_uuid"]) in selections
     ]
 
 
@@ -451,6 +457,7 @@ def full_sync_frigate(
     target: FrigateTarget,
     *,
     media_host: str = "127.0.0.1",
+    media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
 ) -> dict[str, int | bool]:
     client = client_factory(target)
@@ -573,6 +580,7 @@ def full_sync_frigate(
             repository,
             target,
             media_host=media_host,
+            media_host_resolver=media_host_resolver,
             client_factory=lambda _target: client,
             allow_restart=not restart_recommended,
         )
@@ -718,6 +726,17 @@ def media_host_from_inventory(path: Path) -> str:
     return str(address)
 
 
+def media_host_for_mode(path: Path, address_mode: str) -> str:
+    if address_mode not in FRIGATE_ADDRESS_MODES:
+        raise FrigateApiError("invalid_address_mode")
+    if address_mode == "localhost":
+        return "localhost"
+    try:
+        return str(default_lan_interface().address)
+    except (OSError, RuntimeError, ValueError):
+        return media_host_from_inventory(path)
+
+
 def desired_camera(
     camera: dict[str, Any],
     password: str,
@@ -732,8 +751,19 @@ def desired_camera(
     record_alias = f"{key}_record"
     detect_alias = f"{key}_detect"
     width, height = _video_dimensions(detect)
-    parsed_media_host = ipaddress.ip_address(media_host)
-    source_host = f"[{parsed_media_host}]" if parsed_media_host.version == 6 else str(parsed_media_host)
+    try:
+        parsed_media_host = ipaddress.ip_address(media_host)
+    except ValueError:
+        if len(media_host) > 253 or not all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in media_host.rstrip(".").split(".")
+        ):
+            raise FrigateApiError("media_host_unavailable")
+        source_host = media_host.rstrip(".")
+    else:
+        source_host = (
+            f"[{parsed_media_host}]" if parsed_media_host.version == 6 else str(parsed_media_host)
+        )
 
     def source(stream: dict[str, Any]) -> str:
         credentials = urllib.parse.quote(password, safe="")
@@ -773,7 +803,7 @@ def desired_camera(
         "name": camera["display_name"],
         "record_stream_uuid": record["stream_uuid"],
         "detect_stream_uuid": detect["stream_uuid"],
-        "media_host": str(parsed_media_host),
+        "media_host": media_host,
         "camera_config": camera_config,
         "stream_keys": sorted(streams),
     }
@@ -876,6 +906,7 @@ def reconcile_frigate(
     target: FrigateTarget,
     *,
     media_host: str = "127.0.0.1",
+    media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
     allow_restart: bool = True,
 ) -> dict[str, int]:
@@ -946,7 +977,12 @@ def reconcile_frigate(
             config = verified_config
             applied += 1
             continue
-        desired = desired_camera(camera, password, media_host)
+        camera_media_host = (
+            media_host_resolver(str(camera["frigate_address_mode"]))
+            if media_host_resolver is not None
+            else media_host
+        )
+        desired = desired_camera(camera, password, camera_media_host)
         if desired is None:
             pending += 1
             continue

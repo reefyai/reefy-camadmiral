@@ -99,6 +99,24 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertTrue(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertEqual(
+            self.repository.frigate_camera_selections("frigate-synthetic"),
+            [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
+        )
+        self.assertTrue(
+            self.repository.select_frigate_camera(
+                "frigate-synthetic", camera_uuid, "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-synthetic", camera_uuid),
+            "localhost",
+        )
+        self.assertFalse(
+            self.repository.select_frigate_camera(
+                "frigate-synthetic", camera_uuid, "localhost"
+            )
+        )
+        self.assertEqual(
             self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
             [camera_uuid],
         )
@@ -125,6 +143,51 @@ class CameraRepositoryTests(unittest.TestCase):
         self.repository.migrate()
 
         self.assertEqual(self.repository.selected_frigate_camera_uuids("frigate-existing"), [])
+
+    def test_frigate_address_mode_migration_defaults_existing_selections_to_lan(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.select_frigate_camera("frigate-existing", camera_uuid)
+        with self.repository.connect() as connection:
+            connection.execute("DELETE FROM schema_migrations WHERE version = 16")
+            connection.execute(
+                "CREATE TABLE old_selections AS "
+                "SELECT target_id, camera_uuid, selected_at FROM frigate_camera_selections"
+            )
+            connection.execute("DROP TABLE frigate_camera_selections")
+            connection.execute(
+                "CREATE TABLE frigate_camera_selections ("
+                "target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE, "
+                "camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE, "
+                "selected_at TEXT NOT NULL, PRIMARY KEY(target_id, camera_uuid))"
+            )
+            connection.execute(
+                "INSERT INTO frigate_camera_selections SELECT * FROM old_selections"
+            )
+            connection.execute("DROP TABLE old_selections")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-existing", camera_uuid),
+            "lan",
+        )
 
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
         adoption = self.repository.adopt(

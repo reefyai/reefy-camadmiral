@@ -241,6 +241,11 @@ MIGRATIONS: tuple[str, ...] = (
     ADD COLUMN restart_recommended INTEGER NOT NULL DEFAULT 0
         CHECK(restart_recommended IN (0, 1));
     """,
+    """
+    ALTER TABLE frigate_camera_selections
+    ADD COLUMN address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost'));
+    """,
 )
 
 
@@ -1151,15 +1156,29 @@ class CameraRepository:
         target["restart_recommended"] = bool(target["restart_recommended"])
         return target
 
-    def select_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
+    def select_frigate_camera(
+        self,
+        target_id: str,
+        camera_uuid: str,
+        address_mode: str = "lan",
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
         with self.connect() as connection:
-            cursor = connection.execute(
-                "INSERT OR IGNORE INTO frigate_camera_selections"
-                "(target_id, camera_uuid, selected_at) VALUES (?, ?, ?)",
-                (target_id, camera_uuid, _now()),
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO frigate_camera_selections"
+                "(target_id, camera_uuid, selected_at, address_mode) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(target_id, camera_uuid) DO UPDATE SET "
+                "address_mode=excluded.address_mode",
+                (target_id, camera_uuid, _now(), address_mode),
             )
             connection.commit()
-        return cursor.rowcount == 1
+        return current is None or str(current["address_mode"]) != address_mode
 
     def deselect_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
         with self.connect() as connection:
@@ -1178,6 +1197,34 @@ class CameraRepository:
                 (target_id,),
             ).fetchall()
         return [str(row["camera_uuid"]) for row in rows]
+
+    def frigate_camera_selections(self, target_id: str) -> list[dict[str, str]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT camera_uuid, address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
+                (target_id,),
+            ).fetchall()
+        return [
+            {
+                "camera_uuid": str(row["camera_uuid"]),
+                "address_mode": str(row["address_mode"]),
+            }
+            for row in rows
+        ]
+
+    def frigate_camera_address_mode(
+        self,
+        target_id: str,
+        camera_uuid: str,
+    ) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+        return str(row["address_mode"]) if row is not None else None
 
     def remove_frigate_target(self, target_id: str) -> bool:
         with self.connect() as connection:

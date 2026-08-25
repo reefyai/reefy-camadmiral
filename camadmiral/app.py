@@ -14,6 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -34,7 +35,7 @@ from .frigate import (
     full_sync_frigate,
     full_sync_preview as preview_frigate_full_sync,
     load_frigate_targets,
-    media_host_from_inventory,
+    media_host_for_mode,
     normalize_frigate_api_url,
     reconcile_frigate,
     remove_frigate_camera,
@@ -162,6 +163,10 @@ class FrigateTargetUpdateRequest(BaseModel):
     api_url: str | None = Field(default=None, min_length=1, max_length=512)
 
 
+class FrigateCameraSyncRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"] = "lan"
+
+
 FACTORY_ONVIF_USERNAME = "admin"
 FACTORY_ONVIF_PASSWORD = "admin"
 
@@ -251,7 +256,10 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     frigate_bindings = [
         (
             target,
-            set(repository.selected_frigate_camera_uuids(target.target_id)),
+            {
+                str(selection["camera_uuid"]): str(selection["address_mode"])
+                for selection in repository.frigate_camera_selections(target.target_id)
+            },
             {
                 str(binding["camera_uuid"]): binding
                 for binding in repository.frigate_bindings(target.target_id)
@@ -267,13 +275,15 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
             adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
             adoption["frigate"] = []
-            for target, selected_cameras, bindings_by_camera in frigate_bindings:
+            for target, selections_by_camera, bindings_by_camera in frigate_bindings:
                 binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
-                selected = str(adoption["camera_uuid"]) in selected_cameras
+                address_mode = selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+                selected = str(adoption["camera_uuid"]) in selections_by_camera
                 target_status = {
                     "target_id": target.target_id,
                     "target": target.name,
                     "selected": selected,
+                    "address_mode": address_mode,
                     "status": (
                         binding["status"]
                         if selected and binding is not None
@@ -364,12 +374,15 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
         targets = load_frigate_targets(repository)
         if not targets:
             return
-        media_host = media_host_from_inventory(INVENTORY)
         for target in targets:
             if not repository.selected_frigate_camera_uuids(target.target_id):
                 continue
             try:
-                reconcile_frigate(repository, target, media_host=media_host)
+                reconcile_frigate(
+                    repository,
+                    target,
+                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                )
             except FrigateApiError as exc:
                 repository.record_frigate_target_check(
                     target.target_id,
@@ -1085,7 +1098,7 @@ def apply_full_sync(
         result = full_sync_frigate(
             repository,
             target,
-            media_host=media_host_from_inventory(INVENTORY),
+            media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
         )
     except FrigateApiError as exc:
         LOGGER.warning(
@@ -1114,18 +1127,24 @@ def apply_full_sync(
     "/internal/frigate-targets/{target_id}/cameras/{camera_uuid}/config",
     include_in_schema=False,
 )
-def preview_frigate_camera_config(target_id: str, camera_uuid: str) -> JSONResponse:
+def preview_frigate_camera_config(
+    target_id: str,
+    camera_uuid: str,
+    address_mode: Literal["lan", "localhost"] | None = None,
+) -> JSONResponse:
     repository = _repository(required=True)
     assert repository is not None
     _current, target = _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    selected_mode = repository.frigate_camera_address_mode(target_id, camera_uuid)
+    effective_mode = address_mode or selected_mode or "lan"
     try:
         configuration = frigate_camera_configuration(
             repository,
             target,
             camera_uuid,
-            media_host=media_host_from_inventory(INVENTORY),
+            media_host=media_host_for_mode(INVENTORY, effective_mode),
         )
     except FrigateApiError as exc:
         return _frigate_target_error(exc)
@@ -1140,6 +1159,7 @@ def sync_frigate_camera(
     target_id: str,
     camera_uuid: str,
     x_camadmiral_action: str | None = Header(default=None),
+    request: FrigateCameraSyncRequest | None = None,
 ) -> JSONResponse:
     if x_camadmiral_action != "sync-frigate-camera":
         raise HTTPException(status_code=400, detail="Missing Frigate camera sync action header")
@@ -1154,11 +1174,16 @@ def sync_frigate_camera(
             status_code=409,
         )
     try:
-        repository.select_frigate_camera(target_id, camera_uuid)
+        address_mode = (
+            request.address_mode
+            if request is not None
+            else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
+        )
+        repository.select_frigate_camera(target_id, camera_uuid, address_mode)
         result = reconcile_frigate(
             repository,
             target,
-            media_host=media_host_from_inventory(INVENTORY),
+            media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
         )
     except FrigateApiError as exc:
         repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)

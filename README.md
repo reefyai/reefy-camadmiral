@@ -179,7 +179,17 @@ stream capabilities before saving the integration.
 
 Use a camera's **Sync** action to select which Frigate instance should receive it through a
 stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
-configuration or remove that CamAdmiral-managed camera from the instance.
+configuration or remove that CamAdmiral-managed camera from the instance. Each camera and
+Frigate target pairing has a CamAdmiral address mode:
+
+- **LAN IP** is the default and uses the host's current default LAN address. CamAdmiral
+  reconciles Frigate when DHCP changes that address.
+- **Localhost** renders the hostname `localhost`. It is intended for a Frigate instance
+  that shares the host network. CamAdmiral shows a warning for bridge-network deployments
+  but saves the operator's selection without probing or overriding it.
+
+The address mode applies to both recording and detection streams for that camera. Existing
+Frigate selections migrate to **LAN IP**.
 
 Use **Full sync now** to synchronize the selected cameras and remove stale Frigate cameras
 and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one

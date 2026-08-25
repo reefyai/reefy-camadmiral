@@ -130,6 +130,13 @@
       background: rgba(5, 15, 27, .42);
     }
     .frigate-camera-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .frigate-address-choice { display: grid; gap: 4px; margin-top: 9px; color: #7890a4; font-size: 11px; font-weight: 750; }
+    .frigate-address-choice select {
+      width: min(220px, 100%); border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px;
+      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 7px 9px; font: inherit;
+    }
+    .frigate-address-choice select:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
+    .frigate-address-warning { margin-top: 6px; color: #fcd34d; font-size: 11px; line-height: 1.4; }
     .config-preview {
       max-height: 52vh; overflow: auto; margin: 0; padding: 12px; border: 1px solid rgba(148, 163, 184, .14);
       border-radius: 9px; background: #030a12; color: #b9fff5;
@@ -2133,13 +2140,13 @@
       });
     }
 
-    async function showFrigateConfig(device, target, trigger) {
+    async function showFrigateConfig(device, target, addressMode, trigger) {
       const cameraUuid = device.adoption.camera_uuid;
       const loading = addText(document.createElement("div"), "div", "settings-copy", "Preparing configuration...");
       openAppModal("frigate-config", `${target.target} configuration`, loading, trigger, "wide");
       try {
         const response = await fetch(
-          `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}/config`,
+          `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}/config?address_mode=${encodeURIComponent(addressMode)}`,
           {cache: "no-store"}
         );
         const result = await response.json();
@@ -2177,6 +2184,27 @@
           : "Not synced";
         const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
         if (target.error_code) meta.title = target.error_code;
+        const addressField = addText(summary, "label", "frigate-address-choice", "CamAdmiral address");
+        const addressSelect = document.createElement("select");
+        [["lan", "LAN IP"], ["localhost", "Localhost"]].forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          addressSelect.append(option);
+        });
+        addressSelect.value = target.address_mode || "lan";
+        addressField.append(addressSelect);
+        const addressWarning = addText(
+          summary,
+          "div",
+          "frigate-address-warning",
+          "Localhost works only when Frigate shares the host network."
+        );
+        const updateAddressWarning = () => {
+          addressWarning.hidden = addressSelect.value !== "localhost";
+        };
+        addressSelect.addEventListener("change", updateAddressWarning);
+        updateAddressWarning();
         const actions = addText(item, "div", "frigate-camera-actions", "");
         const sync = addText(actions, "button", "row-action", target.selected ? "Sync now" : "Sync");
         sync.type = "button";
@@ -2186,7 +2214,14 @@
           try {
             const response = await fetch(
               `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`,
-              {method: "POST", headers: {"X-CamAdmiral-Action": "sync-frigate-camera"}}
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-CamAdmiral-Action": "sync-frigate-camera"
+                },
+                body: JSON.stringify({address_mode: addressSelect.value})
+              }
             );
             const result = await response.json();
             if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
@@ -2201,7 +2236,7 @@
         });
         const showConfig = addText(actions, "button", "row-action", "Show config");
         showConfig.type = "button";
-        showConfig.addEventListener("click", () => showFrigateConfig(device, target, showConfig));
+        showConfig.addEventListener("click", () => showFrigateConfig(device, target, addressSelect.value, showConfig));
         if (target.selected) {
           const remove = addText(actions, "button", "danger-action", "Remove");
           remove.type = "button";
@@ -3106,7 +3141,7 @@
           device.connectivity_status,
           device.adoption?.enabled,
           device.adoption?.thumbnail_captured_at,
-          ...(device.adoption?.frigate || []).map(status => [status.target_id, status.selected, status.status, status.error_code]),
+          ...(device.adoption?.frigate || []).map(status => [status.target_id, status.selected, status.status, status.error_code, status.address_mode]),
           ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
         ]));
         const resultId = `${data.inventory_scan_id || data.scan_id || data.completed_at}:${healthSignature}`;

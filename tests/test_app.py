@@ -190,7 +190,10 @@ class DiscoveryDecorationTests(unittest.TestCase):
             [{"camera_uuid": "camera-1", "status": "applied"}],
             [],
         ]
-        repository.selected_frigate_camera_uuids.side_effect = [["camera-1"], []]
+        repository.frigate_camera_selections.side_effect = [
+            [{"camera_uuid": "camera-1", "address_mode": "localhost"}],
+            [],
+        ]
         state = {
             "devices": [
                 {
@@ -213,8 +216,20 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(
             decorated["devices"][0]["adoption"]["frigate"],
             [
-                {"target_id": "one", "target": "Frigate One", "selected": True, "status": "applied"},
-                {"target_id": "two", "target": "Frigate Two", "selected": False, "status": "not_synced"},
+                {
+                    "target_id": "one",
+                    "target": "Frigate One",
+                    "selected": True,
+                    "address_mode": "localhost",
+                    "status": "applied",
+                },
+                {
+                    "target_id": "two",
+                    "target": "Frigate Two",
+                    "selected": False,
+                    "address_mode": "lan",
+                    "status": "not_synced",
+                },
             ],
         )
 
@@ -234,7 +249,9 @@ class DiscoveryDecorationTests(unittest.TestCase):
                 "last_error_code": "camera_start_pending",
             }
         ]
-        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
+        repository.frigate_camera_selections.return_value = [
+            {"camera_uuid": "camera-1", "address_mode": "lan"}
+        ]
         state = {
             "devices": [
                 {
@@ -258,6 +275,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
                     "target_id": "one",
                     "target": "Frigate One",
                     "selected": True,
+                    "address_mode": "lan",
                     "status": "error",
                     "error_code": "camera_start_pending",
                 }
@@ -564,7 +582,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         }
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
                 "full_sync_frigate",
@@ -629,7 +647,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
                 "reconcile_frigate",
@@ -640,14 +658,44 @@ class FrigateTargetApiTests(unittest.TestCase):
                 "frigate-synthetic",
                 "camera-1",
                 "sync-frigate-camera",
+                app_module.FrigateCameraSyncRequest(address_mode="localhost"),
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(json.loads(response.body)["selected"])
         repository.select_frigate_camera.assert_called_once_with(
-            "frigate-synthetic", "camera-1"
+            "frigate-synthetic", "camera-1", "localhost"
         )
         reconcile.assert_called_once()
+
+    def test_camera_sync_without_body_preserves_existing_address_mode(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "selected_cameras": 1,
+        }
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        repository.frigate_camera_address_mode.return_value = "localhost"
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "reconcile_frigate",
+                return_value={"applied": 1, "pending": 0},
+            ),
+        ):
+            response = app_module.sync_frigate_camera(
+                "frigate-synthetic",
+                "camera-1",
+                "sync-frigate-camera",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.select_frigate_camera.assert_called_once_with(
+            "frigate-synthetic", "camera-1", "localhost"
+        )
 
     def test_camera_config_preview_returns_masked_and_copyable_versions(self) -> None:
         repository = Mock()
@@ -660,7 +708,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
                 "frigate_camera_configuration",

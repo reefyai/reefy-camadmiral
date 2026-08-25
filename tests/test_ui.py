@@ -302,9 +302,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)
         self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
+        self.assertIn('[["lan", "LAN IP"], ["localhost", "Localhost"]]', self.html)
+        self.assertIn("Localhost works only when Frigate shares the host network.", self.html)
+        self.assertIn("JSON.stringify({address_mode: addressSelect.value})", self.html)
 
     def test_successful_camera_sync_refreshes_the_open_dialog(self) -> None:
-        sync_handler = self.html.split('headers: {"X-CamAdmiral-Action": "sync-frigate-camera"}', 1)[1]
+        sync_handler = self.html.split('"X-CamAdmiral-Action": "sync-frigate-camera"', 1)[1]
         sync_handler = sync_handler.split("} catch (error) {", 1)[0]
         self.assertIn("await refresh();", sync_handler)
         self.assertIn("renderActiveCameraModal();", sync_handler)

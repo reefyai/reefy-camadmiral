@@ -19,6 +19,7 @@ from camadmiral.frigate import (
     frigate_restart_required,
     load_frigate_targets,
     media_host_from_inventory,
+    media_host_for_mode,
     normalize_frigate_api_url,
     reconcile_frigate,
     remove_frigate_camera,
@@ -307,6 +308,20 @@ class FrigateTargetTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(media_host_from_inventory(path), "192.168.50.12")
+
+    def test_lan_mode_uses_current_interface_instead_of_stale_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text(
+                json.dumps({"network": {"address": "192.168.50.12"}}),
+                encoding="utf-8",
+            )
+            interface = Mock(address="192.168.50.44")
+            with patch("camadmiral.frigate.default_lan_interface", return_value=interface):
+                self.assertEqual(media_host_for_mode(path, "lan"), "192.168.50.44")
+
+    def test_localhost_mode_uses_hostname_literal(self) -> None:
+        self.assertEqual(media_host_for_mode(Path("unused"), "localhost"), "localhost")
 
 
 class FrigateReconciliationTests(unittest.TestCase):
@@ -838,6 +853,49 @@ class FrigateReconciliationTests(unittest.TestCase):
             (len(self.client.config_writes), len(self.client.runtime_writes)),
             writes_after_first,
         )
+
+    def test_reconcile_uses_saved_address_mode_for_each_camera(self) -> None:
+        self.repository.select_frigate_camera(
+            self.target.target_id,
+            self.camera_uuid,
+            "localhost",
+        )
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=lambda mode: {"lan": "192.168.50.44", "localhost": "localhost"}[mode],
+            client_factory=lambda _target: self.client,
+        )
+
+        sources = [source for _name, source in self.client.runtime_writes]
+        self.assertTrue(sources)
+        self.assertTrue(all("@localhost:18554/" in source for source in sources))
+
+    def test_lan_address_change_rewrites_managed_streams(self) -> None:
+        factory = lambda _target: self.client
+        current_host = {"value": "192.168.50.12"}
+        resolver = lambda _mode: current_host["value"]
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=resolver,
+            client_factory=factory,
+        )
+        writes_before_change = len(self.client.runtime_writes)
+        current_host["value"] = "192.168.50.44"
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=resolver,
+            client_factory=factory,
+        )
+
+        changed = self.client.runtime_writes[writes_before_change:]
+        self.assertEqual(len(changed), 2)
+        self.assertTrue(all("@192.168.50.44:18554/" in source for _name, source in changed))
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
