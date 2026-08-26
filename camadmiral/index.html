@@ -140,6 +140,7 @@
       padding: 12px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 10px;
       background: rgba(5, 15, 27, .42);
     }
+    .frigate-camera-help { margin-top: 5px; max-width: 620px; }
     .frigate-camera-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
     .stream-address-choice {
       display: flex; align-items: center; gap: 12px 18px; margin-bottom: 12px; padding: 10px 12px;
@@ -2465,6 +2466,24 @@
       startLiveTransport(cameraUuid, session);
     }
 
+    function frigateSyncError(errorCode) {
+      const errors = {
+        camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
+        target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
+        authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
+        capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
+        configuration_rejected: ["Configuration rejected", "Frigate rejected the camera configuration. CamAdmiral will retry."],
+        runtime_stream_rejected: ["Stream rejected", "Frigate rejected the runtime stream. CamAdmiral will retry."],
+        verification_failed: ["Sync verification failed", "Frigate did not retain the expected configuration. CamAdmiral will retry."]
+      };
+      return errors[errorCode] || [
+        "Sync issue",
+        errorCode
+          ? `CamAdmiral will retry automatically. Error code: ${errorCode}.`
+          : "CamAdmiral will retry automatically."
+      ];
+    }
+
     function addFrigateStatus(parent, adoption) {
       const statuses = Array.isArray(adoption?.frigate)
         ? adoption.frigate
@@ -2494,16 +2513,7 @@
           addText(row, "div", "integration-help", "CamAdmiral is applying this camera.");
           return;
         }
-        const errors = {
-          camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
-          target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
-          authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
-          capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
-          configuration_rejected: ["Configuration rejected", "Frigate rejected the camera configuration. CamAdmiral will retry."],
-          runtime_stream_rejected: ["Stream rejected", "Frigate rejected the runtime stream. CamAdmiral will retry."],
-          verification_failed: ["Sync verification failed", "Frigate did not retain the expected configuration. CamAdmiral will retry."]
-        };
-        const [label, help] = errors[status.error_code] || ["Sync issue", "CamAdmiral will retry automatically."];
+        const [label, help] = frigateSyncError(status.error_code);
         addText(row, "div", "integration-state error", label);
         addText(row, "div", "integration-help", help);
       });
@@ -2548,11 +2558,19 @@
         const item = addText(wrapper, "article", "frigate-camera-item", "");
         const summary = addText(item, "div", "", "");
         addText(summary, "div", "frigate-target-name", target.target);
-        const stateLabel = target.selected
+        let stateLabel = target.selected
           ? target.status === "applied" ? "Synced" : target.status === "error" ? "Sync issue" : "Syncing"
           : "Not synced";
+        let statusHelp = "";
+        if (target.selected && target.status === "error") {
+          [stateLabel, statusHelp] = frigateSyncError(target.error_code);
+        }
         const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
         if (target.error_code) meta.title = target.error_code;
+        if (statusHelp) {
+          const help = addText(summary, "div", "integration-help frigate-camera-help", statusHelp);
+          if (target.error_code) help.title = target.error_code;
+        }
         const actions = addText(item, "div", "frigate-camera-actions", "");
         const sync = addText(actions, "button", "row-action", target.selected ? "Sync now" : "Sync");
         sync.type = "button";

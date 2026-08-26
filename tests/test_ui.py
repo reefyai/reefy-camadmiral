@@ -272,8 +272,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn(".stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }", self.html)
 
     def test_frigate_status_explains_automatic_retry(self) -> None:
+        self.assertIn("function frigateSyncError(errorCode)", self.html)
         self.assertIn("Waiting for camera process", self.html)
         self.assertIn("CamAdmiral will retry until its process appears.", self.html)
+        self.assertIn("[stateLabel, statusHelp] = frigateSyncError(target.error_code)", self.html)
+        self.assertIn('"integration-help frigate-camera-help", statusHelp', self.html)
+        self.assertIn("Error code: ${errorCode}.", self.html)
         self.assertNotIn("Retry pending", self.html)
 
     def test_camera_details_show_bounded_availability_views(self) -> None:
