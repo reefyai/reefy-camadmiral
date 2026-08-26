@@ -141,12 +141,14 @@
       background: rgba(5, 15, 27, .42);
     }
     .frigate-camera-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
-    .frigate-address-choice { display: grid; gap: 4px; margin-top: 9px; color: #7890a4; font-size: 11px; font-weight: 750; }
-    .frigate-address-choice select {
-      width: min(220px, 100%); border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px;
-      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 7px 9px; font: inherit;
+    .stream-address-choice {
+      display: flex; align-items: center; gap: 12px 18px; margin-bottom: 12px; padding: 10px 12px;
+      border: 1px solid rgba(148, 163, 184, .12); border-radius: 9px; background: rgba(5, 15, 27, .32);
     }
-    .frigate-address-choice select:focus { outline: 2px solid rgba(45, 212, 191, .5); outline-offset: 1px; }
+    .stream-address-choice legend { float: left; padding: 0; color: #e0eaf0; font-size: 12px; font-weight: 800; }
+    .stream-address-options { display: flex; align-items: center; gap: 14px; }
+    .stream-address-option { display: flex; align-items: center; gap: 6px; color: #b8c7d2; font-size: 12px; cursor: pointer; }
+    .stream-address-option input { margin: 0; accent-color: #2dd4bf; }
     .frigate-address-warning { margin-top: 6px; color: #fcd34d; font-size: 11px; line-height: 1.4; }
     .config-preview {
       max-height: 52vh; overflow: auto; margin: 0; padding: 12px; border: 1px solid rgba(148, 163, 184, .14);
@@ -667,6 +669,7 @@
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
       .stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }
+      .stream-address-choice { align-items: flex-start; flex-direction: column; gap: 8px; }
       .integration-row { grid-template-columns: 1fr; gap: 4px; }
       .camera-summary-top { align-items: flex-start; }
       .availability-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -978,6 +981,7 @@
     const adoptionProgress = new Map();
     const lifecycleErrors = new Map();
     const availabilityResults = new Map();
+    const streamAddressModes = new Map();
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
@@ -2192,9 +2196,10 @@
 
     const downstreamPasswordMask = "********";
 
-    function downstreamUrl(streamKey, maskPassword = false) {
+    function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan") {
       if (!mediaAccess) return null;
-      const host = mediaHost.includes(":") ? `[${mediaHost}]` : mediaHost;
+      const selectedHost = addressMode === "localhost" ? "localhost" : mediaHost;
+      const host = selectedHost.includes(":") ? `[${selectedHost}]` : selectedHost;
       const username = encodeURIComponent(mediaAccess.username);
       const password = maskPassword ? downstreamPasswordMask : encodeURIComponent(mediaAccess.password);
       return `rtsp://${username}:${password}@${host}:${mediaAccess.port}/${encodeURIComponent(streamKey)}`;
@@ -2220,9 +2225,9 @@
       window.setTimeout(() => { button.textContent = originalLabel; }, 1200);
     }
 
-    function addStreamAccess(parent, managed, enabled = true) {
-      const url = managed && enabled ? downstreamUrl(managed.stream_key) : null;
-      const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true) : null;
+    function addStreamAccess(parent, managed, enabled = true, addressMode = "lan") {
+      const url = managed && enabled ? downstreamUrl(managed.stream_key, false, addressMode) : null;
+      const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true, addressMode) : null;
       addText(parent, "div", "downstream-label", "Downstream URL");
       const row = addText(parent, "div", "downstream-row", "");
       const value = !enabled
@@ -2527,7 +2532,7 @@
       }
     }
 
-    function frigateSyncDetails(device) {
+    function frigateSyncDetails(device, addressMode) {
       const wrapper = document.createElement("div");
       wrapper.className = "frigate-camera-list";
       const integrations = device.adoption?.frigate || [];
@@ -2546,27 +2551,6 @@
           : "Not synced";
         const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
         if (target.error_code) meta.title = target.error_code;
-        const addressField = addText(summary, "label", "frigate-address-choice", "CamAdmiral address");
-        const addressSelect = document.createElement("select");
-        [["lan", "LAN IP"], ["localhost", "Localhost"]].forEach(([value, label]) => {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = label;
-          addressSelect.append(option);
-        });
-        addressSelect.value = target.address_mode || "lan";
-        addressField.append(addressSelect);
-        const addressWarning = addText(
-          summary,
-          "div",
-          "frigate-address-warning",
-          "Localhost works only when Frigate shares the host network."
-        );
-        const updateAddressWarning = () => {
-          addressWarning.hidden = addressSelect.value !== "localhost";
-        };
-        addressSelect.addEventListener("change", updateAddressWarning);
-        updateAddressWarning();
         const actions = addText(item, "div", "frigate-camera-actions", "");
         const sync = addText(actions, "button", "row-action", target.selected ? "Sync now" : "Sync");
         sync.type = "button";
@@ -2582,7 +2566,7 @@
                   "Content-Type": "application/json",
                   "X-CamAdmiral-Action": "sync-frigate-camera"
                 },
-                body: JSON.stringify({address_mode: addressSelect.value})
+                body: JSON.stringify({address_mode: addressMode})
               }
             );
             const result = await response.json();
@@ -2598,7 +2582,7 @@
         });
         const showConfig = addText(actions, "button", "row-action", "Show config");
         showConfig.type = "button";
-        showConfig.addEventListener("click", () => showFrigateConfig(device, target, addressSelect.value, showConfig));
+        showConfig.addEventListener("click", () => showFrigateConfig(device, target, addressMode, showConfig));
         if (target.selected) {
           const remove = addText(actions, "button", "danger-action", "Remove");
           remove.type = "button";
@@ -2890,6 +2874,41 @@
         addText(wrapper, "div", "detail-message", "Adopt this camera before accessing its streams.");
         return wrapper;
       }
+      const cameraUuid = adoption.camera_uuid;
+      if (!streamAddressModes.has(cameraUuid)) {
+        const savedMode = (adoption.frigate || []).find(target => target.selected)?.address_mode
+          || adoption.frigate?.[0]?.address_mode
+          || "lan";
+        streamAddressModes.set(cameraUuid, savedMode);
+      }
+      const addressMode = streamAddressModes.get(cameraUuid);
+      const addressChoice = document.createElement("fieldset");
+      addressChoice.className = "stream-address-choice";
+      addText(addressChoice, "legend", "", "CamAdmiral address");
+      const addressOptions = addText(addressChoice, "div", "stream-address-options", "");
+      [["lan", "LAN"], ["localhost", "Localhost"]].forEach(([value, label]) => {
+        const option = addText(addressOptions, "label", "stream-address-option", "");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `stream-address-${cameraUuid}`;
+        radio.value = value;
+        radio.checked = addressMode === value;
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          streamAddressModes.set(cameraUuid, value);
+          renderActiveCameraModal();
+        });
+        option.append(radio, document.createTextNode(label));
+      });
+      wrapper.append(addressChoice);
+      if (addressMode === "localhost") {
+        addText(
+          addressChoice,
+          "div",
+          "frigate-address-warning",
+          "Localhost works only when Frigate shares the host network."
+        );
+      }
       if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       let result = inspections.get(device.candidate_uuid);
       if (!result || !["ok", "adopted"].includes(result.status)) {
@@ -2927,7 +2946,7 @@
         addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
         metadata.append(source);
         const endpoint = addText(row, "div", "stream-access", "");
-        addStreamAccess(endpoint, managed, adoption?.enabled !== false);
+        addStreamAccess(endpoint, managed, adoption?.enabled !== false, addressMode);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
@@ -2944,7 +2963,7 @@
         "Frigate destinations",
         `${integrationCount} target${integrationCount === 1 ? "" : "s"}`
       );
-      frigate.append(frigateSyncDetails(device));
+      frigate.append(frigateSyncDetails(device, addressMode));
       return wrapper;
     }
 

@@ -244,8 +244,9 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_downstream_urls_are_selectable_single_line_scrollers(self) -> None:
         self.assertIn('const downstreamPasswordMask = "********"', self.html)
-        self.assertIn("function downstreamUrl(streamKey, maskPassword = false)", self.html)
-        self.assertIn("const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true) : null", self.html)
+        self.assertIn('function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan")', self.html)
+        self.assertIn('addressMode === "localhost" ? "localhost" : mediaHost', self.html)
+        self.assertIn("downstreamUrl(managed.stream_key, true, addressMode)", self.html)
         self.assertIn(': displayUrl || (managed ?', self.html)
         self.assertIn('const urlText = addText(row, "div", "downstream-url", value)', self.html)
         self.assertIn("urlText.title = displayUrl", self.html)
@@ -353,7 +354,7 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_camera_actions_offer_per_target_sync_and_masked_config_preview(self) -> None:
         self.assertIn('"Frigate destinations"', self.html)
-        self.assertIn("frigate.append(frigateSyncDetails(device))", self.html)
+        self.assertIn("frigate.append(frigateSyncDetails(device, addressMode))", self.html)
         self.assertNotIn("function openCameraSync", self.html)
         self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
@@ -364,9 +365,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)
         self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
-        self.assertIn('[["lan", "LAN IP"], ["localhost", "Localhost"]]', self.html)
+        self.assertIn('[["lan", "LAN"], ["localhost", "Localhost"]]', self.html)
+        self.assertIn('radio.type = "radio"', self.html)
+        self.assertIn("streamAddressModes.set(cameraUuid, value)", self.html)
         self.assertIn("Localhost works only when Frigate shares the host network.", self.html)
-        self.assertIn("JSON.stringify({address_mode: addressSelect.value})", self.html)
+        self.assertIn("JSON.stringify({address_mode: addressMode})", self.html)
+        self.assertNotIn("addressSelect", self.html)
 
     def test_successful_camera_sync_refreshes_the_open_dialog(self) -> None:
         sync_handler = self.html.split('"X-CamAdmiral-Action": "sync-frigate-camera"', 1)[1]

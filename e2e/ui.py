@@ -295,6 +295,17 @@ def assert_downstream_password_masking(page: Page) -> None:
     if any(access["password"] in str(value or "") for value in attributes):
         raise UiScenarioFailure("Downstream password is exposed in a URL attribute")
 
+    localhost = page.get_by_role("radio", name="Localhost")
+    localhost.check()
+    expect(localhost).to_be_checked()
+    expect(displayed_urls.first).to_contain_text("@localhost:")
+    expect(page.get_by_text("Localhost works only when Frigate shares the host network.")).to_be_visible()
+
+    lan = page.get_by_role("radio", name="LAN", exact=True)
+    lan.check()
+    expect(lan).to_be_checked()
+    expect(displayed_urls.first).not_to_contain_text("@localhost:")
+
     copy_button = page.locator("#app-modal-body .copy-button").first
     copy_button.click()
     expect(copy_button).to_have_text("✓", timeout=5_000)
