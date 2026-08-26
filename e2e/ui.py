@@ -51,13 +51,34 @@ def assert_mobile_camera_actions(page: Page) -> None:
         raise UiScenarioFailure("Dashboard repeats the Cameras heading")
     page.get_by_role("button", name="Scan network").click()
     expect(page.get_by_role("heading", name="Scan network")).to_be_visible()
-    expect(page.get_by_text("Networks to scan", exact=True)).to_be_visible()
     expect(page.locator("#scan-start")).to_be_visible()
     expect(page.locator("#scan-run-status")).to_be_hidden()
     expect(page.locator("#scan-results")).to_be_hidden()
     if page.get_by_text("Excluded", exact=True).count():
         raise UiScenarioFailure("Removed subnet is shown as Excluded")
     network_count = page.locator("#scan-network-list .scan-network-row").count()
+    detected_cidr = page.evaluate(
+        """async () => {
+            const response = await fetch('/internal/discovery/networks', {cache: 'no-store'});
+            const payload = await response.json();
+            return payload.networks?.find(network => network.source === 'detected' && network.selected)?.cidr || null;
+        }"""
+    )
+    if detected_cidr:
+        detected_network = page.locator("#scan-network-list .scan-network-row").filter(
+            has_text=detected_cidr
+        ).first
+        detected_network.get_by_role("button", name="Remove").click()
+        expect(page.locator("#scan-network-list .scan-network-row")).to_have_count(
+            network_count - 1
+        )
+        expect(page.locator("#scan-network-restore")).to_be_visible()
+        expect(page.locator("#scan-network-restore")).to_be_enabled()
+        page.locator("#scan-network-restore").select_option(detected_cidr)
+        expect(page.locator("#scan-network-list .scan-network-row")).to_have_count(
+            network_count
+        )
+        expect(page.locator("#scan-network-input")).to_be_enabled()
     page.locator("#scan-network-input").fill("10.0.0.0/8")
     page.get_by_role("button", name="Add subnet").click()
     expect(page.locator("#scan-network-settings-status")).to_contain_text(

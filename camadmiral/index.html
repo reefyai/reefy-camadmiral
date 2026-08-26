@@ -173,9 +173,6 @@
     .scanner-state.error .scanner-dot { background: #fb7185; }
     .scan-dialog-content { min-width: 0; }
     .scan-networks-section { margin-bottom: 18px; }
-    .scan-networks-heading { margin-bottom: 9px; }
-    .scan-networks-heading strong { display: block; color: #dce8ee; font-size: 14px; }
-    .scan-networks-heading span { display: block; margin-top: 3px; color: #7890a4; font-size: 11px; }
     .scan-network-list {
       display: grid; margin-bottom: 10px; border-top: 1px solid rgba(148, 163, 184, .12);
     }
@@ -185,18 +182,20 @@
     }
     .scan-network-identity { min-width: 0; }
     .scan-network-cidr { color: #e4eef3; font: 700 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .scan-network-meta { overflow: hidden; color: #7890a4; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .scan-network-row .row-action { min-width: 66px; }
-    .scan-network-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-    .scan-network-add input {
+    .scan-network-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .scan-network-add {
+      display: grid; grid-template-columns: minmax(220px, 360px) auto; justify-content: start; gap: 8px;
+    }
+    .scan-network-add input, .scan-network-restore {
       min-width: 0; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 8px 10px; font: inherit;
     }
-    .scan-network-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
-    .scan-network-settings-status { min-height: 17px; color: #8ea2b3; font-size: 11px; }
+    .scan-network-restore { max-width: 260px; }
+    .scan-network-settings-status { min-height: 17px; margin-top: 8px; color: #8ea2b3; font-size: 11px; }
     .scan-network-settings-status.error { color: #fda4af; }
     .scan-action { padding-bottom: 16px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
-    .scan-action #scan-start { width: 100%; min-height: 44px; }
+    .scan-action #scan-start { min-height: 40px; }
     .scan-run-status { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: #a9bac6; font-size: 12px; }
     .scan-run-status .network { margin-left: auto; text-align: right; }
     .scan-dialog-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; font-weight: 700; }
@@ -559,13 +558,13 @@
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
-      #scan-start { width: 100%; min-height: 44px; }
+      #scan-start { min-height: 44px; }
       .scan-network-row { grid-template-columns: minmax(0, 1fr) auto; }
       .scan-network-row .row-action { min-height: 40px; }
-      .scan-network-add { grid-template-columns: minmax(0, 1fr) auto; }
+      .scan-network-add { width: 100%; grid-template-columns: minmax(0, 1fr) auto; }
       .scan-network-add input { min-height: 44px; }
       .scan-network-add .row-action { min-height: 40px; }
-      .scan-network-settings-footer { align-items: flex-start; }
+      .scan-network-restore { width: 100%; max-width: none; min-height: 44px; }
       .scan-run-status { align-items: flex-start; flex-wrap: wrap; }
       .scan-run-status .network { width: 100%; margin-left: 18px; text-align: left; }
       .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
@@ -749,20 +748,16 @@
       </div>
       <div class="modal-body" id="app-modal-body">
         <div class="scan-dialog-content" id="scan-dialog-content" hidden>
-          <section class="scan-networks-section" aria-labelledby="scan-networks-title">
-            <div class="scan-networks-heading">
-              <strong id="scan-networks-title">Networks to scan</strong>
-              <span>Custom private subnets can include up to 1,024 usable addresses.</span>
-            </div>
+          <section class="scan-networks-section" aria-label="Networks to scan">
             <div class="scan-network-list" id="scan-network-list"></div>
-            <form class="scan-network-add" id="scan-network-add">
-              <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
-              <button class="row-action" type="submit">Add subnet</button>
-            </form>
-            <div class="scan-network-settings-footer">
-              <div class="scan-network-settings-status" id="scan-network-settings-status"></div>
-              <button class="row-action" id="scan-networks-save" type="button">Save</button>
+            <div class="scan-network-controls">
+              <form class="scan-network-add" id="scan-network-add">
+                <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
+                <button class="row-action" type="submit">Add subnet</button>
+              </form>
+              <select class="scan-network-restore" id="scan-network-restore" aria-label="Restore detected subnet" hidden></select>
             </div>
+            <div class="scan-network-settings-status" id="scan-network-settings-status" role="status" aria-live="polite"></div>
           </section>
           <div class="scan-action">
             <button id="scan-start" type="button">Scan network</button>
@@ -851,7 +846,7 @@
     const scanNetworkList = document.querySelector("#scan-network-list");
     const scanNetworkAdd = document.querySelector("#scan-network-add");
     const scanNetworkInput = document.querySelector("#scan-network-input");
-    const scanNetworksSave = document.querySelector("#scan-networks-save");
+    const scanNetworkRestore = document.querySelector("#scan-network-restore");
     const scanNetworkSettingsStatus = document.querySelector("#scan-network-settings-status");
     const toolbar = document.querySelector("#toolbar");
     const searchInput = document.querySelector("#search");
@@ -891,7 +886,6 @@
     let scanDetailsSignature = "";
     let discoveryNetworkConfiguration = [];
     let selectedDiscoverySubnets = new Set();
-    let scanNetworksDirty = false;
     let scanNetworksSaving = false;
     let maxCustomScanHosts = 1024;
     let scanModalScanId = null;
@@ -1035,6 +1029,11 @@
 
     function renderDiscoveryNetworks() {
       scanNetworkList.replaceChildren();
+      scanNetworkRestore.replaceChildren();
+      const restorePrompt = document.createElement("option");
+      restorePrompt.value = "";
+      restorePrompt.textContent = "Restore detected subnet...";
+      scanNetworkRestore.append(restorePrompt);
       discoveryNetworkConfiguration.filter(network => {
         const cidr = String(network.cidr || network.subnet || "");
         return cidr && selectedDiscoverySubnets.has(cidr);
@@ -1043,23 +1042,35 @@
         const row = addText(scanNetworkList, "div", "scan-network-row", "");
         const identity = addText(row, "div", "scan-network-identity", "");
         addText(identity, "div", "scan-network-cidr", cidr);
-        const method = network.source === "detected" ? "Detected · multicast and unicast" : "Custom · routed unicast";
-        addText(identity, "div", "scan-network-meta", method);
-        const toggle = addText(row, "button", "row-action", "Remove");
-        toggle.type = "button";
-        toggle.disabled = scanNetworksSaving || busy;
-        toggle.addEventListener("click", () => {
+        const remove = addText(row, "button", "row-action", "Remove");
+        remove.type = "button";
+        remove.disabled = scanNetworksSaving || busy;
+        remove.addEventListener("click", async () => {
+          const previousConfiguration = discoveryNetworkConfiguration.slice();
+          const previousSubnets = new Set(selectedDiscoverySubnets);
           selectedDiscoverySubnets.delete(cidr);
-          scanNetworksDirty = true;
-          scanNetworkSettingsStatus.className = "scan-network-settings-status";
-          setText(scanNetworkSettingsStatus, "Unsaved subnet changes.");
           renderDiscoveryNetworks();
+          await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
         });
       });
+      discoveryNetworkConfiguration.filter(network => {
+        const cidr = String(network.cidr || network.subnet || "");
+        return network.source === "detected" && cidr && !selectedDiscoverySubnets.has(cidr);
+      }).forEach(network => {
+        const cidr = String(network.cidr || network.subnet || "");
+        const option = document.createElement("option");
+        option.value = cidr;
+        option.textContent = cidr;
+        scanNetworkRestore.append(option);
+      });
+      scanNetworkRestore.hidden = scanNetworkRestore.options.length === 1;
+      scanNetworkRestore.value = "";
       if (!selectedDiscoverySubnets.size) {
         addText(scanNetworkList, "div", "settings-copy", "No networks selected. Add a private subnet below.");
       }
-      scanNetworksSave.disabled = !scanNetworksDirty || scanNetworksSaving || busy;
+      scanNetworkInput.disabled = scanNetworksSaving || busy;
+      scanNetworkAdd.querySelector("button").disabled = scanNetworksSaving || busy;
+      scanNetworkRestore.disabled = scanNetworksSaving || busy;
       syncScanStartDisabled();
     }
 
@@ -1071,31 +1082,30 @@
           .filter(network => network.selected)
           .map(network => String(network.cidr || network.subnet))
       );
-      scanNetworksDirty = false;
       renderDiscoveryNetworks();
     }
 
     async function loadDiscoveryNetworks() {
       scanNetworkSettingsStatus.className = "scan-network-settings-status";
-      setText(scanNetworkSettingsStatus, "Loading saved subnets...");
+      setText(scanNetworkSettingsStatus, "Loading networks...");
       try {
         const response = await fetch("/internal/discovery/networks", {cache: "no-store"});
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || "Could not load subnet settings.");
         applyDiscoveryNetworkConfiguration(result);
-        setText(scanNetworkSettingsStatus, "Subnet selections are saved for future scans.");
+        setText(scanNetworkSettingsStatus, "");
       } catch (error) {
         scanNetworkSettingsStatus.className = "scan-network-settings-status error";
         setText(scanNetworkSettingsStatus, error.message || "Could not load subnet settings.");
       }
     }
 
-    async function saveDiscoveryNetworks() {
+    async function saveDiscoveryNetworks(previousConfiguration, previousSubnets) {
       if (scanNetworksSaving) return false;
       scanNetworksSaving = true;
       renderDiscoveryNetworks();
       scanNetworkSettingsStatus.className = "scan-network-settings-status";
-      setText(scanNetworkSettingsStatus, "Saving subnets...");
+      setText(scanNetworkSettingsStatus, "Saving...");
       try {
         const response = await fetch("/internal/discovery/networks", {
           method: "PUT",
@@ -1105,9 +1115,13 @@
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || "Could not save subnet settings.");
         applyDiscoveryNetworkConfiguration(result);
-        setText(scanNetworkSettingsStatus, "Saved for future scans.");
+        setText(scanNetworkSettingsStatus, "");
         return true;
       } catch (error) {
+        if (previousConfiguration && previousSubnets) {
+          discoveryNetworkConfiguration = previousConfiguration;
+          selectedDiscoverySubnets = previousSubnets;
+        }
         scanNetworkSettingsStatus.className = "scan-network-settings-status error";
         setText(scanNetworkSettingsStatus, error.message || "Could not save subnet settings.");
         return false;
@@ -1115,6 +1129,25 @@
         scanNetworksSaving = false;
         renderDiscoveryNetworks();
       }
+    }
+
+    async function addDiscoverySubnet(cidr) {
+      if (selectedDiscoverySubnets.has(cidr)) return;
+      const previousConfiguration = discoveryNetworkConfiguration.slice();
+      const previousSubnets = new Set(selectedDiscoverySubnets);
+      if (!discoveryNetworkConfiguration.some(network => String(network.cidr || network.subnet) === cidr)) {
+        discoveryNetworkConfiguration.push({
+          cidr,
+          subnet: cidr,
+          source: "custom",
+          selected: true,
+          routable: null,
+          multicast: false
+        });
+      }
+      selectedDiscoverySubnets.add(cidr);
+      renderDiscoveryNetworks();
+      await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
     }
 
     function renderScannerProgress(scanners = {}) {
@@ -3406,7 +3439,6 @@
     });
     scanStartButton.addEventListener("click", async () => {
       if (busy) return;
-      if (scanNetworksDirty && !(await saveDiscoveryNetworks())) return;
       if (!selectedDiscoverySubnets.size) {
         scanNetworkSettingsStatus.className = "scan-network-settings-status error";
         setText(scanNetworkSettingsStatus, "Select at least one IPv4 subnet before scanning.");
@@ -3431,8 +3463,7 @@
         render({status: "error", phase: "error", scan_id: pendingScanId, error: "Could not start discovery."});
       }
     });
-    scanNetworksSave.addEventListener("click", saveDiscoveryNetworks);
-    scanNetworkAdd.addEventListener("submit", event => {
+    scanNetworkAdd.addEventListener("submit", async event => {
       event.preventDefault();
       let cidr;
       try {
@@ -3442,22 +3473,12 @@
         setText(scanNetworkSettingsStatus, error.message);
         return;
       }
-      if (!discoveryNetworkConfiguration.some(network => String(network.cidr || network.subnet) === cidr)) {
-        discoveryNetworkConfiguration.push({
-          cidr,
-          subnet: cidr,
-          source: "custom",
-          selected: true,
-          routable: null,
-          multicast: false
-        });
-      }
-      selectedDiscoverySubnets.add(cidr);
       scanNetworkInput.value = "";
-      scanNetworksDirty = true;
-      scanNetworkSettingsStatus.className = "scan-network-settings-status";
-      setText(scanNetworkSettingsStatus, "Unsaved subnet changes.");
-      renderDiscoveryNetworks();
+      await addDiscoverySubnet(cidr);
+    });
+    scanNetworkRestore.addEventListener("change", async () => {
+      const cidr = scanNetworkRestore.value;
+      if (cidr) await addDiscoverySubnet(cidr);
     });
 
     showAddAddress.addEventListener("click", () => {
