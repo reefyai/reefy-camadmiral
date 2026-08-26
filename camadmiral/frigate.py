@@ -27,6 +27,8 @@ CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS = 60.0
 CAMERA_WORKER_CLEANUP_POLL_SECONDS = 0.5
 CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS = 5.0
 FRIGATE_RESTART_SETTLE_SECONDS = 2.0
+FRIGATE_VERIFY_TIMEOUT_SECONDS = 30.0
+FRIGATE_VERIFY_POLL_SECONDS = 0.5
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -868,37 +870,85 @@ def frigate_camera_configuration(
     }
 
 
-def _owned_camera_matches(
+def _owned_camera_mismatch(
     actual: object,
     desired: dict[str, Any],
     raw_paths: dict[str, Any],
     raw_config: dict[str, Any],
-) -> bool:
+) -> str | None:
     if not isinstance(actual, dict):
-        return False
+        return "camera_configuration_missing"
     expected = desired["camera_config"]
     if actual.get("friendly_name") != expected["friendly_name"]:
-        return False
+        return "camera_name_mismatch"
     actual_detect = actual.get("detect")
-    if not isinstance(actual_detect, dict) or any(
-        int(actual_detect.get(field) or 0) != value
-        for field, value in expected["detect"].items()
-    ):
-        return False
+    try:
+        detect_matches = isinstance(actual_detect, dict) and all(
+            int(actual_detect.get(field) or 0) == value
+            for field, value in expected["detect"].items()
+        )
+    except (TypeError, ValueError):
+        detect_matches = False
+    if not detect_matches:
+        return "detect_settings_mismatch"
     actual_live = actual.get("live")
-    if not isinstance(actual_live, dict) or actual_live.get("streams") != expected["live"]["streams"]:
-        return False
-    raw_camera = raw_paths.get("cameras", {}).get(desired["key"], {})
+    if (
+        not isinstance(actual_live, dict)
+        or actual_live.get("streams") != expected["live"]["streams"]
+    ):
+        return "live_streams_mismatch"
+    raw_cameras = raw_paths.get("cameras", {})
+    raw_camera = (
+        raw_cameras.get(desired["key"], {}) if isinstance(raw_cameras, dict) else {}
+    )
     raw_inputs = raw_camera.get("ffmpeg", {}).get("inputs") if isinstance(raw_camera, dict) else None
     expected_inputs = [
         {"path": item["path"], "roles": item["roles"]}
         for item in expected["ffmpeg"]["inputs"]
     ]
     if raw_inputs != expected_inputs:
-        return False
-    saved_camera = raw_config.get("cameras", {}).get(desired["key"], {})
+        return "ffmpeg_inputs_mismatch"
+    saved_cameras = raw_config.get("cameras", {})
+    saved_camera = (
+        saved_cameras.get(desired["key"], {}) if isinstance(saved_cameras, dict) else {}
+    )
     saved_detect = saved_camera.get("detect") if isinstance(saved_camera, dict) else None
-    return not isinstance(saved_detect, dict) or "fps" not in saved_detect
+    if isinstance(saved_detect, dict) and "fps" in saved_detect:
+        return "detect_settings_mismatch"
+    return None
+
+
+def _owned_camera_matches(
+    actual: object,
+    desired: dict[str, Any],
+    raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
+) -> bool:
+    return _owned_camera_mismatch(actual, desired, raw_paths, raw_config) is None
+
+
+def _actual_mismatch(
+    desired: dict[str, Any],
+    config: dict[str, Any],
+    raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
+    runtime_streams: dict[str, Any],
+) -> str | None:
+    cameras = config.get("cameras", {})
+    camera = cameras.get(desired["key"]) if isinstance(cameras, dict) else None
+    camera_mismatch = _owned_camera_mismatch(camera, desired, raw_paths, raw_config)
+    if camera_mismatch is not None:
+        return camera_mismatch
+    go2rtc = raw_paths.get("go2rtc", {})
+    configured_streams = go2rtc.get("streams", {}) if isinstance(go2rtc, dict) else {}
+    if not isinstance(configured_streams, dict) or any(
+        configured_streams.get(name) != sources
+        for name, sources in desired["streams"].items()
+    ):
+        return "saved_stream_mismatch"
+    if any(name not in runtime_streams for name in desired["streams"]):
+        return "runtime_stream_missing"
+    return None
 
 
 def _actual_matches(
@@ -908,14 +958,49 @@ def _actual_matches(
     raw_config: dict[str, Any],
     runtime_streams: dict[str, Any],
 ) -> bool:
-    camera = config.get("cameras", {}).get(desired["key"])
-    if not _owned_camera_matches(camera, desired, raw_paths, raw_config):
-        return False
-    configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
-    return all(
-        configured_streams.get(name) == sources and name in runtime_streams
-        for name, sources in desired["streams"].items()
-    )
+    return _actual_mismatch(desired, config, raw_paths, raw_config, runtime_streams) is None
+
+
+def _wait_for_camera_state(
+    client: FrigateClient,
+    desired: dict[str, Any],
+    *,
+    timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
+    poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            config = client.config()
+            raw_paths = client.raw_paths()
+            raw_config = client.raw_config()
+            runtime_streams = client.runtime_streams()
+            stats = client.stats()
+        except FrigateApiError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            mismatch = _actual_mismatch(
+                desired,
+                config,
+                raw_paths,
+                raw_config,
+                runtime_streams,
+            )
+            if mismatch is None and desired["key"] not in stats:
+                mismatch = "camera_start_pending"
+            if mismatch is None:
+                return config, raw_paths, raw_config, runtime_streams, stats
+            if time.monotonic() >= deadline:
+                raise FrigateApiError(mismatch)
+        if poll_interval > 0:
+            time.sleep(poll_interval)
 
 
 def reconcile_frigate(
@@ -926,8 +1011,13 @@ def reconcile_frigate(
     media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
     allow_restart: bool = True,
+    camera_uuid: str | None = None,
+    verification_timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
+    verification_poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,
 ) -> dict[str, int]:
     cameras = selected_camera_inventory(repository, target.target_id)
+    if camera_uuid is not None:
+        cameras = [camera for camera in cameras if str(camera["camera_uuid"]) == camera_uuid]
     if not cameras:
         return {"applied": 0, "pending": 0}
     client = client_factory(target)
@@ -975,7 +1065,7 @@ def reconcile_frigate(
                 verified_config = client.config()
                 verified_camera = verified_config.get("cameras", {}).get(key)
                 if not isinstance(verified_camera, dict) or verified_camera.get("enabled") is not False:
-                    raise FrigateApiError("verification_failed")
+                    raise FrigateApiError("camera_enabled_mismatch")
             except FrigateApiError as exc:
                 repository.complete_frigate_attempt(
                     target.target_id,
@@ -1036,27 +1126,39 @@ def reconcile_frigate(
         if camera_exists and actual_matches and not camera_running:
             # Frigate 0.17 camera add events are not idempotent. Re-publishing
             # an add for an existing camera starts another set of workers and
-            # leaves the previous processes alive. Keep the binding pending and
-            # wait for Frigate to report the process instead.
-            if binding is not None and (
-                binding.get("status") != "error"
-                or binding.get("last_error_code") != "camera_start_pending"
-            ):
-                repository.record_frigate_attempt(
-                    target.target_id,
-                    camera["camera_uuid"],
-                    desired["key"],
-                    desired["record_stream_uuid"],
-                    desired["detect_stream_uuid"],
-                    desired["desired_hash"],
+            # leaves the previous processes alive. Poll read-only state instead.
+            repository.record_frigate_attempt(
+                target.target_id,
+                camera["camera_uuid"],
+                desired["key"],
+                desired["record_stream_uuid"],
+                desired["detect_stream_uuid"],
+                desired["desired_hash"],
+            )
+            try:
+                verified_state = _wait_for_camera_state(
+                    client,
+                    desired,
+                    timeout=verification_timeout,
+                    poll_interval=verification_poll_interval,
                 )
+            except FrigateApiError as exc:
                 repository.complete_frigate_attempt(
                     target.target_id,
                     camera["camera_uuid"],
                     status="error",
-                    error_code="camera_start_pending",
+                    error_code=exc.code,
                 )
-            pending += 1
+                pending += 1
+                continue
+            repository.complete_frigate_attempt(
+                target.target_id,
+                camera["camera_uuid"],
+                status="applied",
+                applied_hash=desired["desired_hash"],
+            )
+            config, raw_paths, raw_config, runtime_streams, stats = verified_state
+            applied += 1
             continue
         repository.record_frigate_attempt(
             target.target_id,
@@ -1111,24 +1213,12 @@ def reconcile_frigate(
             if restart_for_second_camera and allow_restart:
                 client.restart()
                 time.sleep(FRIGATE_RESTART_SETTLE_SECONDS)
-                missing_workers = _wait_for_camera_workers(client, [desired["key"]])
-                if missing_workers:
-                    raise FrigateApiError("camera_start_pending")
-            verified_config = client.config()
-            verified_raw_paths = client.raw_paths()
-            verified_raw_config = client.raw_config()
-            verified_runtime = client.runtime_streams()
-            verified_stats = client.stats()
-            if not _actual_matches(
+            verified_state = _wait_for_camera_state(
+                client,
                 desired,
-                verified_config,
-                verified_raw_paths,
-                verified_raw_config,
-                verified_runtime,
-            ):
-                raise FrigateApiError("verification_failed")
-            if desired["key"] not in verified_stats:
-                raise FrigateApiError("camera_start_pending")
+                timeout=verification_timeout,
+                poll_interval=verification_poll_interval,
+            )
         except FrigateApiError as exc:
             repository.complete_frigate_attempt(
                 target.target_id,
@@ -1149,12 +1239,6 @@ def reconcile_frigate(
             camera["camera_uuid"],
             True,
         )
-        config, raw_paths, raw_config, runtime_streams, stats = (
-            verified_config,
-            verified_raw_paths,
-            verified_raw_config,
-            verified_runtime,
-            verified_stats,
-        )
+        config, raw_paths, raw_config, runtime_streams, stats = verified_state
         applied += 1
     return {"applied": applied, "pending": pending}

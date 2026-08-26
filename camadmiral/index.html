@@ -985,6 +985,8 @@
     const streamAddressModes = new Map();
     const streamAddressSaveChains = new Map();
     const streamAddressSaveErrors = new Map();
+    const frigateSyncProgress = new Map();
+    const frigateSyncUiErrors = new Map();
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
@@ -2469,6 +2471,14 @@
     function frigateSyncError(errorCode) {
       const errors = {
         camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
+        camera_enabled_mismatch: ["Camera state differs", "Frigate did not retain the requested enabled state for this camera."],
+        camera_configuration_missing: ["Camera configuration missing", "Frigate did not retain the managed camera configuration."],
+        camera_name_mismatch: ["Camera name differs", "Frigate retained a different friendly name for this managed camera."],
+        detect_settings_mismatch: ["Detection settings differ", "Frigate retained different detection dimensions or frame-rate settings."],
+        live_streams_mismatch: ["Live streams differ", "Frigate retained different Record or Detect live-stream aliases."],
+        ffmpeg_inputs_mismatch: ["FFmpeg inputs differ", "Frigate retained different stream paths or roles for this camera."],
+        saved_stream_mismatch: ["Saved stream differs", "Frigate did not retain the expected CamAdmiral go2rtc source URL."],
+        runtime_stream_missing: ["Runtime stream missing", "The saved stream exists, but Frigate's running go2rtc process does not expose it."],
         target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
         authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
         capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
@@ -2482,6 +2492,26 @@
           ? `CamAdmiral will retry automatically. Error code: ${errorCode}.`
           : "CamAdmiral will retry automatically."
       ];
+    }
+
+    function frigateSyncKey(targetId, cameraUuid) {
+      return `${targetId}:${cameraUuid}`;
+    }
+
+    function currentFrigateCameraStatus(targetId, cameraUuid) {
+      const device = devices.find(candidate => candidate.adoption?.camera_uuid === cameraUuid);
+      return device?.adoption?.frigate?.find(target => target.target_id === targetId) || null;
+    }
+
+    async function waitForFrigateCameraSync(targetId, cameraUuid, timeout = 35000) {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        await refresh();
+        const status = currentFrigateCameraStatus(targetId, cameraUuid);
+        if (status?.status === "applied" || status?.status === "error") return status;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      throw new Error("Frigate synchronization did not finish within 35 seconds. Background retries will continue.");
     }
 
     function addFrigateStatus(parent, adoption) {
@@ -2558,11 +2588,20 @@
         const item = addText(wrapper, "article", "frigate-camera-item", "");
         const summary = addText(item, "div", "", "");
         addText(summary, "div", "frigate-target-name", target.target);
+        const syncKey = frigateSyncKey(target.target_id, device.adoption.camera_uuid);
+        const syncing = frigateSyncProgress.has(syncKey);
+        const uiError = frigateSyncUiErrors.get(syncKey) || "";
         let stateLabel = target.selected
           ? target.status === "applied" ? "Synced" : target.status === "error" ? "Sync issue" : "Syncing"
           : "Not synced";
         let statusHelp = "";
-        if (target.selected && target.status === "error") {
+        if (syncing) {
+          stateLabel = "Syncing";
+          statusHelp = "Applying the camera and verifying Frigate's saved and running configuration.";
+        } else if (uiError) {
+          stateLabel = "Sync issue";
+          statusHelp = uiError;
+        } else if (target.selected && target.status === "error") {
           [stateLabel, statusHelp] = frigateSyncError(target.error_code);
         }
         const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
@@ -2572,11 +2611,20 @@
           if (target.error_code) help.title = target.error_code;
         }
         const actions = addText(item, "div", "frigate-camera-actions", "");
-        const sync = addText(actions, "button", "row-action", target.selected ? "Sync now" : "Sync");
+        const sync = addText(actions, "button", "row-action", "");
         sync.type = "button";
+        sync.disabled = syncing;
+        if (syncing) {
+          const spinner = addText(sync, "span", "inline-spinner", "");
+          spinner.setAttribute("aria-hidden", "true");
+          addText(sync, "span", "", "Syncing...");
+        } else {
+          setText(sync, target.selected ? "Sync now" : "Sync");
+        }
         sync.addEventListener("click", async () => {
-          sync.disabled = true;
-          setText(sync, "Syncing...");
+          frigateSyncUiErrors.delete(syncKey);
+          frigateSyncProgress.set(syncKey, true);
+          renderActiveCameraModal();
           try {
             const response = await fetch(
               `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`,
@@ -2591,13 +2639,16 @@
             );
             const result = await response.json();
             if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
+            await waitForFrigateCameraSync(target.target_id, device.adoption.camera_uuid);
+          } catch (error) {
+            frigateSyncUiErrors.set(
+              syncKey,
+              error instanceof Error ? error.message : "Camera sync failed."
+            );
+          } finally {
+            frigateSyncProgress.delete(syncKey);
             await refresh();
             renderActiveCameraModal();
-          } catch (error) {
-            setText(meta, error.message);
-            meta.className = "frigate-target-error";
-            sync.disabled = false;
-            setText(sync, target.selected ? "Sync now" : "Sync");
           }
         });
         const showConfig = addText(actions, "button", "row-action", "Show config");

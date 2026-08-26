@@ -11,6 +11,8 @@ from camadmiral.frigate import (
     FrigateApiError,
     FrigateClient,
     FrigateTarget,
+    _actual_mismatch,
+    _wait_for_camera_state,
     desired_camera,
     frigate_camera_configuration,
     full_sync_frigate,
@@ -900,6 +902,138 @@ class FrigateReconciliationTests(unittest.TestCase):
             writes_after_first,
         )
 
+    def test_verification_reports_specific_configuration_mismatches(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+
+        fixtures = {
+            "camera_configuration_missing": lambda state: state[0]["cameras"].pop(
+                desired["key"]
+            ),
+            "camera_name_mismatch": lambda state: state[0]["cameras"][desired["key"]].__setitem__(
+                "friendly_name", "Different name"
+            ),
+            "detect_settings_mismatch": lambda state: state[0]["cameras"][desired["key"]][
+                "detect"
+            ].__setitem__("width", 1),
+            "live_streams_mismatch": lambda state: state[0]["cameras"][desired["key"]][
+                "live"
+            ].__setitem__("streams", {}),
+            "ffmpeg_inputs_mismatch": lambda state: state[1]["cameras"][desired["key"]][
+                "ffmpeg"
+            ].__setitem__("inputs", []),
+            "saved_stream_mismatch": lambda state: state[1]["go2rtc"]["streams"].pop(
+                next(iter(desired["streams"]))
+            ),
+            "runtime_stream_missing": lambda state: state[3].pop(
+                next(iter(desired["streams"]))
+            ),
+        }
+        base_state = (
+            self.client.config(),
+            self.client.raw_paths(),
+            self.client.raw_config(),
+            self.client.runtime_streams(),
+        )
+        for expected, mutate in fixtures.items():
+            with self.subTest(expected=expected):
+                state = copy.deepcopy(base_state)
+                mutate(state)
+                self.assertEqual(_actual_mismatch(desired, *state), expected)
+
+    def test_verification_retries_read_only_until_camera_process_appears(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+        expected_stats = self.client.current_stats
+        calls = {"stats": 0}
+
+        def delayed_stats():
+            calls["stats"] += 1
+            return {} if calls["stats"] < 3 else expected_stats
+
+        self.client.stats = delayed_stats
+        writes_before = (len(self.client.config_writes), len(self.client.runtime_writes))
+
+        _wait_for_camera_state(self.client, desired, timeout=1, poll_interval=0)
+
+        self.assertEqual(calls["stats"], 3)
+        self.assertEqual(
+            (len(self.client.config_writes), len(self.client.runtime_writes)),
+            writes_before,
+        )
+
+    def test_reconcile_retries_verification_without_repeating_writes(self) -> None:
+        original_stats = self.client.stats
+        verification_reads = {"count": 0}
+
+        def delayed_stats():
+            if not self.client.config_writes:
+                return original_stats()
+            verification_reads["count"] += 1
+            if verification_reads["count"] < 3:
+                return {}
+            return original_stats()
+
+        self.client.stats = delayed_stats
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+            verification_timeout=1,
+            verification_poll_interval=0,
+        )
+
+        key = frigate_camera_key(self.camera_uuid)
+        add_topics = [
+            topic
+            for _data, topic in self.client.config_writes
+            if topic and topic.endswith("/add")
+        ]
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(verification_reads["count"], 3)
+        self.assertEqual(add_topics, [f"config/cameras/{key}/add"])
+        self.assertEqual(len(self.client.config_writes), 2)
+        self.assertEqual(len(self.client.runtime_writes), 2)
+
+    def test_verification_timeout_keeps_the_specific_failure(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+        self.client.current_runtime.pop(next(iter(desired["streams"])))
+
+        with self.assertRaisesRegex(FrigateApiError, "runtime_stream_missing"):
+            _wait_for_camera_state(self.client, desired, timeout=0, poll_interval=0)
+
     def test_reconcile_uses_saved_address_mode_for_each_camera(self) -> None:
         self.repository.select_frigate_camera(
             self.target.target_id,
@@ -1001,10 +1135,20 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.client.drop_add_events = 1
         factory = lambda _target: self.client
 
-        first = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        first = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=factory,
+            verification_timeout=0,
+        )
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         writes_after_first = (len(self.client.config_writes), len(self.client.runtime_writes))
-        second = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        second = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=factory,
+            verification_timeout=0,
+        )
 
         self.assertEqual(first, {"applied": 0, "pending": 1})
         self.assertEqual(binding["status"], "error")

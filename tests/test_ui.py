@@ -275,6 +275,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("function frigateSyncError(errorCode)", self.html)
         self.assertIn("Waiting for camera process", self.html)
         self.assertIn("CamAdmiral will retry until its process appears.", self.html)
+        self.assertIn("Camera configuration missing", self.html)
+        self.assertIn("Detection settings differ", self.html)
+        self.assertIn("Runtime stream missing", self.html)
         self.assertIn("[stateLabel, statusHelp] = frigateSyncError(target.error_code)", self.html)
         self.assertIn('"integration-help frigate-camera-help", statusHelp', self.html)
         self.assertIn("Error code: ${errorCode}.", self.html)
@@ -378,11 +381,16 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("JSON.stringify({address_mode: addressMode})", self.html)
         self.assertNotIn("addressSelect", self.html)
 
-    def test_successful_camera_sync_refreshes_the_open_dialog(self) -> None:
+    def test_camera_sync_polls_with_a_spinner_until_final_status(self) -> None:
         sync_handler = self.html.split('"X-CamAdmiral-Action": "sync-frigate-camera"', 1)[1]
-        sync_handler = sync_handler.split("} catch (error) {", 1)[0]
-        self.assertIn("await refresh();", sync_handler)
+        sync_handler = sync_handler.split('const showConfig =', 1)[0]
+        self.assertIn("await waitForFrigateCameraSync", sync_handler)
+        self.assertIn("frigateSyncProgress.set(syncKey, true)", self.html)
+        self.assertIn("frigateSyncProgress.delete(syncKey)", sync_handler)
         self.assertIn("renderActiveCameraModal();", sync_handler)
+        self.assertIn('addText(sync, "span", "inline-spinner", "")', self.html)
+        self.assertIn("async function waitForFrigateCameraSync", self.html)
+        self.assertIn('status?.status === "applied" || status?.status === "error"', self.html)
         self.assertNotIn("closeAppModal", sync_handler)
         self.assertIn('["camera", "streams", "adopt"]', self.html)
         self.assertNotIn('appModalKind === "frigate-sync"', self.html)

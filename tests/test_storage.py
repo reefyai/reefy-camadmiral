@@ -436,6 +436,13 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(binding["last_error_code"], "target_unavailable")
         self.assertEqual(binding["applied_hash"], "desired-hash")
 
+        self.repository.mark_frigate_binding_pending(
+            "frigate-primary", adoption["camera_uuid"]
+        )
+        binding = self.repository.frigate_binding("frigate-primary", adoption["camera_uuid"])
+        self.assertEqual(binding["status"], "pending")
+        self.assertIsNone(binding["last_error_code"])
+
     def test_preview_prefers_healthy_detection_stream(self) -> None:
         candidate = {"candidate_uuid": "candidate-preview", "display_name": "Camera"}
         adoption = self.repository.adopt(

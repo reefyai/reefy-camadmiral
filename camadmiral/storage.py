@@ -1437,6 +1437,16 @@ class CameraRepository:
             )
             connection.commit()
 
+    def mark_frigate_binding_pending(self, target_id: str, camera_uuid: str) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_bindings SET status='pending', last_error_code=NULL, "
+                "last_attempt_at=?, updated_at=? WHERE target_id=? AND camera_uuid=?",
+                (timestamp, timestamp, target_id, camera_uuid),
+            )
+            connection.commit()
+
     def frigate_bindings(self, target_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

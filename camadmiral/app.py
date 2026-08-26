@@ -81,6 +81,8 @@ REPOSITORY: CameraRepository | None = None
 REPOSITORY_LOCK = threading.Lock()
 MEDIA_LOCK = threading.Lock()
 FRIGATE_LOCK = threading.Lock()
+FRIGATE_CAMERA_JOBS_LOCK = threading.Lock()
+FRIGATE_CAMERA_JOBS: set[tuple[str, str]] = set()
 LOGGER = logging.getLogger(__name__)
 SCAN_REQUEST_LOCK = threading.Lock()
 RELAY_HEALTH_MONITOR = RelayHealthMonitor()
@@ -434,6 +436,80 @@ def _queue_frigate_reconciliation() -> None:
         name="frigate-reconcile-now",
         daemon=True,
     ).start()
+
+
+def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
+    job = (target_id, camera_uuid)
+    repository: CameraRepository | None = None
+    try:
+        repository = _repository()
+        if repository is None:
+            return
+        FRIGATE_LOCK.acquire()
+        try:
+            current = repository.frigate_target(target_id)
+            if current is None:
+                return
+            target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
+            try:
+                reconcile_frigate(
+                    repository,
+                    target,
+                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                    camera_uuid=camera_uuid,
+                )
+            except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
+                print(
+                    f"frigate[{target_id}]: camera synchronization deferred ({exc.code})",
+                    flush=True,
+                )
+            else:
+                repository.record_frigate_target_check(target_id, status="connected")
+        finally:
+            FRIGATE_LOCK.release()
+    except Exception as exc:
+        try:
+            if repository is not None and repository.frigate_binding(target_id, camera_uuid):
+                repository.complete_frigate_attempt(
+                    target_id,
+                    camera_uuid,
+                    status="error",
+                    error_code="verification_failed",
+                )
+        except Exception:
+            pass
+        print(
+            f"frigate[{target_id}]: camera synchronization failed ({type(exc).__name__})",
+            flush=True,
+        )
+    finally:
+        with FRIGATE_CAMERA_JOBS_LOCK:
+            FRIGATE_CAMERA_JOBS.discard(job)
+
+
+def _queue_frigate_camera_reconciliation(target_id: str, camera_uuid: str) -> bool:
+    job = (target_id, camera_uuid)
+    with FRIGATE_CAMERA_JOBS_LOCK:
+        if job in FRIGATE_CAMERA_JOBS:
+            return False
+        FRIGATE_CAMERA_JOBS.add(job)
+    try:
+        threading.Thread(
+            target=_sync_frigate_camera_job,
+            args=job,
+            name="frigate-camera-sync",
+            daemon=True,
+        ).start()
+    except Exception:
+        with FRIGATE_CAMERA_JOBS_LOCK:
+            FRIGATE_CAMERA_JOBS.discard(job)
+        raise
+    return True
 
 
 def _notification_settings_payload(repository: CameraRepository) -> dict[str, object]:
@@ -1185,33 +1261,21 @@ def sync_frigate_camera(
         raise HTTPException(status_code=400, detail="Missing Frigate camera sync action header")
     repository = _repository(required=True)
     assert repository is not None
-    _current, target = _stored_frigate_target(repository, target_id)
+    _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
-    if not FRIGATE_LOCK.acquire(blocking=False):
-        return _secured_json(
-            {"status": "sync_busy", "message": "Camera synchronization is already running."},
-            status_code=409,
-        )
-    try:
-        address_mode = (
-            request.address_mode
-            if request is not None
-            else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
-        )
-        repository.select_frigate_camera(target_id, camera_uuid, address_mode)
-        result = reconcile_frigate(
-            repository,
-            target,
-            media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
-        )
-    except FrigateApiError as exc:
-        repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
-        return _frigate_target_error(exc)
-    finally:
-        FRIGATE_LOCK.release()
-    repository.record_frigate_target_check(target_id, status="connected")
-    return _secured_json({"status": "synchronized", "selected": True, **result})
+    address_mode = (
+        request.address_mode
+        if request is not None
+        else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
+    )
+    repository.select_frigate_camera(target_id, camera_uuid, address_mode)
+    repository.mark_frigate_binding_pending(target_id, camera_uuid)
+    queued = _queue_frigate_camera_reconciliation(target_id, camera_uuid)
+    return _secured_json(
+        {"status": "syncing", "selected": True, "queued": queued},
+        status_code=202,
+    )
 
 
 @app.delete(

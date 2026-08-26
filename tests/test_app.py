@@ -831,12 +831,11 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
-                "reconcile_frigate",
-                return_value={"applied": 1, "pending": 0},
-            ) as reconcile,
+                "_queue_frigate_camera_reconciliation",
+                return_value=True,
+            ) as queue,
         ):
             response = app_module.sync_frigate_camera(
                 "frigate-synthetic",
@@ -845,12 +844,18 @@ class FrigateTargetApiTests(unittest.TestCase):
                 app_module.FrigateCameraSyncRequest(address_mode="localhost"),
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(json.loads(response.body)["selected"])
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            json.loads(response.body),
+            {"status": "syncing", "selected": True, "queued": True},
+        )
         repository.select_frigate_camera.assert_called_once_with(
             "frigate-synthetic", "camera-1", "localhost"
         )
-        reconcile.assert_called_once()
+        repository.mark_frigate_binding_pending.assert_called_once_with(
+            "frigate-synthetic", "camera-1"
+        )
+        queue.assert_called_once_with("frigate-synthetic", "camera-1")
 
     def test_camera_sync_without_body_preserves_existing_address_mode(self) -> None:
         repository = Mock()
@@ -866,8 +871,8 @@ class FrigateTargetApiTests(unittest.TestCase):
             patch.object(app_module, "_repository", return_value=repository),
             patch.object(
                 app_module,
-                "reconcile_frigate",
-                return_value={"applied": 1, "pending": 0},
+                "_queue_frigate_camera_reconciliation",
+                return_value=False,
             ),
         ):
             response = app_module.sync_frigate_camera(
@@ -876,10 +881,63 @@ class FrigateTargetApiTests(unittest.TestCase):
                 "sync-frigate-camera",
             )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
+        self.assertFalse(json.loads(response.body)["queued"])
         repository.select_frigate_camera.assert_called_once_with(
             "frigate-synthetic", "camera-1", "localhost"
         )
+
+    def test_camera_sync_job_reconciles_only_the_requested_camera(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+        }
+        job = ("frigate-synthetic", "camera-1")
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.add(job)
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "media_host_for_mode", return_value="192.0.2.10"),
+            patch.object(app_module, "reconcile_frigate") as reconcile,
+        ):
+            app_module._sync_frigate_camera_job(*job)
+
+        reconcile.assert_called_once()
+        self.assertEqual(reconcile.call_args.kwargs["camera_uuid"], "camera-1")
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic", status="connected"
+        )
+        self.assertNotIn(job, app_module.FRIGATE_CAMERA_JOBS)
+
+    def test_camera_sync_queue_deduplicates_an_active_camera_job(self) -> None:
+        job = ("frigate-synthetic", "camera-1")
+        thread = Mock()
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.discard(job)
+        try:
+            with patch.object(app_module.threading, "Thread", return_value=thread):
+                self.assertTrue(app_module._queue_frigate_camera_reconciliation(*job))
+                self.assertFalse(app_module._queue_frigate_camera_reconciliation(*job))
+            thread.start.assert_called_once_with()
+        finally:
+            with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+                app_module.FRIGATE_CAMERA_JOBS.discard(job)
+
+    def test_camera_sync_queue_recovers_when_thread_cannot_start(self) -> None:
+        job = ("frigate-synthetic", "camera-1")
+        thread = Mock()
+        thread.start.side_effect = RuntimeError("synthetic thread failure")
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.discard(job)
+
+        with (
+            patch.object(app_module.threading, "Thread", return_value=thread),
+            self.assertRaisesRegex(RuntimeError, "synthetic thread failure"),
+        ):
+            app_module._queue_frigate_camera_reconciliation(*job)
+
+        self.assertNotIn(job, app_module.FRIGATE_CAMERA_JOBS)
 
     def test_camera_config_preview_returns_masked_and_copyable_versions(self) -> None:
         repository = Mock()
