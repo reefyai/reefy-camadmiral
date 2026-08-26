@@ -368,7 +368,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('[["lan", "LAN"], ["localhost", "Localhost"]]', self.html)
         self.assertIn('radio.type = "radio"', self.html)
         self.assertIn("streamAddressModes.set(cameraUuid, value)", self.html)
-        self.assertIn("Localhost works only when Frigate shares the host network.", self.html)
+        self.assertIn('"X-CamAdmiral-Action": "set-camera-stream-address"', self.html)
+        self.assertIn("adoption.stream_address_mode || \"lan\"", self.html)
+        self.assertNotIn("Localhost works only when Frigate shares the host network.", self.html)
         self.assertIn("JSON.stringify({address_mode: addressMode})", self.html)
         self.assertNotIn("addressSelect", self.html)
 

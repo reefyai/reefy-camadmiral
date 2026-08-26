@@ -1146,6 +1146,25 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         repository.update_camera_name.assert_called_once_with("camera-1", "Renamed")
         queue.assert_called_once_with()
 
+    def test_stream_address_choice_is_saved_without_syncing_frigate(self) -> None:
+        repository = Mock()
+        repository.set_camera_stream_address_mode.return_value = True
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.set_camera_stream_address(
+                "camera-1",
+                app_module.CameraStreamAddressRequest(address_mode="localhost"),
+                "set-camera-stream-address",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.payload(response),
+            {"status": "updated", "address_mode": "localhost"},
+        )
+        repository.set_camera_stream_address_mode.assert_called_once_with(
+            "camera-1", "localhost"
+        )
+
     def test_disable_withdraws_media_and_keeps_camera_adopted(self) -> None:
         repository = Mock()
         repository.camera.return_value = {

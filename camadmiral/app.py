@@ -78,6 +78,7 @@ SCAN_REQUEST = Path("/run/camadmiral/scan-request.json")
 SCAN_STATE = Path("/run/camadmiral/scan-state.json")
 INVENTORY = settings().storage.inventory
 REPOSITORY: CameraRepository | None = None
+REPOSITORY_LOCK = threading.Lock()
 MEDIA_LOCK = threading.Lock()
 FRIGATE_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
@@ -144,6 +145,10 @@ class CameraEnabledRequest(BaseModel):
     enabled: bool
 
 
+class CameraStreamAddressRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"]
+
+
 class CameraCredentialRequest(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
@@ -204,14 +209,17 @@ def _repository(*, required: bool = False) -> CameraRepository | None:
     global REPOSITORY
     if REPOSITORY is not None:
         return REPOSITORY
-    try:
-        repository = CameraRepository(database_path(), load_master_key())
-        repository.migrate()
-    except SecretConfigurationError:
-        if required:
-            raise
-        return None
-    REPOSITORY = repository
+    with REPOSITORY_LOCK:
+        if REPOSITORY is not None:
+            return REPOSITORY
+        try:
+            repository = CameraRepository(database_path(), load_master_key())
+            repository.migrate()
+        except SecretConfigurationError:
+            if required:
+                raise
+            return None
+        REPOSITORY = repository
     return repository
 
 
@@ -1422,6 +1430,26 @@ def set_camera_enabled(
         {
             "status": "enabled" if request.enabled else "disabled",
             "camera": _camera_adoption(repository, camera_uuid),
+        }
+    )
+
+
+@app.post("/internal/cameras/{camera_uuid}/stream-address", include_in_schema=False)
+def set_camera_stream_address(
+    camera_uuid: str,
+    request: CameraStreamAddressRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-camera-stream-address":
+        raise HTTPException(status_code=400, detail="Missing camera stream address action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.set_camera_stream_address_mode(camera_uuid, request.address_mode):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    return _secured_json(
+        {
+            "status": "updated",
+            "address_mode": request.address_mode,
         }
     )
 

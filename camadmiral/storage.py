@@ -258,6 +258,24 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE discovery_settings
     ADD COLUMN excluded_custom_subnets_json TEXT NOT NULL DEFAULT '[]';
     """,
+    """
+    ALTER TABLE cameras
+    ADD COLUMN stream_address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(stream_address_mode IN ('lan', 'localhost'));
+    UPDATE cameras
+    SET stream_address_mode = (
+        SELECT address_mode
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+        ORDER BY selected_at DESC, target_id
+        LIMIT 1
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+    );
+    """,
 )
 
 
@@ -946,7 +964,8 @@ class CameraRepository:
     def adoption_for_candidate(self, candidate_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             camera = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled "
+                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled, "
+                "stream_address_mode "
                 "FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
             ).fetchone()
@@ -986,6 +1005,7 @@ class CameraRepository:
                 "candidate_uuid": camera["candidate_uuid"],
                 "display_name": camera["display_name"],
                 "enabled": bool(camera["enabled"]),
+                "stream_address_mode": str(camera["stream_address_mode"]),
                 "adopted_at": camera["adopted_at"],
                 "roles": roles,
                 "role_tokens": role_tokens,
@@ -1086,6 +1106,17 @@ class CameraRepository:
             )
             if cursor.rowcount == 1:
                 self._record_camera_health_transition(connection, camera_uuid, timestamp)
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def set_camera_stream_address_mode(self, camera_uuid: str, address_mode: str) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Camera stream address mode is invalid")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE cameras SET stream_address_mode = ?, updated_at = ? WHERE camera_uuid = ?",
+                (address_mode, _now(), camera_uuid),
+            )
             connection.commit()
         return cursor.rowcount == 1
 

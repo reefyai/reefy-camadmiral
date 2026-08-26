@@ -29,6 +29,16 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(first["camera_uuid"], second["camera_uuid"])
         self.assertEqual(first["roles"], second["roles"])
         self.assertEqual(second["role_tokens"], {"record": "main", "detect": "sub"})
+        self.assertEqual(second["stream_address_mode"], "lan")
+        self.assertTrue(
+            self.repository.set_camera_stream_address_mode(
+                second["camera_uuid"], "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-1")["stream_address_mode"],
+            "localhost",
+        )
         self.assertEqual(self.repository.credentials_for_candidate("candidate-1"), ("operator", "replacement-secret"))
         self.assertEqual(self.database.stat().st_mode & 0o777, 0o600)
         with self.repository.connect() as connection:
@@ -96,7 +106,7 @@ class CameraRepositoryTests(unittest.TestCase):
                 "INSERT INTO discovery_settings VALUES (1, '[\"10.0.202.0/24\"]', '[]', 'now')"
             )
             connection.execute(
-                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS),)
+                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS) - 1,)
             )
             connection.commit()
 
@@ -241,6 +251,41 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(
             self.repository.frigate_camera_address_mode("frigate-existing", camera_uuid),
             "lan",
+        )
+
+    def test_stream_address_mode_migration_preserves_latest_frigate_choice(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.select_frigate_camera(
+            "frigate-existing", camera_uuid, "localhost"
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS),)
+            )
+            connection.execute("ALTER TABLE cameras DROP COLUMN stream_address_mode")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-existing")["stream_address_mode"],
+            "localhost",
         )
 
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:

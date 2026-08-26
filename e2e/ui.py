@@ -296,13 +296,35 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Downstream password is exposed in a URL attribute")
 
     localhost = page.get_by_role("radio", name="Localhost")
-    localhost.check()
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/stream-address" in response.url
+    ) as localhost_save:
+        localhost.check()
+    if not localhost_save.value.ok:
+        raise UiScenarioFailure("Localhost stream address choice was not saved")
     expect(localhost).to_be_checked()
     expect(displayed_urls.first).to_contain_text("@localhost:")
-    expect(page.get_by_text("Localhost works only when Frigate shares the host network.")).to_be_visible()
+
+    page.locator("#app-modal-close").click()
+    page.reload(wait_until="domcontentloaded")
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
+    )
+    page.get_by_role("button", name="Streams").first.click()
+    localhost = page.get_by_role("radio", name="Localhost")
+    expect(localhost).to_be_checked()
+    displayed_urls = page.locator("#app-modal-body .downstream-url")
+    expect(displayed_urls.first).to_contain_text("@localhost:")
 
     lan = page.get_by_role("radio", name="LAN", exact=True)
-    lan.check()
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/stream-address" in response.url
+    ) as lan_save:
+        lan.check()
+    if not lan_save.value.ok:
+        raise UiScenarioFailure("LAN stream address choice was not saved")
     expect(lan).to_be_checked()
     expect(displayed_urls.first).not_to_contain_text("@localhost:")
 

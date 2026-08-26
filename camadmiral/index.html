@@ -149,7 +149,7 @@
     .stream-address-options { display: flex; align-items: center; gap: 14px; }
     .stream-address-option { display: flex; align-items: center; gap: 6px; color: #b8c7d2; font-size: 12px; cursor: pointer; }
     .stream-address-option input { margin: 0; accent-color: #2dd4bf; }
-    .frigate-address-warning { margin-top: 6px; color: #fcd34d; font-size: 11px; line-height: 1.4; }
+    .stream-address-error { color: #fda4af; font-size: 11px; line-height: 1.4; }
     .config-preview {
       max-height: 52vh; overflow: auto; margin: 0; padding: 12px; border: 1px solid rgba(148, 163, 184, .14);
       border-radius: 9px; background: #030a12; color: #b9fff5;
@@ -982,6 +982,8 @@
     const lifecycleErrors = new Map();
     const availabilityResults = new Map();
     const streamAddressModes = new Map();
+    const streamAddressSaveChains = new Map();
+    const streamAddressSaveErrors = new Map();
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
@@ -2866,6 +2868,31 @@
       return wrapper;
     }
 
+    function saveStreamAddressMode(cameraUuid, addressMode) {
+      const previous = streamAddressSaveChains.get(cameraUuid) || Promise.resolve();
+      const queued = previous.catch(() => {}).then(async () => {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/stream-address`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CamAdmiral-Action": "set-camera-stream-address"
+          },
+          body: JSON.stringify({address_mode: addressMode})
+        });
+        if (!response.ok) throw new Error("CamAdmiral address could not be saved.");
+      });
+      streamAddressSaveChains.set(cameraUuid, queued);
+      queued.then(() => {
+        if (streamAddressSaveChains.get(cameraUuid) !== queued) return;
+        streamAddressSaveErrors.delete(cameraUuid);
+        renderActiveCameraModal();
+      }).catch(error => {
+        if (streamAddressSaveChains.get(cameraUuid) !== queued) return;
+        streamAddressSaveErrors.set(cameraUuid, error.message);
+        renderActiveCameraModal();
+      });
+    }
+
     function streamDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details stream-details";
@@ -2876,9 +2903,7 @@
       }
       const cameraUuid = adoption.camera_uuid;
       if (!streamAddressModes.has(cameraUuid)) {
-        const savedMode = (adoption.frigate || []).find(target => target.selected)?.address_mode
-          || adoption.frigate?.[0]?.address_mode
-          || "lan";
+        const savedMode = adoption.stream_address_mode || "lan";
         streamAddressModes.set(cameraUuid, savedMode);
       }
       const addressMode = streamAddressModes.get(cameraUuid);
@@ -2896,18 +2921,16 @@
         radio.addEventListener("change", () => {
           if (!radio.checked) return;
           streamAddressModes.set(cameraUuid, value);
+          streamAddressSaveErrors.delete(cameraUuid);
           renderActiveCameraModal();
+          saveStreamAddressMode(cameraUuid, value);
         });
         option.append(radio, document.createTextNode(label));
       });
       wrapper.append(addressChoice);
-      if (addressMode === "localhost") {
-        addText(
-          addressChoice,
-          "div",
-          "frigate-address-warning",
-          "Localhost works only when Frigate shares the host network."
-        );
+      if (streamAddressSaveErrors.has(cameraUuid)) {
+        const saveError = addText(addressChoice, "div", "stream-address-error", streamAddressSaveErrors.get(cameraUuid));
+        saveError.setAttribute("role", "status");
       }
       if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       let result = inspections.get(device.candidate_uuid);
