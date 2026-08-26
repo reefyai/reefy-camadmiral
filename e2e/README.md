@@ -11,6 +11,8 @@ The isolated Docker Compose lab covers:
 - manual and full RTSP discovery on a non-default connected private subnet
 - multicast ONVIF discovery plus bounded learned-neighbor ONVIF and RTSP
   probing on an oversized /16 subnet without a per-address sweep
+- persistent detected/custom subnet selection and routed unicast ONVIF plus
+  RTSP discovery within a bounded custom CIDR
 - explicit IP discovery and adoption through a synthetic ONVIF camera
 - unauthenticated and authenticated RTSP adoption
 - incorrect camera-credential rejection
@@ -24,15 +26,17 @@ The isolated Docker Compose lab covers:
 - recovered media overriding stale offline scan state in camera summary counts
 - persisted availability buckets across camera outage and recovery
 - complete CamAdmiral container restart with stable IDs, paths, and secrets
-- real Frigate 0.17 camera injection, runtime creation, and frame processing
+- real Frigate 0.17 through a remote container-network API URL, per-camera LAN and
+  localhost configuration previews, global detect-FPS inheritance, legacy camera-level
+  FPS cleanup, runtime creation, and frame processing
 - invalid recovered-address rejection with last-known-good media preservation
 - camera IP change with validated upstream replacement and stable downstream
   identities
 - camera credential rotation, failed repair preservation, and successful repair
 - WebKit phone-viewport rendering with a stable dashboard action bar, 44px scan
   and add-camera targets, every camera action fully visible inside its card,
-  downstream passwords masked in the modal, and plaintext credentials preserved
-  only for Copy
+  downstream passwords masked in the modal, plaintext credentials preserved only
+  for Copy, fixed-size sync spinner geometry, and specific sync failure details
 
 Run from the repository root:
 

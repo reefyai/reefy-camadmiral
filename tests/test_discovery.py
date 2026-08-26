@@ -160,6 +160,51 @@ eth0 0028A8C0 00000000 0001 0 0 100 00FFFFFF 0 0 0
 
         self.assertEqual(addresses, ["10.0.2.10"])
 
+    def test_custom_subnets_are_normalized_and_bounded(self) -> None:
+        self.assertEqual(
+            str(discovery.custom_scan_subnet("10.0.202.41/24")),
+            "10.0.202.0/24",
+        )
+        self.assertEqual(
+            str(discovery.custom_scan_subnet("172.20.0.0/22")),
+            "172.20.0.0/22",
+        )
+        with self.assertRaisesRegex(ValueError, "private IPv4"):
+            discovery.custom_scan_subnet("192.0.2.0/24")
+        with self.assertRaisesRegex(ValueError, "1024"):
+            discovery.custom_scan_subnet("10.0.0.0/8")
+
+    def test_routed_subnet_uses_the_longest_prefix_route_and_source_address(self) -> None:
+        routes = """Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
+eth0 00000000 0128A8C0 0003 0 0 100 00000000 0 0 0
+eth1 00CA000A 010110AC 0003 0 0 20 00FFFFFF 0 0 0
+"""
+        eth0 = discovery.LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.236"),
+            ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+        eth1 = discovery.LanInterface(
+            "eth1",
+            ipaddress.IPv4Address("172.16.1.2"),
+            ipaddress.IPv4Network("172.16.1.0/24"),
+        )
+        with patch.object(
+            discovery,
+            "_interface_ipv4",
+            return_value=eth1.address,
+        ):
+            routed = discovery.routed_scan_interface(
+                ipaddress.IPv4Network("10.0.202.0/24"),
+                route_text=routes,
+                interfaces=[eth0, eth1],
+            )
+
+        self.assertEqual(routed.name, "eth1")
+        self.assertEqual(str(routed.address), "172.16.1.2")
+        self.assertEqual(str(routed.network), "10.0.202.0/24")
+        self.assertFalse(routed.directly_connected)
+
 
 class _FakeUdpSocket:
     """Capture sendto destinations; recvfrom immediately times out."""
@@ -234,6 +279,24 @@ class OnvifSweepFallbackTests(unittest.TestCase):
             _FakeUdpSocket.last.destinations,
             [discovery.ONVIF_MULTICAST] * 4
             + [("10.0.3.20", discovery.ONVIF_MULTICAST[1])],
+        )
+
+    def test_routed_subnet_skips_multicast_and_uses_unicast_only(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.2"),
+            network=ipaddress.IPv4Network("10.0.202.0/30"),
+            directly_connected=False,
+        )
+        with patch.object(discovery.socket, "socket", _FakeUdpSocket):
+            discovery.discover_onvif(interface)
+
+        self.assertEqual(
+            _FakeUdpSocket.last.destinations,
+            [
+                ("10.0.202.1", discovery.ONVIF_MULTICAST[1]),
+                ("10.0.202.2", discovery.ONVIF_MULTICAST[1]),
+            ],
         )
 
 
@@ -311,6 +374,44 @@ class ResultTests(unittest.TestCase):
         self.assertTrue(
             any("subnet=192.168.10.0/24" in line for line in result["raw_log"])
         )
+        self.assertEqual(
+            [network["status"] for network in result["networks"]],
+            ["complete", "complete"],
+        )
+        self.assertTrue(all(network["multicast"] for network in result["networks"]))
+
+    def test_full_scan_reports_custom_routed_subnet_progress(self) -> None:
+        routed = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("192.168.40.2"),
+            network=ipaddress.IPv4Network("10.0.202.0/30"),
+            directly_connected=False,
+        )
+        progress: list[tuple[str, str, str]] = []
+        with (
+            patch.object(
+                discovery,
+                "selected_scan_interfaces",
+                return_value=([routed], {}),
+            ),
+            patch.object(discovery, "discover_onvif", return_value=[]) as onvif,
+            patch.object(discovery, "discover_rtsp", return_value=[]),
+            patch.object(discovery, "discover_reachable_known", return_value=[]),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            result = discovery.scan_lan(
+                subnets=["10.0.202.0/30"],
+                progress=lambda scanner, state, interface: progress.append(
+                    (scanner, state, str(interface.network))
+                ),
+            )
+
+        self.assertFalse(onvif.call_args.args[0].directly_connected)
+        self.assertEqual(result["networks"][0]["subnet"], "10.0.202.0/30")
+        self.assertEqual(result["networks"][0]["status"], "complete")
+        self.assertFalse(result["networks"][0]["multicast"])
+        self.assertIn(("onvif", "running", "10.0.202.0/30"), progress)
+        self.assertIn(("onvif", "complete", "10.0.202.0/30"), progress)
 
     def test_full_scan_on_large_subnet_skips_rtsp_and_keeps_multicast_results(self) -> None:
         interface = discovery.LanInterface(

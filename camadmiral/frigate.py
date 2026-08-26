@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 import yaml
 
+from .discovery import default_lan_interface
+
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 CAMADMIRAL_RTSP_USERNAME = "camadmiral"
 CAMADMIRAL_RTSP_PORT = 18554
@@ -25,6 +27,8 @@ CAMERA_WORKER_CLEANUP_TIMEOUT_SECONDS = 60.0
 CAMERA_WORKER_CLEANUP_POLL_SECONDS = 0.5
 CAMERA_DYNAMIC_CLEANUP_GRACE_SECONDS = 5.0
 FRIGATE_RESTART_SETTLE_SECONDS = 2.0
+FRIGATE_VERIFY_TIMEOUT_SECONDS = 30.0
+FRIGATE_VERIFY_POLL_SECONDS = 0.5
 REQUIRED_CAPABILITIES = {
     "/config": "get",
     "/config/raw": "get",
@@ -35,6 +39,7 @@ REQUIRED_CAPABILITIES = {
     "/restart": "post",
     "/stats": "get",
 }
+FRIGATE_ADDRESS_MODES = {"lan", "localhost"}
 
 
 class FrigateApiError(RuntimeError):
@@ -64,6 +69,11 @@ class FrigateApiError(RuntimeError):
         )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 @dataclass(frozen=True)
 class FrigateTarget:
     target_id: str
@@ -74,19 +84,30 @@ class FrigateTarget:
 def normalize_frigate_api_url(value: object) -> str:
     if not isinstance(value, str):
         raise FrigateApiError("invalid_target_url")
-    parsed = urllib.parse.urlsplit(value.strip())
-    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    raw = value.strip()
+    if not raw or any(character.isspace() or ord(character) < 32 for character in raw):
         raise FrigateApiError("invalid_target_url")
     try:
+        parsed = urllib.parse.urlsplit(raw)
+        hostname = parsed.hostname
         port = parsed.port
     except ValueError as exc:
         raise FrigateApiError("invalid_target_url") from exc
-    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or port is None or not 1 <= port <= 65535:
+    scheme = parsed.scheme.lower()
+    if (
+        scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
         raise FrigateApiError("invalid_target_url")
-    if parsed.path not in {"", "/"}:
-        raise FrigateApiError("invalid_target_url")
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    return f"http://{host}:{port}"
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = f"{host}:{port}" if port is not None else host
+    path = parsed.path.rstrip("/")
+    return f"{scheme}://{authority}{path}"
 
 
 def load_frigate_targets(repository: Any) -> list[FrigateTarget]:
@@ -100,6 +121,7 @@ class FrigateClient:
     def __init__(self, target: FrigateTarget, timeout: float = 5.0):
         self.target = target
         self.timeout = timeout
+        self._opener = urllib.request.build_opener(_NoRedirectHandler())
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         body = None
@@ -114,7 +136,7 @@ class FrigateClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout) as response:
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                     raise FrigateApiError("response_too_large")
@@ -269,13 +291,16 @@ def frigate_camera_key(camera_uuid: str) -> str:
 
 
 def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str, Any]]:
-    selected = set(repository.selected_frigate_camera_uuids(target_id))
-    if not selected:
+    selections = {
+        str(selection["camera_uuid"]): str(selection["address_mode"])
+        for selection in repository.frigate_camera_selections(target_id)
+    }
+    if not selections:
         return []
     return [
-        camera
+        {**camera, "frigate_address_mode": selections[str(camera["camera_uuid"])]}
         for camera in repository.consumer_inventory()
-        if str(camera["camera_uuid"]) in selected
+        if str(camera["camera_uuid"]) in selections
     ]
 
 
@@ -451,6 +476,7 @@ def full_sync_frigate(
     target: FrigateTarget,
     *,
     media_host: str = "127.0.0.1",
+    media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
 ) -> dict[str, int | bool]:
     client = client_factory(target)
@@ -573,6 +599,7 @@ def full_sync_frigate(
             repository,
             target,
             media_host=media_host,
+            media_host_resolver=media_host_resolver,
             client_factory=lambda _target: client,
             allow_restart=not restart_recommended,
         )
@@ -696,13 +723,12 @@ def _stream_for_role(camera: dict[str, Any], role: str) -> dict[str, Any] | None
     return usable[0] if usable else None
 
 
-def _video_metadata(stream: dict[str, Any]) -> tuple[int, int, int]:
+def _video_dimensions(stream: dict[str, Any]) -> tuple[int, int]:
     width = int(stream.get("probed_width") or stream.get("width") or 0)
     height = int(stream.get("probed_height") or stream.get("height") or 0)
-    fps = max(1, int(round(float(stream.get("probed_fps") or stream.get("fps") or 0))))
     if width <= 0 or height <= 0:
         raise FrigateApiError("detect_metadata_unavailable")
-    return width, height, fps
+    return width, height
 
 
 def media_host_from_inventory(path: Path) -> str:
@@ -719,6 +745,17 @@ def media_host_from_inventory(path: Path) -> str:
     return str(address)
 
 
+def media_host_for_mode(path: Path, address_mode: str) -> str:
+    if address_mode not in FRIGATE_ADDRESS_MODES:
+        raise FrigateApiError("invalid_address_mode")
+    if address_mode == "localhost":
+        return "localhost"
+    try:
+        return str(default_lan_interface().address)
+    except (OSError, RuntimeError, ValueError):
+        return media_host_from_inventory(path)
+
+
 def desired_camera(
     camera: dict[str, Any],
     password: str,
@@ -732,9 +769,20 @@ def desired_camera(
     key = frigate_camera_key(camera_uuid)
     record_alias = f"{key}_record"
     detect_alias = f"{key}_detect"
-    width, height, fps = _video_metadata(detect)
-    parsed_media_host = ipaddress.ip_address(media_host)
-    source_host = f"[{parsed_media_host}]" if parsed_media_host.version == 6 else str(parsed_media_host)
+    width, height = _video_dimensions(detect)
+    try:
+        parsed_media_host = ipaddress.ip_address(media_host)
+    except ValueError:
+        if len(media_host) > 253 or not all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in media_host.rstrip(".").split(".")
+        ):
+            raise FrigateApiError("media_host_unavailable")
+        source_host = media_host.rstrip(".")
+    else:
+        source_host = (
+            f"[{parsed_media_host}]" if parsed_media_host.version == 6 else str(parsed_media_host)
+        )
 
     def source(stream: dict[str, Any]) -> str:
         credentials = urllib.parse.quote(password, safe="")
@@ -764,7 +812,7 @@ def desired_camera(
         "enabled": True,
         "friendly_name": str(camera["display_name"]),
         "ffmpeg": {"inputs": ffmpeg_inputs},
-        "detect": {"width": width, "height": height, "fps": fps},
+        "detect": {"width": width, "height": height},
         "live": {"streams": {"Record": record_alias, "Detect": detect_alias}},
     }
     streams = {record_alias: [source(record)], detect_alias: [source(detect)]}
@@ -774,7 +822,7 @@ def desired_camera(
         "name": camera["display_name"],
         "record_stream_uuid": record["stream_uuid"],
         "detect_stream_uuid": detect["stream_uuid"],
-        "media_host": str(parsed_media_host),
+        "media_host": media_host,
         "camera_config": camera_config,
         "stream_keys": sorted(streams),
     }
@@ -822,44 +870,137 @@ def frigate_camera_configuration(
     }
 
 
-def _owned_camera_matches(actual: object, desired: dict[str, Any], raw_paths: dict[str, Any]) -> bool:
+def _owned_camera_mismatch(
+    actual: object,
+    desired: dict[str, Any],
+    raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
+) -> str | None:
     if not isinstance(actual, dict):
-        return False
+        return "camera_configuration_missing"
     expected = desired["camera_config"]
     if actual.get("friendly_name") != expected["friendly_name"]:
-        return False
+        return "camera_name_mismatch"
     actual_detect = actual.get("detect")
-    if not isinstance(actual_detect, dict) or any(
-        int(actual_detect.get(field) or 0) != value
-        for field, value in expected["detect"].items()
-    ):
-        return False
+    try:
+        detect_matches = isinstance(actual_detect, dict) and all(
+            int(actual_detect.get(field) or 0) == value
+            for field, value in expected["detect"].items()
+        )
+    except (TypeError, ValueError):
+        detect_matches = False
+    if not detect_matches:
+        return "detect_settings_mismatch"
     actual_live = actual.get("live")
-    if not isinstance(actual_live, dict) or actual_live.get("streams") != expected["live"]["streams"]:
-        return False
-    raw_camera = raw_paths.get("cameras", {}).get(desired["key"], {})
+    if (
+        not isinstance(actual_live, dict)
+        or actual_live.get("streams") != expected["live"]["streams"]
+    ):
+        return "live_streams_mismatch"
+    raw_cameras = raw_paths.get("cameras", {})
+    raw_camera = (
+        raw_cameras.get(desired["key"], {}) if isinstance(raw_cameras, dict) else {}
+    )
     raw_inputs = raw_camera.get("ffmpeg", {}).get("inputs") if isinstance(raw_camera, dict) else None
     expected_inputs = [
         {"path": item["path"], "roles": item["roles"]}
         for item in expected["ffmpeg"]["inputs"]
     ]
-    return raw_inputs == expected_inputs
+    if raw_inputs != expected_inputs:
+        return "ffmpeg_inputs_mismatch"
+    saved_cameras = raw_config.get("cameras", {})
+    saved_camera = (
+        saved_cameras.get(desired["key"], {}) if isinstance(saved_cameras, dict) else {}
+    )
+    saved_detect = saved_camera.get("detect") if isinstance(saved_camera, dict) else None
+    if isinstance(saved_detect, dict) and "fps" in saved_detect:
+        return "detect_settings_mismatch"
+    return None
+
+
+def _owned_camera_matches(
+    actual: object,
+    desired: dict[str, Any],
+    raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
+) -> bool:
+    return _owned_camera_mismatch(actual, desired, raw_paths, raw_config) is None
+
+
+def _actual_mismatch(
+    desired: dict[str, Any],
+    config: dict[str, Any],
+    raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
+    runtime_streams: dict[str, Any],
+) -> str | None:
+    cameras = config.get("cameras", {})
+    camera = cameras.get(desired["key"]) if isinstance(cameras, dict) else None
+    camera_mismatch = _owned_camera_mismatch(camera, desired, raw_paths, raw_config)
+    if camera_mismatch is not None:
+        return camera_mismatch
+    go2rtc = raw_paths.get("go2rtc", {})
+    configured_streams = go2rtc.get("streams", {}) if isinstance(go2rtc, dict) else {}
+    if not isinstance(configured_streams, dict) or any(
+        configured_streams.get(name) != sources
+        for name, sources in desired["streams"].items()
+    ):
+        return "saved_stream_mismatch"
+    if any(name not in runtime_streams for name in desired["streams"]):
+        return "runtime_stream_missing"
+    return None
 
 
 def _actual_matches(
     desired: dict[str, Any],
     config: dict[str, Any],
     raw_paths: dict[str, Any],
+    raw_config: dict[str, Any],
     runtime_streams: dict[str, Any],
 ) -> bool:
-    camera = config.get("cameras", {}).get(desired["key"])
-    if not _owned_camera_matches(camera, desired, raw_paths):
-        return False
-    configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
-    return all(
-        configured_streams.get(name) == sources and name in runtime_streams
-        for name, sources in desired["streams"].items()
-    )
+    return _actual_mismatch(desired, config, raw_paths, raw_config, runtime_streams) is None
+
+
+def _wait_for_camera_state(
+    client: FrigateClient,
+    desired: dict[str, Any],
+    *,
+    timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
+    poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            config = client.config()
+            raw_paths = client.raw_paths()
+            raw_config = client.raw_config()
+            runtime_streams = client.runtime_streams()
+            stats = client.stats()
+        except FrigateApiError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            mismatch = _actual_mismatch(
+                desired,
+                config,
+                raw_paths,
+                raw_config,
+                runtime_streams,
+            )
+            if mismatch is None and desired["key"] not in stats:
+                mismatch = "camera_start_pending"
+            if mismatch is None:
+                return config, raw_paths, raw_config, runtime_streams, stats
+            if time.monotonic() >= deadline:
+                raise FrigateApiError(mismatch)
+        if poll_interval > 0:
+            time.sleep(poll_interval)
 
 
 def reconcile_frigate(
@@ -867,16 +1008,23 @@ def reconcile_frigate(
     target: FrigateTarget,
     *,
     media_host: str = "127.0.0.1",
+    media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
     allow_restart: bool = True,
+    camera_uuid: str | None = None,
+    verification_timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
+    verification_poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,
 ) -> dict[str, int]:
     cameras = selected_camera_inventory(repository, target.target_id)
+    if camera_uuid is not None:
+        cameras = [camera for camera in cameras if str(camera["camera_uuid"]) == camera_uuid]
     if not cameras:
         return {"applied": 0, "pending": 0}
     client = client_factory(target)
     client.capabilities()
     config = client.config()
     raw_paths = client.raw_paths()
+    raw_config = client.raw_config()
     runtime_streams = client.runtime_streams()
     stats = client.stats()
     password = repository.rtsp_access_password()
@@ -917,7 +1065,7 @@ def reconcile_frigate(
                 verified_config = client.config()
                 verified_camera = verified_config.get("cameras", {}).get(key)
                 if not isinstance(verified_camera, dict) or verified_camera.get("enabled") is not False:
-                    raise FrigateApiError("verification_failed")
+                    raise FrigateApiError("camera_enabled_mismatch")
             except FrigateApiError as exc:
                 repository.complete_frigate_attempt(
                     target.target_id,
@@ -936,7 +1084,12 @@ def reconcile_frigate(
             config = verified_config
             applied += 1
             continue
-        desired = desired_camera(camera, password, media_host)
+        camera_media_host = (
+            media_host_resolver(str(camera["frigate_address_mode"]))
+            if media_host_resolver is not None
+            else media_host
+        )
+        desired = desired_camera(camera, password, camera_media_host)
         if desired is None:
             pending += 1
             continue
@@ -947,7 +1100,13 @@ def reconcile_frigate(
         if binding is None and (camera_exists or aliases_exist):
             pending += 1
             continue
-        actual_matches = _actual_matches(desired, config, raw_paths, runtime_streams)
+        actual_matches = _actual_matches(
+            desired,
+            config,
+            raw_paths,
+            raw_config,
+            runtime_streams,
+        )
         if (
             binding is not None
             and bool(binding.get("camera_enabled_applied", 1))
@@ -967,27 +1126,39 @@ def reconcile_frigate(
         if camera_exists and actual_matches and not camera_running:
             # Frigate 0.17 camera add events are not idempotent. Re-publishing
             # an add for an existing camera starts another set of workers and
-            # leaves the previous processes alive. Keep the binding pending and
-            # wait for Frigate to report the process instead.
-            if binding is not None and (
-                binding.get("status") != "error"
-                or binding.get("last_error_code") != "camera_start_pending"
-            ):
-                repository.record_frigate_attempt(
-                    target.target_id,
-                    camera["camera_uuid"],
-                    desired["key"],
-                    desired["record_stream_uuid"],
-                    desired["detect_stream_uuid"],
-                    desired["desired_hash"],
+            # leaves the previous processes alive. Poll read-only state instead.
+            repository.record_frigate_attempt(
+                target.target_id,
+                camera["camera_uuid"],
+                desired["key"],
+                desired["record_stream_uuid"],
+                desired["detect_stream_uuid"],
+                desired["desired_hash"],
+            )
+            try:
+                verified_state = _wait_for_camera_state(
+                    client,
+                    desired,
+                    timeout=verification_timeout,
+                    poll_interval=verification_poll_interval,
                 )
+            except FrigateApiError as exc:
                 repository.complete_frigate_attempt(
                     target.target_id,
                     camera["camera_uuid"],
                     status="error",
-                    error_code="camera_start_pending",
+                    error_code=exc.code,
                 )
-            pending += 1
+                pending += 1
+                continue
+            repository.complete_frigate_attempt(
+                target.target_id,
+                camera["camera_uuid"],
+                status="applied",
+                applied_hash=desired["desired_hash"],
+            )
+            config, raw_paths, raw_config, runtime_streams, stats = verified_state
+            applied += 1
             continue
         repository.record_frigate_attempt(
             target.target_id,
@@ -1010,6 +1181,15 @@ def reconcile_frigate(
                     for field, value in camera_update.items()
                     if field != "enabled"
                 }
+                saved_camera = raw_config.get("cameras", {}).get(desired["key"], {})
+                saved_detect = (
+                    saved_camera.get("detect") if isinstance(saved_camera, dict) else None
+                )
+                if isinstance(saved_detect, dict) and "fps" in saved_detect:
+                    camera_update = {
+                        **camera_update,
+                        "detect": {**camera_update["detect"], "fps": ""},
+                    }
             restart_for_second_camera = _requires_frigate_017_second_camera_restart(
                 config,
                 camera_exists=camera_exists,
@@ -1033,17 +1213,12 @@ def reconcile_frigate(
             if restart_for_second_camera and allow_restart:
                 client.restart()
                 time.sleep(FRIGATE_RESTART_SETTLE_SECONDS)
-                missing_workers = _wait_for_camera_workers(client, [desired["key"]])
-                if missing_workers:
-                    raise FrigateApiError("camera_start_pending")
-            verified_config = client.config()
-            verified_raw_paths = client.raw_paths()
-            verified_runtime = client.runtime_streams()
-            verified_stats = client.stats()
-            if not _actual_matches(desired, verified_config, verified_raw_paths, verified_runtime):
-                raise FrigateApiError("verification_failed")
-            if desired["key"] not in verified_stats:
-                raise FrigateApiError("camera_start_pending")
+            verified_state = _wait_for_camera_state(
+                client,
+                desired,
+                timeout=verification_timeout,
+                poll_interval=verification_poll_interval,
+            )
         except FrigateApiError as exc:
             repository.complete_frigate_attempt(
                 target.target_id,
@@ -1064,11 +1239,6 @@ def reconcile_frigate(
             camera["camera_uuid"],
             True,
         )
-        config, raw_paths, runtime_streams, stats = (
-            verified_config,
-            verified_raw_paths,
-            verified_runtime,
-            verified_stats,
-        )
+        config, raw_paths, raw_config, runtime_streams, stats = verified_state
         applied += 1
     return {"applied": applied, "pending": pending}

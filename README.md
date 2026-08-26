@@ -28,10 +28,16 @@ likely stream paths after the operator supplies the camera username and password
 
 ### How network discovery works
 
-CamAdmiral scans every connected private IPv4 LAN. ONVIF discovery sends multicast
-WS-Discovery probes for multiple dialects to `239.255.255.250:3702`. RTSP discovery probes
-ports `554` and `8554` and accepts only valid RTSP responses. Both run concurrently and do
-not try camera credentials.
+The **Scan network** dialog lists every connected private IPv4 LAN. An operator can exclude
+detected subnets, add private routed CIDRs, and save that selection for future scans. Custom
+CIDRs are limited to 1,024 usable hosts.
+
+For directly connected networks, ONVIF discovery sends multicast WS-Discovery probes for
+multiple dialects to `239.255.255.250:3702` and follows with bounded unicast probes. Multicast
+is sent separately through each selected local interface. It normally cannot cross a router
+or VLAN boundary, so custom routed CIDRs use unicast ONVIF probes only. RTSP discovery probes
+ports `554` and `8554` and accepts only valid RTSP responses. The protocols and selected
+subnets run concurrently and do not try camera credentials.
 
 On LANs up to 1,024 hosts, unicast ONVIF and RTSP probes cover every address. Larger LANs
 use ONVIF multicast plus addresses already learned in the host ARP table, avoiding an
@@ -40,7 +46,8 @@ marked offline, and recovered after IP changes using ONVIF identity or a unique 
 
 If automatic discovery misses a camera, **Add camera** accepts its IP address or complete
 RTSP URL and probes only that address. The camera must be on a connected private LAN.
-Timestamped protocol logs are available under scan details.
+Timestamped protocol logs are available in the collapsed technical-log section of the scan
+dialog. Per-subnet status shows which networks are queued, scanning, complete, or unavailable.
 
 ![CamAdmiral ONVIF and RTSP network scan details](docs/images/camadmiral-network-scan.png)
 
@@ -121,6 +128,21 @@ Stop CamAdmiral without removing its container, credentials, or data:
 
 Run `./start-camadmiral.sh` again to restart the preserved installation.
 
+### Update
+
+Update the repository checkout, then ask the launcher to pull the latest image and recreate
+the container:
+
+```console
+git pull
+./start-camadmiral.sh --update
+```
+
+You do not need to stop CamAdmiral first. The launcher pulls the replacement image before
+stopping the existing container, then recreates only the container. Credentials,
+configuration, adopted cameras, history, and other state remain in the `camadmiral-data`
+volume. If the image pull fails, the existing container is left untouched.
+
 ### Build and run from source
 
 To build the current source and start it through the same launcher:
@@ -128,6 +150,13 @@ To build the current source and start it through the same launcher:
 ```console
 docker build -t camadmiral:local .
 CAMADMIRAL_IMAGE=camadmiral:local ./start-camadmiral.sh
+```
+
+To replace an existing container with a newly rebuilt local image, add `--update`:
+
+```console
+docker build -t camadmiral:local .
+CAMADMIRAL_IMAGE=camadmiral:local ./start-camadmiral.sh --update
 ```
 
 No configuration file is required. On first boot, CamAdmiral generates its master key inside
@@ -172,14 +201,25 @@ addresses.
 
 ## Frigate integration
 
-Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
-`http://127.0.0.1:5000`. Port 5000 is Frigate's internal API port and must be exposed only
-to trusted local services. CamAdmiral validates the required configuration and runtime
-stream capabilities before saving the integration.
+Open **Settings > Integrations** and add the HTTP or HTTPS URL for each Frigate API. The URL
+may use a loopback address, LAN address, DNS name, IPv6 address, or path-prefixed reverse
+proxy. CamAdmiral validates the required configuration and runtime stream capabilities
+before saving the integration. It then makes privileged configuration requests to that
+endpoint, so connect only to a Frigate API you trust. Redirects are not followed.
 
-Use a camera's **Sync** action to select which Frigate instance should receive it through a
+Use a camera's **Streams** action to select which Frigate instance should receive it through a
 stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
-configuration or remove that CamAdmiral-managed camera from the instance.
+configuration or remove that CamAdmiral-managed camera from the instance. Each camera and
+Frigate target pairing has a CamAdmiral address mode:
+
+- **LAN IP** is the default and uses the host's current default LAN address. CamAdmiral
+  reconciles Frigate when DHCP changes that address.
+- **Localhost** renders the hostname `localhost`. It is intended for a Frigate instance
+  that shares the host network. CamAdmiral saves the operator's selection without probing
+  or overriding it.
+
+The address mode applies to both recording and detection streams for that camera. Existing
+Frigate selections migrate to **LAN IP**.
 
 Use **Full sync now** to synchronize the selected cameras and remove stale Frigate cameras
 and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one

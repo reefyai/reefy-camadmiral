@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from starlette.requests import Request
 
 from camadmiral import app as app_module
 from camadmiral.frigate import FrigateTarget
+from camadmiral.discovery import LanInterface
 from camadmiral.onvif_client import OnvifInspectionError
 from camadmiral.media import ProbeResult
 from camadmiral.rtsp_catalog import CatalogCandidate
@@ -190,7 +192,10 @@ class DiscoveryDecorationTests(unittest.TestCase):
             [{"camera_uuid": "camera-1", "status": "applied"}],
             [],
         ]
-        repository.selected_frigate_camera_uuids.side_effect = [["camera-1"], []]
+        repository.frigate_camera_selections.side_effect = [
+            [{"camera_uuid": "camera-1", "address_mode": "localhost"}],
+            [],
+        ]
         state = {
             "devices": [
                 {
@@ -213,8 +218,20 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(
             decorated["devices"][0]["adoption"]["frigate"],
             [
-                {"target_id": "one", "target": "Frigate One", "selected": True, "status": "applied"},
-                {"target_id": "two", "target": "Frigate Two", "selected": False, "status": "not_synced"},
+                {
+                    "target_id": "one",
+                    "target": "Frigate One",
+                    "selected": True,
+                    "address_mode": "localhost",
+                    "status": "applied",
+                },
+                {
+                    "target_id": "two",
+                    "target": "Frigate Two",
+                    "selected": False,
+                    "address_mode": "lan",
+                    "status": "not_synced",
+                },
             ],
         )
 
@@ -234,7 +251,9 @@ class DiscoveryDecorationTests(unittest.TestCase):
                 "last_error_code": "camera_start_pending",
             }
         ]
-        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
+        repository.frigate_camera_selections.return_value = [
+            {"camera_uuid": "camera-1", "address_mode": "lan"}
+        ]
         state = {
             "devices": [
                 {
@@ -258,6 +277,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
                     "target_id": "one",
                     "target": "Frigate One",
                     "selected": True,
+                    "address_mode": "lan",
                     "status": "error",
                     "error_code": "camera_start_pending",
                 }
@@ -407,6 +427,178 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         repository.save_telegram_settings.assert_not_called()
 
 
+class DiscoveryNetworkApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.detected = LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+
+    def test_detected_private_subnets_are_selected_by_default(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+        ):
+            response = app_module.discovery_networks()
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["max_custom_hosts"], 1024)
+        self.assertEqual(payload["networks"][0]["cidr"], "192.168.40.0/24")
+        self.assertTrue(payload["networks"][0]["selected"])
+        self.assertTrue(payload["networks"][0]["multicast"])
+
+    def test_save_normalizes_custom_subnet_and_excludes_removed_detected_subnet(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+        }
+        result_payload = {"networks": [], "max_custom_hosts": 1024}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(
+                app_module,
+                "_discovery_network_configuration",
+                return_value=result_payload,
+            ),
+        ):
+            response = app_module.update_discovery_networks(
+                app_module.DiscoveryNetworksRequest(
+                    selected_subnets=["10.0.202.15/24"]
+                ),
+                "save-discovery-networks",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.save_discovery_network_settings.assert_called_once_with(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=["192.168.40.0/24"],
+            excluded_custom_subnets=[],
+        )
+
+    def test_save_keeps_an_unselected_custom_subnet(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+            "excluded_custom_subnets": [],
+        }
+        result_payload = {"networks": [], "max_custom_hosts": 1024}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(
+                app_module,
+                "_discovery_network_configuration",
+                return_value=result_payload,
+            ),
+        ):
+            response = app_module.update_discovery_networks(
+                app_module.DiscoveryNetworksRequest(
+                    selected_subnets=["192.168.40.0/24"],
+                    custom_subnets=["10.0.202.15/24"],
+                ),
+                "save-discovery-networks",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.save_discovery_network_settings.assert_called_once_with(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=[],
+            excluded_custom_subnets=["10.0.202.0/24"],
+        )
+
+    def test_custom_subnet_checkbox_state_is_returned(self) -> None:
+        repository = Mock()
+        routed = LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("10.0.202.0/24"),
+            directly_connected=False,
+        )
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": ["10.0.202.0/24"],
+            "excluded_detected_subnets": [],
+            "excluded_custom_subnets": ["10.0.202.0/24"],
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(app_module, "routed_scan_interface", return_value=routed),
+        ):
+            response = app_module.discovery_networks()
+
+        payload = json.loads(response.body)
+        custom = next(network for network in payload["networks"] if network["source"] == "custom")
+        self.assertFalse(custom["selected"])
+
+    def test_save_rejects_public_or_oversized_custom_subnets(self) -> None:
+        for subnet in ("192.0.2.0/24", "10.0.0.0/8"):
+            repository = Mock()
+            repository.discovery_network_settings.return_value = {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+            }
+            with (
+                self.subTest(subnet=subnet),
+                patch.object(app_module, "_repository", return_value=repository),
+                patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            ):
+                response = app_module.update_discovery_networks(
+                    app_module.DiscoveryNetworksRequest(selected_subnets=[subnet]),
+                    "save-discovery-networks",
+                )
+
+            self.assertEqual(response.status_code, 422)
+            repository.save_discovery_network_settings.assert_not_called()
+
+    def test_scan_request_captures_saved_subnets(self) -> None:
+        repository = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = Path(directory) / "scan-request.json"
+            with (
+                patch.object(app_module, "_repository", return_value=repository),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["192.168.40.0/24", "10.0.202.0/24"],
+                ),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "idle"}),
+                patch.object(app_module, "_decorate_adoptions", side_effect=lambda state: state),
+                patch.object(app_module, "SCAN_REQUEST", request_path),
+            ):
+                response = app_module.start_discovery("scan")
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            request["subnets"],
+            ["192.168.40.0/24", "10.0.202.0/24"],
+        )
+        payload = json.loads(response.body)
+        self.assertEqual(
+            [network["status"] for network in payload["networks"]],
+            ["queued", "queued"],
+        )
+
+    def test_scan_requires_at_least_one_saved_subnet(self) -> None:
+        with (
+            patch.object(app_module, "_repository", return_value=Mock()),
+            patch.object(app_module, "_selected_discovery_subnets", return_value=[]),
+        ):
+            response = app_module.start_discovery("scan")
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(json.loads(response.body)["status"], "no_networks")
+
+
 class FrigateTargetApiTests(unittest.TestCase):
     def test_frigate_error_exposes_safe_full_sync_context(self) -> None:
         response = app_module._frigate_target_error(
@@ -470,9 +662,16 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.record_frigate_target_check.assert_called_once()
         queue.assert_called_once()
 
-    def test_add_rejects_non_loopback_target_before_network_access(self) -> None:
+    def test_add_accepts_an_operator_selected_remote_target(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = []
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-remote",
+            "name": "Remote",
+            "api_url": "http://192.0.2.10:5000",
+            "selected_cameras": 0,
+            "connection_status": "connected",
+        }
         with (
             patch.object(app_module, "_repository", return_value=repository),
             patch.object(app_module, "_check_frigate_target") as check,
@@ -485,10 +684,13 @@ class FrigateTargetApiTests(unittest.TestCase):
                 "add-frigate-target",
             )
 
-        self.assertEqual(response.status_code, 422)
-        self.assertEqual(json.loads(response.body)["status"], "invalid_target_url")
-        check.assert_not_called()
-        repository.save_frigate_target.assert_not_called()
+        self.assertEqual(response.status_code, 201)
+        check.assert_called_once()
+        repository.save_frigate_target.assert_called_once()
+        self.assertEqual(
+            repository.save_frigate_target.call_args.args[2],
+            "http://192.0.2.10:5000",
+        )
 
     def test_add_rejects_a_blank_name_before_network_access(self) -> None:
         repository = Mock()
@@ -564,7 +766,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         }
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
                 "full_sync_frigate",
@@ -629,12 +831,49 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
             patch.object(
                 app_module,
-                "reconcile_frigate",
-                return_value={"applied": 1, "pending": 0},
-            ) as reconcile,
+                "_queue_frigate_camera_reconciliation",
+                return_value=True,
+            ) as queue,
+        ):
+            response = app_module.sync_frigate_camera(
+                "frigate-synthetic",
+                "camera-1",
+                "sync-frigate-camera",
+                app_module.FrigateCameraSyncRequest(address_mode="localhost"),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            json.loads(response.body),
+            {"status": "syncing", "selected": True, "queued": True},
+        )
+        repository.select_frigate_camera.assert_called_once_with(
+            "frigate-synthetic", "camera-1", "localhost"
+        )
+        repository.mark_frigate_binding_pending.assert_called_once_with(
+            "frigate-synthetic", "camera-1"
+        )
+        queue.assert_called_once_with("frigate-synthetic", "camera-1")
+
+    def test_camera_sync_without_body_preserves_existing_address_mode(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "selected_cameras": 1,
+        }
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        repository.frigate_camera_address_mode.return_value = "localhost"
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "_queue_frigate_camera_reconciliation",
+                return_value=False,
+            ),
         ):
             response = app_module.sync_frigate_camera(
                 "frigate-synthetic",
@@ -642,12 +881,63 @@ class FrigateTargetApiTests(unittest.TestCase):
                 "sync-frigate-camera",
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(json.loads(response.body)["selected"])
+        self.assertEqual(response.status_code, 202)
+        self.assertFalse(json.loads(response.body)["queued"])
         repository.select_frigate_camera.assert_called_once_with(
-            "frigate-synthetic", "camera-1"
+            "frigate-synthetic", "camera-1", "localhost"
         )
+
+    def test_camera_sync_job_reconciles_only_the_requested_camera(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+        }
+        job = ("frigate-synthetic", "camera-1")
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.add(job)
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "media_host_for_mode", return_value="192.0.2.10"),
+            patch.object(app_module, "reconcile_frigate") as reconcile,
+        ):
+            app_module._sync_frigate_camera_job(*job)
+
         reconcile.assert_called_once()
+        self.assertEqual(reconcile.call_args.kwargs["camera_uuid"], "camera-1")
+        repository.record_frigate_target_check.assert_called_once_with(
+            "frigate-synthetic", status="connected"
+        )
+        self.assertNotIn(job, app_module.FRIGATE_CAMERA_JOBS)
+
+    def test_camera_sync_queue_deduplicates_an_active_camera_job(self) -> None:
+        job = ("frigate-synthetic", "camera-1")
+        thread = Mock()
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.discard(job)
+        try:
+            with patch.object(app_module.threading, "Thread", return_value=thread):
+                self.assertTrue(app_module._queue_frigate_camera_reconciliation(*job))
+                self.assertFalse(app_module._queue_frigate_camera_reconciliation(*job))
+            thread.start.assert_called_once_with()
+        finally:
+            with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+                app_module.FRIGATE_CAMERA_JOBS.discard(job)
+
+    def test_camera_sync_queue_recovers_when_thread_cannot_start(self) -> None:
+        job = ("frigate-synthetic", "camera-1")
+        thread = Mock()
+        thread.start.side_effect = RuntimeError("synthetic thread failure")
+        with app_module.FRIGATE_CAMERA_JOBS_LOCK:
+            app_module.FRIGATE_CAMERA_JOBS.discard(job)
+
+        with (
+            patch.object(app_module.threading, "Thread", return_value=thread),
+            self.assertRaisesRegex(RuntimeError, "synthetic thread failure"),
+        ):
+            app_module._queue_frigate_camera_reconciliation(*job)
+
+        self.assertNotIn(job, app_module.FRIGATE_CAMERA_JOBS)
 
     def test_camera_config_preview_returns_masked_and_copyable_versions(self) -> None:
         repository = Mock()
@@ -660,7 +950,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_repository", return_value=repository),
-            patch.object(app_module, "media_host_from_inventory", return_value="192.168.50.12"),
+            patch.object(app_module, "media_host_for_mode", return_value="192.168.50.12"),
             patch.object(
                 app_module,
                 "frigate_camera_configuration",
@@ -913,6 +1203,25 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         repository.update_camera_name.assert_called_once_with("camera-1", "Renamed")
         queue.assert_called_once_with()
+
+    def test_stream_address_choice_is_saved_without_syncing_frigate(self) -> None:
+        repository = Mock()
+        repository.set_camera_stream_address_mode.return_value = True
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.set_camera_stream_address(
+                "camera-1",
+                app_module.CameraStreamAddressRequest(address_mode="localhost"),
+                "set-camera-stream-address",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.payload(response),
+            {"status": "updated", "address_mode": "localhost"},
+        )
+        repository.set_camera_stream_address_mode.assert_called_once_with(
+            "camera-1", "localhost"
+        )
 
     def test_disable_withdraws_media_and_keeps_camera_adopted(self) -> None:
         repository = Mock()

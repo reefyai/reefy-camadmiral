@@ -56,13 +56,53 @@ def scan_progress(scanner: str, state: str, interface: LanInterface) -> None:
         current = json.loads(STATE.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         current = {}
-    scanners = dict(current.get("scanners", {}))
-    scanners[scanner] = state
+    networks = [dict(item) for item in current.get("networks", []) if isinstance(item, dict)]
+    subnet = str(interface.network)
+    network = next((item for item in networks if item.get("subnet") == subnet), None)
+    if network is None:
+        network = {**interface.as_dict(), "status": "queued", "scanners": {}}
+        networks.append(network)
+    else:
+        network.update(interface.as_dict())
+    network_scanners = dict(network.get("scanners", {}))
+    network_scanners[scanner] = state
+    network["scanners"] = network_scanners
+    scanner_states = list(network_scanners.values())
+    if any(value == "running" for value in scanner_states):
+        network["status"] = "running"
+    elif any(value == "complete" for value in scanner_states):
+        network["status"] = "complete"
+    elif scanner_states and all(value == "skipped" for value in scanner_states):
+        network["status"] = "complete"
+    else:
+        network["status"] = "error"
+
+    scanners: dict[str, str] = {}
+    scanner_names = {
+        name
+        for item in networks
+        for name in dict(item.get("scanners", {}))
+    }
+    for name in scanner_names:
+        states = [
+            dict(item.get("scanners", {})).get(name)
+            for item in networks
+            if name in dict(item.get("scanners", {}))
+        ]
+        if "running" in states:
+            scanners[name] = "running"
+        elif "complete" in states:
+            scanners[name] = "complete"
+        elif states and all(value == "skipped" for value in states):
+            scanners[name] = "skipped"
+        else:
+            scanners[name] = "error"
     current.update(
         {
             "status": "running",
             "phase": "scanning",
             "network": interface.as_dict(),
+            "networks": networks,
             "scanners": scanners,
         }
     )
@@ -73,6 +113,11 @@ def handle_scan(request: dict[str, object]) -> None:
     scan_id = str(request.get("scan_id", "unknown"))
     previous_inventory = read_inventory()
     previous_devices = previous_inventory.get("devices", [])
+    requested_subnets = [
+        str(value)
+        for value in request.get("subnets", [])
+        if isinstance(value, str)
+    ]
     write_json(
         STATE,
         {
@@ -85,6 +130,10 @@ def handle_scan(request: dict[str, object]) -> None:
             "summary": previous_inventory.get("summary")
             or inventory_summary(previous_devices),
             "network": previous_inventory.get("network"),
+            "networks": [
+                {"subnet": subnet, "status": "queued", "scanners": {}}
+                for subnet in requested_subnets
+            ],
             "duration_ms": previous_inventory.get("duration_ms"),
             "completed_at": previous_inventory.get("completed_at"),
             "raw_log": previous_inventory.get("raw_log", []),
@@ -154,7 +203,11 @@ def handle_scan(request: dict[str, object]) -> None:
                 ),
             )
         else:
-            result = scan_lan(progress=scan_progress, known_devices=previous_devices)
+            result = scan_lan(
+                progress=scan_progress,
+                known_devices=previous_devices,
+                subnets=requested_subnets if "subnets" in request else None,
+            )
             result["devices"] = reconcile_inventory(
                 previous_devices,
                 result["devices"],
@@ -174,6 +227,7 @@ def handle_scan(request: dict[str, object]) -> None:
         write_json(STATE, result)
     except Exception as exc:
         raw_log = getattr(exc, "raw_log", [])
+        networks = getattr(exc, "networks", [])
         write_json(
             STATE,
             {
@@ -187,6 +241,10 @@ def handle_scan(request: dict[str, object]) -> None:
                 "summary": previous_inventory.get("summary")
                 or inventory_summary(previous_devices),
                 "network": previous_inventory.get("network"),
+                "networks": networks or [
+                    {"subnet": subnet, "status": "error", "scanners": {}}
+                    for subnet in requested_subnets
+                ],
                 "raw_log": raw_log or previous_inventory.get("raw_log", []),
             },
         )

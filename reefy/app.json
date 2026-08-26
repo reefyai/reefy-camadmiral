@@ -1,11 +1,71 @@
 {
   "slug": "camadmiral",
-  "version": "v2026.08.23-03",
+  "version": "v2026.08.26-09",
   "name": "CamAdmiral",
   "icon": "icon.png",
   "description": "Discover, adopt, monitor, and restream ONVIF and RTSP cameras",
-  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.23-03",
+  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-09",
   "releases": [
+    {
+      "version": "v2026.08.26-09",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-09"
+    },
+    {
+      "version": "v2026.08.26-08",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-08"
+    },
+    {
+      "version": "v2026.08.26-07",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-07"
+    },
+    {
+      "version": "v2026.08.26-06",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-06"
+    },
+    {
+      "version": "v2026.08.26-05",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-05"
+    },
+    {
+      "version": "v2026.08.26-04",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-04"
+    },
+    {
+      "version": "v2026.08.26-03",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-03"
+    },
+    {
+      "version": "v2026.08.26-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-02"
+    },
+    {
+      "version": "v2026.08.26-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-01"
+    },
+    {
+      "version": "v2026.08.26-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-00"
+    },
+    {
+      "version": "v2026.08.25-03",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-03"
+    },
+    {
+      "version": "v2026.08.25-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-02"
+    },
+    {
+      "version": "v2026.08.25-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-01"
+    },
+    {
+      "version": "v2026.08.25-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-00"
+    },
+    {
+      "version": "v2026.08.23-04",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.23-04"
+    },
     {
       "version": "v2026.08.23-03",
       "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.23-03"

@@ -33,12 +33,12 @@
     }
     h1 { margin: 0; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.045em; }
     button { font: inherit; }
-    #scan {
+    #scan, #scan-start {
       border: 0; border-radius: 9px; padding: 9px 13px; background: #2dd4bf; color: #06201e;
       font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(45, 212, 191, .16);
     }
-    #scan:hover { background: #5eead4; }
-    #scan:disabled { cursor: wait; opacity: .6; }
+    #scan:hover, #scan-start:hover { background: #5eead4; }
+    #scan-start:disabled { cursor: wait; opacity: .6; }
     .primary-nav { display: flex; align-items: center; gap: 4px; }
     .primary-nav a {
       position: relative; padding: 10px 12px; color: #8ea2b3; font-size: 13px; font-weight: 750;
@@ -50,17 +50,28 @@
       position: absolute; right: 10px; bottom: 2px; left: 10px; height: 2px; border-radius: 2px;
       background: #2dd4bf; content: "";
     }
-    .dashboard-controls {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 18px;
-      align-items: center; margin-bottom: 16px; padding: 11px 12px;
-      border: 1px solid rgba(148, 163, 184, .13); border-radius: 12px;
-      background: rgba(12, 26, 42, .5);
-    }
-    .dashboard-actions { display: flex; align-items: center; gap: 8px; }
+    .dashboard-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
     .dashboard-actions > button {
       width: 120px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
       font-size: 12px; font-weight: 800;
     }
+    .dashboard-inline-card {
+      margin: 0 0 16px; overflow: hidden; border: 1px solid rgba(148, 163, 184, .15);
+      border-radius: 14px; background: rgba(12, 26, 42, .7); box-shadow: 0 18px 42px rgba(0, 0, 0, .12);
+      animation: reveal-card .18s ease-out;
+    }
+    @keyframes reveal-card { from { opacity: 0; transform: translateY(-5px); } }
+    .dashboard-inline-card-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border-bottom: 1px solid rgba(148, 163, 184, .11);
+    }
+    .dashboard-inline-card-header h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .dashboard-inline-card-collapse {
+      width: 30px; height: 30px; border: 0; border-radius: 7px; padding: 0;
+      background: transparent; color: #8ea2b3; cursor: pointer; font-size: 20px; line-height: 1;
+    }
+    .dashboard-inline-card-collapse:hover { background: rgba(148, 163, 184, .1); color: #e0eaf0; }
+    .dashboard-inline-card-body { padding: 14px; }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
       background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
@@ -129,7 +140,17 @@
       padding: 12px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 10px;
       background: rgba(5, 15, 27, .42);
     }
+    .frigate-camera-help { margin-top: 5px; max-width: 620px; }
     .frigate-camera-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .stream-address-choice {
+      display: flex; align-items: center; gap: 12px 18px; margin-bottom: 12px; padding: 10px 12px;
+      border: 1px solid rgba(148, 163, 184, .12); border-radius: 9px; background: rgba(5, 15, 27, .32);
+    }
+    .stream-address-choice legend { float: left; padding: 0; color: #e0eaf0; font-size: 12px; font-weight: 800; }
+    .stream-address-options { display: flex; align-items: center; gap: 14px; }
+    .stream-address-option { display: flex; align-items: center; gap: 6px; color: #b8c7d2; font-size: 12px; cursor: pointer; }
+    .stream-address-option input { margin: 0; accent-color: #2dd4bf; }
+    .stream-address-error { color: #fda4af; font-size: 11px; line-height: 1.4; }
     .config-preview {
       max-height: 52vh; overflow: auto; margin: 0; padding: 12px; border: 1px solid rgba(148, 163, 184, .14);
       border-radius: 9px; background: #030a12; color: #b9fff5;
@@ -150,13 +171,12 @@
     .address-panel {
       display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
     }
-    .address-panel .setup-field { flex: 1 1 420px; }
-    .address-panel input {
+    .address-panel .setup-field { flex: 1 1 420px; min-width: 0; }
+    .address-panel .setup-field input {
       width: 100%; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
     }
     .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
-    .scan-status { min-width: 0; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
     .dot.ready { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
@@ -171,22 +191,75 @@
     .scanner-state.complete .scanner-dot { background: #22c55e; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
-    .scan-details-trigger {
-      display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; min-height: 30px;
-      border: 0; border-radius: 7px; padding: 5px 7px 5px 4px;
-      background: transparent; color: #7890a4; font-size: 12px; font-weight: 650; cursor: pointer;
+    .scan-panel-content { min-width: 0; }
+    .scan-networks-section { margin-bottom: 18px; }
+    .scan-network-table {
+      overflow: hidden; border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px;
     }
-    .scan-details-trigger:hover { color: #b9fff5; background: rgba(45, 212, 191, .05); }
-    .scan-details-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .scan-details-link { color: #75d9ce; font-weight: 750; white-space: nowrap; }
-    .scan-dialog-content { min-width: 0; }
-    .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-    .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
+    .scan-network-table-header {
+      padding: 10px 12px; background: rgba(12, 26, 42, .5); color: #b8c8d2;
+      font-size: 12px; font-weight: 800;
+    }
+    .scan-network-add-row {
+      display: flex; align-items: center; min-height: 43px; padding: 6px 12px;
+      border-top: 1px solid rgba(148, 163, 184, .12);
+    }
+    .scan-network-add-toggle {
+      width: 30px; height: 30px; border: 1px solid rgba(45, 212, 191, .3); border-radius: 7px;
+      padding: 0; background: rgba(45, 212, 191, .08); color: #8ff8e8; cursor: pointer;
+      font-size: 20px; line-height: 1;
+    }
+    .scan-network-add-toggle:hover { background: rgba(45, 212, 191, .14); }
+    .scan-network-list { display: grid; }
+    .scan-network-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+      min-width: 0; border-top: 1px solid rgba(148, 163, 184, .12); padding: 10px 12px;
+    }
+    .scan-network-selection { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+    .scan-network-selection input { width: 16px; height: 16px; flex: none; margin: 0; accent-color: #2dd4bf; }
+    .scan-network-copy { display: grid; gap: 2px; min-width: 0; }
+    .scan-network-cidr { color: #e4eef3; font: 700 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scan-network-description { color: #7890a4; font-size: 11px; line-height: 1.35; }
+    .scan-network-row .row-action { min-width: 66px; }
+    .scan-network-add {
+      grid-template-columns: minmax(220px, 360px) auto; justify-content: start; gap: 8px;
+      border-top: 1px solid rgba(148, 163, 184, .12); padding: 10px 12px;
+    }
+    .scan-network-add:not([hidden]) { display: grid; }
+    .scan-network-add input {
+      min-width: 0; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
+      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 8px 10px; font: inherit;
+    }
+    .scan-network-settings-status { min-height: 17px; margin-top: 8px; color: #8ea2b3; font-size: 11px; }
+    .scan-network-settings-status.error { color: #fda4af; }
+    .scan-action { padding-bottom: 16px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
+    .scan-action #scan-start { min-height: 40px; }
+    .scan-run-status { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: #a9bac6; font-size: 12px; }
+    .scan-run-status .network { margin-left: auto; text-align: right; }
+    .scan-panel-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; font-weight: 700; }
+    .scan-panel-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scan-results { padding: 16px 0 6px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
+    .scan-results-heading { color: #dce8ee; font-size: 14px; font-weight: 800; }
+    .scan-result-summary { margin-top: 7px; color: #d6e2e9; font-size: 13px; }
+    .scan-result-detail { display: flex; align-items: center; gap: 12px; margin-top: 7px; color: #7890a4; font-size: 12px; }
+    .scan-metadata { color: #7890a4; font-size: 12px; }
+    .scan-network-progress { display: grid; gap: 7px; margin-top: 11px; }
+    .scan-network-progress-row {
+      display: grid; grid-template-columns: minmax(150px, 1fr) auto; align-items: center; gap: 8px 14px;
+      padding: 9px 10px; border: 1px solid rgba(148, 163, 184, .11); border-radius: 8px;
+      background: rgba(5, 15, 27, .38);
+    }
+    .scan-network-progress-name { color: #d6e2e9; font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scan-network-progress-state { color: #8ea2b3; font-size: 11px; font-weight: 750; text-transform: capitalize; }
+    .scan-network-progress-row .scanner-progress { grid-column: 1 / -1; }
     .scan-log {
       max-height: 360px; margin: 0; overflow: auto; border-radius: 8px; padding: 11px 12px;
       background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
     }
+    .scan-log-details { margin-top: 12px; }
+    .scan-log-details summary { color: #8ea2b3; font-size: 12px; cursor: pointer; }
+    .scan-log-details[open] summary { margin-bottom: 8px; }
     .camera-list-surface {
       overflow: hidden; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
       background: rgba(12, 26, 42, .76); box-shadow: 0 18px 42px rgba(0, 0, 0, .14);
@@ -294,6 +367,7 @@
     }
     .row-action:hover { background: rgba(45, 212, 191, .14); }
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
+    .syncing-action { display: inline-flex; align-items: center; gap: 6px; }
     .action-stack { display: flex; align-items: center; gap: 8px; }
     .camera-details { min-width: 0; }
     .camera-summary {
@@ -468,7 +542,8 @@
     .adoption-context { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: #91a5b5; font-size: 12px; }
     .adoption-prompt { color: #a9bac6; font-size: 13px; line-height: 1.5; }
     .inline-spinner {
-      width: 14px; height: 14px; flex: none; border: 2px solid rgba(251, 191, 36, .28);
+      display: inline-block; box-sizing: border-box; width: 14px; height: 14px; flex: none;
+      border: 2px solid rgba(251, 191, 36, .28);
       border-top-color: #fbbf24; border-radius: 50%; animation: spin .75s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -477,17 +552,17 @@
     .media-state.unavailable { color: #fbbf24; }
     .profile-list { display: grid; gap: 9px; }
     .profile {
-      display: grid; grid-template-columns: minmax(140px, .65fr) minmax(170px, .75fr) minmax(320px, 1.7fr);
-      gap: 16px; align-items: start; padding: 11px; border: 1px solid rgba(148, 163, 184, .1);
+      display: grid; grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.6fr);
+      gap: 6px 20px; align-items: start; padding: 11px; border: 1px solid rgba(148, 163, 184, .1);
       border-radius: 9px; background: rgba(5, 15, 27, .38); color: #91a5b5; font-size: 12px;
     }
-    .stream-identity { min-width: 0; }
-    .profile-name { color: #e0eaf0; font-weight: 700; }
-    .profile-metadata { min-width: 0; }
+    .stream-identity { grid-column: 1; grid-row: 1; min-width: 0; }
+    .profile-name { color: #e0eaf0; font-weight: 700; overflow-wrap: anywhere; }
+    .profile-metadata { grid-column: 1; grid-row: 2; min-width: 0; }
     .profile-specs { color: #91a5b5; line-height: 1.45; }
     .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
     .endpoint + .endpoint { margin-top: 5px; }
-    .stream-access { min-width: 0; }
+    .stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0; align-self: center; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .downstream-row {
       display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px 5px 8px;
@@ -528,15 +603,22 @@
       h1 { font-size: 32px; }
       .primary-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(148, 163, 184, .1); }
       .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
-      .dashboard-controls { grid-template-columns: 1fr; gap: 8px; padding: 10px; }
-      .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; grid-row: 2; }
+      .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; }
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
-      .scan-status { grid-row: 1; min-width: 0; }
-      .scan-details-trigger { width: 100%; min-height: 34px; padding: 5px 4px; }
-      .scan-overview { align-items: flex-start; flex-direction: column; }
+      #scan-start { min-height: 44px; }
+      .dashboard-inline-card-body { padding: 12px; }
+      .scan-network-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .scan-network-row .row-action { min-height: 40px; }
+      .scan-network-add { width: 100%; grid-template-columns: minmax(0, 1fr) auto; }
+      .scan-network-add input { min-height: 44px; }
+      .scan-network-add .row-action { min-height: 40px; }
+      .scan-run-status { align-items: flex-start; flex-wrap: wrap; }
+      .scan-run-status .network { width: 100%; margin-left: 18px; text-align: left; }
+      .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
       .scanner-progress { flex-wrap: wrap; }
+      .scan-network-progress-row { grid-template-columns: minmax(0, 1fr) auto; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
       .address-panel .setup-field { flex: none; width: 100%; }
       .address-panel .row-action { width: 100%; padding: 9px 12px; }
@@ -589,6 +671,8 @@
       .secondary-action { align-self: flex-start; padding: 5px 0; }
       .rtsp-setup { grid-template-columns: 1fr; }
       .profile { grid-template-columns: 1fr; gap: 6px; }
+      .stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }
+      .stream-address-choice { align-items: flex-start; flex-direction: column; gap: 8px; }
       .integration-row { grid-template-columns: 1fr; gap: 4px; }
       .camera-summary-top { align-items: flex-start; }
       .availability-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -630,21 +714,65 @@
       </nav>
     </header>
     <main id="dashboard-view">
-      <div class="dashboard-controls">
-        <div class="scan-status">
-          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog" aria-label="Open scan details"><span class="dot" id="dot"></span><span class="scan-details-label" id="state">Starting</span><span class="scan-details-link">View details</span></button>
-        </div>
-        <div class="dashboard-actions">
-          <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
-          <button id="scan" type="button">Scan network</button>
-        </div>
+      <div class="dashboard-actions">
+        <button class="header-secondary" id="show-add-address" type="button" aria-controls="manual-card" aria-expanded="false">Add camera</button>
+        <button id="scan" type="button" aria-controls="scan-card" aria-expanded="false">Scan network</button>
       </div>
-      <form class="address-panel" id="address-panel" hidden>
-        <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
-        <button class="row-action" type="submit">Continue</button>
-        <span class="address-status" id="address-status"></span>
-      </form>
-      <div class="errorbox" id="error" hidden></div>
+      <section class="dashboard-inline-card" id="scan-card" aria-labelledby="scan-card-title" hidden>
+        <div class="dashboard-inline-card-header">
+          <h2 id="scan-card-title">Scan network</h2>
+          <button class="dashboard-inline-card-collapse" id="scan-card-collapse" type="button" aria-label="Collapse scan network">&#8722;</button>
+        </div>
+        <div class="dashboard-inline-card-body scan-panel-content" id="scan-panel-content">
+          <section class="scan-networks-section" aria-label="Networks to scan">
+            <div class="scan-network-table">
+              <div class="scan-network-table-header">Subnets</div>
+              <div class="scan-network-list" id="scan-network-list"></div>
+              <div class="scan-network-add-row">
+                <button class="scan-network-add-toggle" id="scan-network-add-toggle" type="button" aria-label="Add subnet" aria-controls="scan-network-add" aria-expanded="false">+</button>
+              </div>
+              <form class="scan-network-add" id="scan-network-add" hidden>
+                <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
+                <button class="row-action" type="submit">Add subnet</button>
+              </form>
+            </div>
+            <div class="scan-network-settings-status" id="scan-network-settings-status" role="status" aria-live="polite"></div>
+          </section>
+          <div class="scan-action">
+            <button id="scan-start" type="button">Scan network</button>
+          </div>
+          <section class="scan-results" id="scan-results" aria-labelledby="scan-results-title" hidden>
+            <div class="scan-results-heading" id="scan-results-title">Scan results</div>
+            <div class="scan-run-status" id="scan-run-status" hidden>
+              <div class="scan-panel-status"><span class="dot" id="dot"></span><span class="scan-panel-status-label" id="state">Scanning network</span></div>
+              <div class="network" id="network"></div>
+            </div>
+            <div class="scan-result-summary" id="scan-result-summary"></div>
+            <div class="scan-network-progress" id="scan-network-progress"></div>
+            <div class="scan-result-detail">
+              <div class="scan-metadata" id="scan-metadata"></div>
+            </div>
+            <div class="errorbox" id="error" hidden></div>
+          </section>
+          <details class="scan-log-details" id="scan-log-details">
+            <summary>Logs <span id="scan-log-count"></span></summary>
+            <pre class="scan-log" id="scan-log"></pre>
+          </details>
+        </div>
+      </section>
+      <section class="dashboard-inline-card" id="manual-card" aria-labelledby="manual-card-title" hidden>
+        <div class="dashboard-inline-card-header">
+          <h2 id="manual-card-title">Add camera manually</h2>
+          <button class="dashboard-inline-card-collapse" id="manual-card-collapse" type="button" aria-label="Collapse manual camera form">&#8722;</button>
+        </div>
+        <div class="dashboard-inline-card-body">
+          <form class="address-panel" id="address-panel">
+            <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
+            <button class="row-action" type="submit">Continue</button>
+            <span class="address-status" id="address-status"></span>
+          </form>
+        </div>
+      </section>
       <section class="camera-list-surface" aria-label="Camera list">
         <div class="toolbar" id="toolbar" hidden>
           <div class="summary">
@@ -704,7 +832,7 @@
         <div class="settings-section-header">
           <div>
             <h3 id="frigate-settings-title">Frigate integrations</h3>
-            <p>Send adopted cameras to one or more local Frigate instances.</p>
+            <p>Send adopted cameras to one or more Frigate instances.</p>
           </div>
           <button class="row-action" id="add-frigate" type="button">Add Frigate</button>
         </div>
@@ -719,16 +847,7 @@
         <h2 class="modal-title" id="app-modal-title">Camera details</h2>
         <button class="modal-close" id="app-modal-close" type="button" aria-label="Close dialog">×</button>
       </div>
-      <div class="modal-body" id="app-modal-body">
-        <div class="scan-dialog-content" id="scan-dialog-content" hidden>
-          <div class="scan-overview">
-            <div class="scanner-progress" id="scanner-progress" hidden></div>
-            <div class="network" id="network"></div>
-          </div>
-          <div class="scan-metadata" id="scan-metadata"></div>
-          <pre class="scan-log" id="scan-log"></pre>
-        </div>
-      </div>
+      <div class="modal-body" id="app-modal-body"></div>
     </section>
   </div>
   <div class="modal-backdrop confirm-modal" id="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" hidden>
@@ -765,7 +884,12 @@
   <div class="availability-tooltip" id="availability-tooltip" role="tooltip" hidden></div>
   <script>
     const scanButton = document.querySelector("#scan");
+    const scanStartButton = document.querySelector("#scan-start");
     const showAddAddress = document.querySelector("#show-add-address");
+    const scanCard = document.querySelector("#scan-card");
+    const scanCardCollapse = document.querySelector("#scan-card-collapse");
+    const manualCard = document.querySelector("#manual-card");
+    const manualCardCollapse = document.querySelector("#manual-card-collapse");
     const dashboardView = document.querySelector("#dashboard-view");
     const incidentsView = document.querySelector("#incidents-view");
     const incidentsList = document.querySelector("#incidents-list");
@@ -781,11 +905,20 @@
     const addressStatus = document.querySelector("#address-status");
     const stateLabel = document.querySelector("#state");
     const stateDot = document.querySelector("#dot");
+    const scanRunStatus = document.querySelector("#scan-run-status");
+    const scanResults = document.querySelector("#scan-results");
+    const scanResultSummary = document.querySelector("#scan-result-summary");
     const networkLabel = document.querySelector("#network");
-    const scannerProgress = document.querySelector("#scanner-progress");
-    const scanDetails = document.querySelector("#scan-details");
+    const scanNetworkProgress = document.querySelector("#scan-network-progress");
     const scanMetadata = document.querySelector("#scan-metadata");
     const scanLog = document.querySelector("#scan-log");
+    const scanLogDetails = document.querySelector("#scan-log-details");
+    const scanLogCount = document.querySelector("#scan-log-count");
+    const scanNetworkList = document.querySelector("#scan-network-list");
+    const scanNetworkAdd = document.querySelector("#scan-network-add");
+    const scanNetworkAddToggle = document.querySelector("#scan-network-add-toggle");
+    const scanNetworkInput = document.querySelector("#scan-network-input");
+    const scanNetworkSettingsStatus = document.querySelector("#scan-network-settings-status");
     const toolbar = document.querySelector("#toolbar");
     const searchInput = document.querySelector("#search");
     const tableWrap = document.querySelector("#table-wrap");
@@ -798,7 +931,6 @@
     const appModalTitle = document.querySelector("#app-modal-title");
     const appModalBody = document.querySelector("#app-modal-body");
     const appModalClose = document.querySelector("#app-modal-close");
-    const scanDialogContent = document.querySelector("#scan-dialog-content");
     const confirmModal = document.querySelector("#confirm-modal");
     const confirmTitle = document.querySelector("#confirm-title");
     const confirmMessage = document.querySelector("#confirm-message");
@@ -820,8 +952,15 @@
     let sortKey = "name";
     let sortDirection = 1;
     let cameraFilter = null;
-    let scannerSignature = "";
+    let scanNetworkProgressSignature = "";
     let scanDetailsSignature = "";
+    let discoveryNetworkConfiguration = [];
+    let selectedDiscoverySubnets = new Set();
+    let scanNetworksSaving = false;
+    let maxCustomScanHosts = 1024;
+    let scanPanelScanId = null;
+    let scanPanelInitialized = false;
+    let latestDiscoveryState = null;
     let expandedCandidate = null;
     let appModalKind = null;
     let modalReturnFocus = null;
@@ -845,6 +984,11 @@
     const adoptionProgress = new Map();
     const lifecycleErrors = new Map();
     const availabilityResults = new Map();
+    const streamAddressModes = new Map();
+    const streamAddressSaveChains = new Map();
+    const streamAddressSaveErrors = new Map();
+    const frigateSyncProgress = new Map();
+    const frigateSyncUiErrors = new Map();
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
@@ -886,8 +1030,7 @@
     function closeAppModal(restoreFocus = true) {
       if (appModal.hidden) return;
       dismissAvailabilityTooltip();
-      if (appModalKind === "manual") addressPanel.hidden = true;
-      if (["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind)) expandedCandidate = null;
+      if (["camera", "streams", "adopt"].includes(appModalKind)) expandedCandidate = null;
       appModal.hidden = true;
       appModalKind = null;
       appModalBody.replaceChildren();
@@ -922,66 +1065,297 @@
       return node;
     }
 
-    function renderScannerProgress(scanners = {}) {
-      const signature = JSON.stringify(scanners);
-      if (signature === scannerSignature) return;
-      scannerSignature = signature;
-      scannerProgress.replaceChildren();
-      ["onvif", "rtsp"].forEach(name => {
-        const state = scanners[name];
-        if (!state) return;
-        const item = addText(scannerProgress, "span", `scanner-state ${state}`, "");
-        addText(item, "span", "scanner-dot", "");
-        const stateLabel = state === "complete" ? "done" : state;
-        addText(item, "span", "", `${name.toUpperCase()} ${stateLabel}`);
-      });
-      scannerProgress.hidden = scannerProgress.childElementCount === 0;
+    function syncScanStartDisabled() {
+      scanStartButton.disabled = busy || scanNetworksSaving || selectedDiscoverySubnets.size === 0;
     }
 
-    function renderScanDetails(data, active) {
-      const log = Array.isArray(data.raw_log) ? data.raw_log : [];
-      const network = data.network || {};
-      const available = log.length || network.interface || data.duration_ms || data.completed_at;
-      const metadata = [
-        active && data.completed_at ? "Last completed scan" : null,
-        network.interface,
-        network.address,
+    function privateIpv4Cidr(value) {
+      const match = value.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
+      if (!match) throw new Error("Enter a private IPv4 subnet in CIDR notation, such as 10.0.202.0/24.");
+      const octets = match.slice(1, 5).map(Number);
+      const prefix = Number(match[5]);
+      if (octets.some(octet => octet > 255) || prefix > 32) {
+        throw new Error("Enter a valid private IPv4 subnet in CIDR notation.");
+      }
+      const address = octets[0] * 16777216 + octets[1] * 65536 + octets[2] * 256 + octets[3];
+      const blockSize = 2 ** (32 - prefix);
+      const networkAddress = Math.floor(address / blockSize) * blockSize;
+      const lastAddress = networkAddress + blockSize - 1;
+      const privateRanges = [
+        [10 * 16777216, 11 * 16777216 - 1],
+        [172 * 16777216 + 16 * 65536, 172 * 16777216 + 32 * 65536 - 1],
+        [192 * 16777216 + 168 * 65536, 192 * 16777216 + 169 * 65536 - 1]
+      ];
+      if (!privateRanges.some(([start, end]) => networkAddress >= start && lastAddress <= end)) {
+        throw new Error("Only private IPv4 subnets can be scanned.");
+      }
+      const usableHosts = Math.max(0, blockSize - 2);
+      if (usableHosts > maxCustomScanHosts) {
+        throw new Error(`This subnet has ${usableHosts.toLocaleString()} usable addresses. Custom subnets are limited to ${maxCustomScanHosts.toLocaleString()}.`);
+      }
+      const normalizedOctets = [
+        Math.floor(networkAddress / 16777216),
+        Math.floor(networkAddress / 65536) % 256,
+        Math.floor(networkAddress / 256) % 256,
+        networkAddress % 256
+      ];
+      return `${normalizedOctets.join(".")}/${prefix}`;
+    }
+
+    function renderDiscoveryNetworks() {
+      scanNetworkList.replaceChildren();
+      discoveryNetworkConfiguration.forEach(network => {
+        const cidr = String(network.cidr || network.subnet || "");
+        if (!cidr) return;
+        const row = addText(scanNetworkList, "div", "scan-network-row", "");
+        const selection = addText(row, "label", "scan-network-selection", "");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selectedDiscoverySubnets.has(cidr);
+        checkbox.disabled = scanNetworksSaving || busy;
+        checkbox.setAttribute("aria-label", `Include ${cidr} in scans`);
+        selection.append(checkbox);
+        const copy = addText(selection, "span", "scan-network-copy", "");
+        addText(copy, "span", "scan-network-cidr", cidr);
+        addText(
+          copy,
+          "span",
+          "scan-network-description",
+          network.source === "detected"
+            ? `Auto-discovered on ${network.interface || "network interface"}`
+            : "Custom added"
+        );
+        checkbox.addEventListener("change", async () => {
+          const previousConfiguration = discoveryNetworkConfiguration.slice();
+          const previousSubnets = new Set(selectedDiscoverySubnets);
+          if (checkbox.checked) selectedDiscoverySubnets.add(cidr);
+          else selectedDiscoverySubnets.delete(cidr);
+          renderDiscoveryNetworks();
+          await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
+        });
+        if (network.source === "custom") {
+          const remove = addText(row, "button", "row-action", "Remove");
+          remove.type = "button";
+          remove.disabled = scanNetworksSaving || busy;
+          remove.addEventListener("click", async () => {
+            const previousConfiguration = discoveryNetworkConfiguration.slice();
+            const previousSubnets = new Set(selectedDiscoverySubnets);
+            discoveryNetworkConfiguration = discoveryNetworkConfiguration.filter(item => String(item.cidr || item.subnet) !== cidr);
+            selectedDiscoverySubnets.delete(cidr);
+            renderDiscoveryNetworks();
+            await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
+          });
+        }
+      });
+      if (!discoveryNetworkConfiguration.length) {
+        addText(scanNetworkList, "div", "scan-network-row settings-copy", "No subnets available.");
+      }
+      scanNetworkInput.disabled = scanNetworksSaving || busy;
+      scanNetworkAdd.querySelector("button").disabled = scanNetworksSaving || busy;
+      scanNetworkAddToggle.disabled = scanNetworksSaving || busy;
+      syncScanStartDisabled();
+    }
+
+    function applyDiscoveryNetworkConfiguration(data) {
+      if (Number.isFinite(data.max_custom_hosts)) maxCustomScanHosts = data.max_custom_hosts;
+      discoveryNetworkConfiguration = Array.isArray(data.networks) ? data.networks : [];
+      selectedDiscoverySubnets = new Set(
+        discoveryNetworkConfiguration
+          .filter(network => network.selected)
+          .map(network => String(network.cidr || network.subnet))
+      );
+      renderDiscoveryNetworks();
+    }
+
+    async function loadDiscoveryNetworks() {
+      scanNetworkSettingsStatus.className = "scan-network-settings-status";
+      setText(scanNetworkSettingsStatus, "Loading networks...");
+      try {
+        const response = await fetch("/internal/discovery/networks", {cache: "no-store"});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || "Could not load subnet settings.");
+        applyDiscoveryNetworkConfiguration(result);
+        setText(scanNetworkSettingsStatus, "");
+      } catch (error) {
+        scanNetworkSettingsStatus.className = "scan-network-settings-status error";
+        setText(scanNetworkSettingsStatus, error.message || "Could not load subnet settings.");
+      }
+    }
+
+    async function saveDiscoveryNetworks(previousConfiguration, previousSubnets) {
+      if (scanNetworksSaving) return false;
+      scanNetworksSaving = true;
+      renderDiscoveryNetworks();
+      scanNetworkSettingsStatus.className = "scan-network-settings-status";
+      setText(scanNetworkSettingsStatus, "Saving...");
+      try {
+        const response = await fetch("/internal/discovery/networks", {
+          method: "PUT",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "save-discovery-networks"},
+          body: JSON.stringify({
+            selected_subnets: [...selectedDiscoverySubnets],
+            custom_subnets: discoveryNetworkConfiguration
+              .filter(network => network.source === "custom")
+              .map(network => String(network.cidr || network.subnet))
+          })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || "Could not save subnet settings.");
+        applyDiscoveryNetworkConfiguration(result);
+        setText(scanNetworkSettingsStatus, "");
+        return true;
+      } catch (error) {
+        if (previousConfiguration && previousSubnets) {
+          discoveryNetworkConfiguration = previousConfiguration;
+          selectedDiscoverySubnets = previousSubnets;
+        }
+        scanNetworkSettingsStatus.className = "scan-network-settings-status error";
+        setText(scanNetworkSettingsStatus, error.message || "Could not save subnet settings.");
+        return false;
+      } finally {
+        scanNetworksSaving = false;
+        renderDiscoveryNetworks();
+      }
+    }
+
+    async function addDiscoverySubnet(cidr) {
+      if (selectedDiscoverySubnets.has(cidr)) return true;
+      const previousConfiguration = discoveryNetworkConfiguration.slice();
+      const previousSubnets = new Set(selectedDiscoverySubnets);
+      if (!discoveryNetworkConfiguration.some(network => String(network.cidr || network.subnet) === cidr)) {
+        discoveryNetworkConfiguration.push({
+          cidr,
+          subnet: cidr,
+          source: "custom",
+          selected: true,
+          routable: null,
+          multicast: false
+        });
+      }
+      selectedDiscoverySubnets.add(cidr);
+      renderDiscoveryNetworks();
+      return saveDiscoveryNetworks(previousConfiguration, previousSubnets);
+    }
+
+    function renderScanNetworkProgress(networks = []) {
+      const signature = JSON.stringify(networks.map(network => [
         network.subnet,
-        Number.isFinite(network.hosts) ? `${network.hosts} hosts` : null,
+        network.status,
+        network.scanners
+      ]));
+      if (signature === scanNetworkProgressSignature) return;
+      scanNetworkProgressSignature = signature;
+      scanNetworkProgress.replaceChildren();
+      const stateLabels = {
+        queued: "Waiting",
+        running: "Scanning",
+        complete: "Complete",
+        error: "Failed"
+      };
+      networks.forEach(network => {
+        const row = addText(scanNetworkProgress, "div", "scan-network-progress-row", "");
+        addText(row, "span", "scan-network-progress-name", network.subnet || "Unknown subnet");
+        addText(
+          row,
+          "span",
+          "scan-network-progress-state",
+          stateLabels[network.status] || network.status || "Waiting"
+        );
+        const scanners = addText(row, "div", "scanner-progress", "");
+        ["onvif", "rtsp", "reachability"].forEach(name => {
+          const state = network.scanners?.[name];
+          if (!state) return;
+          const item = addText(scanners, "span", `scanner-state ${state}`, "");
+          addText(item, "span", "scanner-dot", "");
+          addText(item, "span", "", `${name.toUpperCase()} ${state === "complete" ? "done" : state}`);
+        });
+        scanners.hidden = scanners.childElementCount === 0;
+      });
+    }
+
+    function resetScanPresentation() {
+      scanRunStatus.hidden = true;
+      scanResults.hidden = true;
+      scanLogDetails.open = false;
+      stateDot.className = "dot";
+      setText(stateLabel, "Ready to scan");
+      setText(networkLabel, "");
+      scanNetworkProgressSignature = "";
+      scanNetworkProgress.replaceChildren();
+      scanDetailsSignature = "";
+      setText(scanResultSummary, "");
+      setText(scanMetadata, "");
+      errorBox.hidden = true;
+      setText(errorBox, "");
+      setText(scanLogCount, "");
+      setText(scanLog, "Logs from the next scan will appear here.");
+    }
+
+    function renderScanDetails(data) {
+      const log = Array.isArray(data.raw_log) ? data.raw_log : [];
+      const metadata = [
         data.duration_ms ? `${(data.duration_ms / 1000).toFixed(1)}s` : null,
-        data.completed_at
+        data.completed_at ? `Completed ${new Date(data.completed_at).toLocaleString()}` : null
       ].filter(Boolean).join(" · ");
       const signature = JSON.stringify([metadata, log]);
       if (signature === scanDetailsSignature) return;
       scanDetailsSignature = signature;
-      setText(scanMetadata, metadata || "No scan has completed yet.");
-      setText(scanLog, log.length ? log.join("\n") : available ? "No raw scan log is available for this earlier scan." : "Scan diagnostics will appear here.");
+      setText(scanMetadata, metadata);
+      setText(scanLogCount, log.length ? `(${log.length})` : "");
+      setText(scanLog, log.length ? log.join("\n") : "No logs were recorded for this scan.");
     }
 
-    function relativeScanTime(value) {
-      const timestamp = Date.parse(value || "");
-      if (!Number.isFinite(timestamp)) return "";
-      const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-      if (seconds < 60) return "just now";
-      const minutes = Math.floor(seconds / 60);
-      if (minutes < 60) return `${minutes}m ago`;
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return `${hours}h ago`;
-      return `${Math.floor(hours / 24)}d ago`;
+    function renderCurrentScan(data, active) {
+      if (!scanPanelScanId || data.scan_id !== scanPanelScanId) return;
+      if (data.status !== "queued") renderScanDetails(data);
+      const networks = Array.isArray(data.networks) ? data.networks : [];
+      renderScanNetworkProgress(networks);
+      scanResults.hidden = false;
+      scanRunStatus.hidden = false;
+      if (active) {
+        stateDot.className = "dot busy";
+        setText(stateLabel, scanStatusLabel(data));
+        const activeNetworks = networks.filter(network => network.status === "running").map(network => network.subnet);
+        setText(networkLabel, activeNetworks.length ? activeNetworks.join(", ") : "Preparing selected networks");
+        const completeNetworks = networks.filter(network => network.status === "complete").length;
+        setText(
+          scanResultSummary,
+          networks.length
+            ? `${completeNetworks} of ${networks.length} network${networks.length === 1 ? "" : "s"} complete.`
+            : "Preparing the selected networks."
+        );
+        errorBox.hidden = true;
+        setText(errorBox, "");
+        return;
+      }
+      const onlineCameras = Array.isArray(data.devices)
+        ? data.devices.filter(device => (device.connectivity_status || device.status) === "online").length
+        : 0;
+      if (data.status === "error" || data.phase === "error") {
+        stateDot.className = "dot error";
+        setText(stateLabel, "Scan failed");
+        setText(scanResultSummary, "The scan did not complete.");
+        errorBox.hidden = false;
+        setText(errorBox, data.error || "The network scan failed.");
+      } else {
+        stateDot.className = "dot ready";
+        setText(stateLabel, "Scan complete");
+        setText(
+          scanResultSummary,
+          `${onlineCameras} camera${onlineCameras === 1 ? "" : "s"} online across ${networks.length} network${networks.length === 1 ? "" : "s"}.`
+        );
+        errorBox.hidden = true;
+        setText(errorBox, "");
+      }
+      setText(networkLabel, "");
     }
 
-    function scanStatusLabel(data, active) {
+    function scanStatusLabel(data) {
       const phases = {
         queued: "Starting scan", starting: "Starting scan", scanning: "Scanning network",
         onvif: "Finding ONVIF cameras", rtsp: "Checking RTSP cameras"
       };
-      if (active) return phases[data.phase] || "Scanning network";
-      if (data.status === "error" || data.phase === "error") return "Scan failed";
-      if (!data.completed_at) return "Ready to scan";
-      const parts = [`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`];
-      if (Array.isArray(data.devices)) parts.push(`${data.devices.length} camera${data.devices.length === 1 ? "" : "s"}`);
-      if (Number.isFinite(data.duration_ms)) parts.push(`${(data.duration_ms / 1000).toFixed(1)}s`);
-      return parts.join(" · ");
+      return phases[data.phase] || "Scanning network";
     }
 
     function manualCameraTarget(value) {
@@ -1039,7 +1413,7 @@
       });
       inspections.set(device.candidate_uuid, {status: "not_onvif"});
       pendingManualRtsp = null;
-      addressPanel.hidden = true;
+      closeManualCard(false);
       addressInput.value = "";
       setText(addressStatus, "");
       renderRows();
@@ -1400,12 +1774,18 @@
       const url = document.createElement("input");
       url.type = "url";
       url.value = target?.api_url || "http://127.0.0.1:5000";
-      url.placeholder = "http://127.0.0.1:5000";
+      url.placeholder = "http://frigate.local:5000";
       url.maxLength = 512;
       url.required = true;
       url.autocomplete = "off";
       url.spellcheck = false;
       urlField.append(url);
+      addText(
+        form,
+        "div",
+        "settings-copy",
+        "CamAdmiral will make privileged Frigate API requests to this URL. Use an endpoint you trust."
+      );
       const status = addText(form, "div", "settings-status", "");
       const actions = addText(form, "div", "settings-actions", "");
       const save = addText(actions, "button", "row-action", target ? "Save" : "Connect Frigate");
@@ -1823,9 +2203,10 @@
 
     const downstreamPasswordMask = "********";
 
-    function downstreamUrl(streamKey, maskPassword = false) {
+    function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan") {
       if (!mediaAccess) return null;
-      const host = mediaHost.includes(":") ? `[${mediaHost}]` : mediaHost;
+      const selectedHost = addressMode === "localhost" ? "localhost" : mediaHost;
+      const host = selectedHost.includes(":") ? `[${selectedHost}]` : selectedHost;
       const username = encodeURIComponent(mediaAccess.username);
       const password = maskPassword ? downstreamPasswordMask : encodeURIComponent(mediaAccess.password);
       return `rtsp://${username}:${password}@${host}:${mediaAccess.port}/${encodeURIComponent(streamKey)}`;
@@ -1851,9 +2232,9 @@
       window.setTimeout(() => { button.textContent = originalLabel; }, 1200);
     }
 
-    function addStreamAccess(parent, managed, enabled = true) {
-      const url = managed && enabled ? downstreamUrl(managed.stream_key) : null;
-      const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true) : null;
+    function addStreamAccess(parent, managed, enabled = true, addressMode = "lan") {
+      const url = managed && enabled ? downstreamUrl(managed.stream_key, false, addressMode) : null;
+      const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true, addressMode) : null;
       addText(parent, "div", "downstream-label", "Downstream URL");
       const row = addText(parent, "div", "downstream-row", "");
       const value = !enabled
@@ -2089,6 +2470,52 @@
       startLiveTransport(cameraUuid, session);
     }
 
+    function frigateSyncError(errorCode) {
+      const errors = {
+        camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
+        camera_enabled_mismatch: ["Camera state differs", "Frigate did not retain the requested enabled state for this camera."],
+        camera_configuration_missing: ["Camera configuration missing", "Frigate did not retain the managed camera configuration."],
+        camera_name_mismatch: ["Camera name differs", "Frigate retained a different friendly name for this managed camera."],
+        detect_settings_mismatch: ["Detection settings differ", "Frigate retained different detection dimensions or frame-rate settings."],
+        live_streams_mismatch: ["Live streams differ", "Frigate retained different Record or Detect live-stream aliases."],
+        ffmpeg_inputs_mismatch: ["FFmpeg inputs differ", "Frigate retained different stream paths or roles for this camera."],
+        saved_stream_mismatch: ["Saved stream differs", "Frigate did not retain the expected CamAdmiral go2rtc source URL."],
+        runtime_stream_missing: ["Runtime stream missing", "The saved stream exists, but Frigate's running go2rtc process does not expose it."],
+        target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
+        authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
+        capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
+        configuration_rejected: ["Configuration rejected", "Frigate rejected the camera configuration. CamAdmiral will retry."],
+        runtime_stream_rejected: ["Stream rejected", "Frigate rejected the runtime stream. CamAdmiral will retry."],
+        verification_failed: ["Sync verification failed", "Frigate did not retain the expected configuration. CamAdmiral will retry."]
+      };
+      return errors[errorCode] || [
+        "Sync issue",
+        errorCode
+          ? `CamAdmiral will retry automatically. Error code: ${errorCode}.`
+          : "CamAdmiral will retry automatically."
+      ];
+    }
+
+    function frigateSyncKey(targetId, cameraUuid) {
+      return `${targetId}:${cameraUuid}`;
+    }
+
+    function currentFrigateCameraStatus(targetId, cameraUuid) {
+      const device = devices.find(candidate => candidate.adoption?.camera_uuid === cameraUuid);
+      return device?.adoption?.frigate?.find(target => target.target_id === targetId) || null;
+    }
+
+    async function waitForFrigateCameraSync(targetId, cameraUuid, timeout = 35000) {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        await refresh();
+        const status = currentFrigateCameraStatus(targetId, cameraUuid);
+        if (status?.status === "applied" || status?.status === "error") return status;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      throw new Error("Frigate synchronization did not finish within 35 seconds. Background retries will continue.");
+    }
+
     function addFrigateStatus(parent, adoption) {
       const statuses = Array.isArray(adoption?.frigate)
         ? adoption.frigate
@@ -2118,28 +2545,19 @@
           addText(row, "div", "integration-help", "CamAdmiral is applying this camera.");
           return;
         }
-        const errors = {
-          camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
-          target_unavailable: ["Frigate unavailable", "CamAdmiral cannot reach this Frigate target and will retry automatically."],
-          authorization_required: ["Authorization failed", "Check the credentials configured for this Frigate target."],
-          capability_unavailable: ["Feature unavailable", "This Frigate target does not expose the required configuration feature."],
-          configuration_rejected: ["Configuration rejected", "Frigate rejected the camera configuration. CamAdmiral will retry."],
-          runtime_stream_rejected: ["Stream rejected", "Frigate rejected the runtime stream. CamAdmiral will retry."],
-          verification_failed: ["Sync verification failed", "Frigate did not retain the expected configuration. CamAdmiral will retry."]
-        };
-        const [label, help] = errors[status.error_code] || ["Sync issue", "CamAdmiral will retry automatically."];
+        const [label, help] = frigateSyncError(status.error_code);
         addText(row, "div", "integration-state error", label);
         addText(row, "div", "integration-help", help);
       });
     }
 
-    async function showFrigateConfig(device, target, trigger) {
+    async function showFrigateConfig(device, target, addressMode, trigger) {
       const cameraUuid = device.adoption.camera_uuid;
       const loading = addText(document.createElement("div"), "div", "settings-copy", "Preparing configuration...");
       openAppModal("frigate-config", `${target.target} configuration`, loading, trigger, "wide");
       try {
         const response = await fetch(
-          `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}/config`,
+          `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}/config?address_mode=${encodeURIComponent(addressMode)}`,
           {cache: "no-store"}
         );
         const result = await response.json();
@@ -2158,7 +2576,7 @@
       }
     }
 
-    function frigateSyncDetails(device) {
+    function frigateSyncDetails(device, addressMode) {
       const wrapper = document.createElement("div");
       wrapper.className = "frigate-camera-list";
       const integrations = device.adoption?.frigate || [];
@@ -2172,36 +2590,73 @@
         const item = addText(wrapper, "article", "frigate-camera-item", "");
         const summary = addText(item, "div", "", "");
         addText(summary, "div", "frigate-target-name", target.target);
-        const stateLabel = target.selected
+        const syncKey = frigateSyncKey(target.target_id, device.adoption.camera_uuid);
+        const syncing = frigateSyncProgress.has(syncKey);
+        const uiError = frigateSyncUiErrors.get(syncKey) || "";
+        let stateLabel = target.selected
           ? target.status === "applied" ? "Synced" : target.status === "error" ? "Sync issue" : "Syncing"
           : "Not synced";
+        let statusHelp = "";
+        if (syncing) {
+          stateLabel = "Syncing";
+          statusHelp = "Applying the camera and verifying Frigate's saved and running configuration.";
+        } else if (uiError) {
+          stateLabel = "Sync issue";
+          statusHelp = uiError;
+        } else if (target.selected && target.status === "error") {
+          [stateLabel, statusHelp] = frigateSyncError(target.error_code);
+        }
         const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
         if (target.error_code) meta.title = target.error_code;
+        if (statusHelp) {
+          const help = addText(summary, "div", "integration-help frigate-camera-help", statusHelp);
+          if (target.error_code) help.title = target.error_code;
+        }
         const actions = addText(item, "div", "frigate-camera-actions", "");
-        const sync = addText(actions, "button", "row-action", target.selected ? "Sync now" : "Sync");
+        const sync = addText(actions, "button", "row-action", "");
         sync.type = "button";
+        sync.disabled = syncing;
+        if (syncing) {
+          sync.classList.add("syncing-action");
+          const spinner = addText(sync, "span", "inline-spinner", "");
+          spinner.setAttribute("aria-hidden", "true");
+          addText(sync, "span", "", "Syncing...");
+        } else {
+          setText(sync, target.selected ? "Sync now" : "Sync");
+        }
         sync.addEventListener("click", async () => {
-          sync.disabled = true;
-          setText(sync, "Syncing...");
+          frigateSyncUiErrors.delete(syncKey);
+          frigateSyncProgress.set(syncKey, true);
+          renderActiveCameraModal();
           try {
             const response = await fetch(
               `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`,
-              {method: "POST", headers: {"X-CamAdmiral-Action": "sync-frigate-camera"}}
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-CamAdmiral-Action": "sync-frigate-camera"
+                },
+                body: JSON.stringify({address_mode: addressMode})
+              }
             );
             const result = await response.json();
             if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
+            await waitForFrigateCameraSync(target.target_id, device.adoption.camera_uuid);
+          } catch (error) {
+            frigateSyncUiErrors.set(
+              syncKey,
+              error instanceof Error ? error.message : "Camera sync failed."
+            );
+          } finally {
+            frigateSyncProgress.delete(syncKey);
             await refresh();
             renderActiveCameraModal();
-          } catch (error) {
-            setText(meta, error.message);
-            meta.className = "frigate-target-error";
-            sync.disabled = false;
-            setText(sync, target.selected ? "Sync now" : "Sync");
           }
         });
         const showConfig = addText(actions, "button", "row-action", "Show config");
         showConfig.type = "button";
-        showConfig.addEventListener("click", () => showFrigateConfig(device, target, showConfig));
+        showConfig.addEventListener("click", () => showFrigateConfig(device, target, addressMode, showConfig));
         if (target.selected) {
           const remove = addText(actions, "button", "danger-action", "Remove");
           remove.type = "button";
@@ -2229,13 +2684,6 @@
         }
       });
       return wrapper;
-    }
-
-    function openCameraSync(device, trigger = null) {
-      const candidateId = device.candidate_uuid;
-      if (!candidateId || !device.adoption?.camera_uuid) return;
-      expandedCandidate = candidateId;
-      openAppModal("frigate-sync", `Sync ${device.display_name || device.ip}`, frigateSyncDetails(device), trigger, "wide");
     }
 
     async function updateCameraName(device, input) {
@@ -2492,6 +2940,31 @@
       return wrapper;
     }
 
+    function saveStreamAddressMode(cameraUuid, addressMode) {
+      const previous = streamAddressSaveChains.get(cameraUuid) || Promise.resolve();
+      const queued = previous.catch(() => {}).then(async () => {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/stream-address`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CamAdmiral-Action": "set-camera-stream-address"
+          },
+          body: JSON.stringify({address_mode: addressMode})
+        });
+        if (!response.ok) throw new Error("CamAdmiral address could not be saved.");
+      });
+      streamAddressSaveChains.set(cameraUuid, queued);
+      queued.then(() => {
+        if (streamAddressSaveChains.get(cameraUuid) !== queued) return;
+        streamAddressSaveErrors.delete(cameraUuid);
+        renderActiveCameraModal();
+      }).catch(error => {
+        if (streamAddressSaveChains.get(cameraUuid) !== queued) return;
+        streamAddressSaveErrors.set(cameraUuid, error.message);
+        renderActiveCameraModal();
+      });
+    }
+
     function streamDetails(device) {
       const wrapper = document.createElement("div");
       wrapper.className = "camera-details stream-details";
@@ -2499,6 +2972,37 @@
       if (!adoption) {
         addText(wrapper, "div", "detail-message", "Adopt this camera before accessing its streams.");
         return wrapper;
+      }
+      const cameraUuid = adoption.camera_uuid;
+      if (!streamAddressModes.has(cameraUuid)) {
+        const savedMode = adoption.stream_address_mode || "lan";
+        streamAddressModes.set(cameraUuid, savedMode);
+      }
+      const addressMode = streamAddressModes.get(cameraUuid);
+      const addressChoice = document.createElement("fieldset");
+      addressChoice.className = "stream-address-choice";
+      addText(addressChoice, "legend", "", "CamAdmiral address");
+      const addressOptions = addText(addressChoice, "div", "stream-address-options", "");
+      [["lan", "LAN"], ["localhost", "Localhost"]].forEach(([value, label]) => {
+        const option = addText(addressOptions, "label", "stream-address-option", "");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `stream-address-${cameraUuid}`;
+        radio.value = value;
+        radio.checked = addressMode === value;
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          streamAddressModes.set(cameraUuid, value);
+          streamAddressSaveErrors.delete(cameraUuid);
+          renderActiveCameraModal();
+          saveStreamAddressMode(cameraUuid, value);
+        });
+        option.append(radio, document.createTextNode(label));
+      });
+      wrapper.append(addressChoice);
+      if (streamAddressSaveErrors.has(cameraUuid)) {
+        const saveError = addText(addressChoice, "div", "stream-address-error", streamAddressSaveErrors.get(cameraUuid));
+        saveError.setAttribute("role", "status");
       }
       if (adoption.enabled !== false && !mediaAccess && !mediaAccessPromise && !mediaAccessFailed) loadMediaAccess();
       let result = inspections.get(device.candidate_uuid);
@@ -2537,7 +3041,7 @@
         addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
         metadata.append(source);
         const endpoint = addText(row, "div", "stream-access", "");
-        addStreamAccess(endpoint, managed, adoption?.enabled !== false);
+        addStreamAccess(endpoint, managed, adoption?.enabled !== false, addressMode);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
@@ -2547,6 +3051,14 @@
           addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
+      const integrations = adoption.frigate || [];
+      const integrationCount = integrations.length;
+      const frigate = addDetailSection(
+        wrapper,
+        "Frigate destinations",
+        `${integrationCount} target${integrationCount === 1 ? "" : "s"}`
+      );
+      frigate.append(frigateSyncDetails(device, addressMode));
       return wrapper;
     }
 
@@ -2906,7 +3418,7 @@
     }
 
     function renderActiveCameraModal() {
-      if (!["camera", "streams", "adopt", "frigate-sync"].includes(appModalKind) || !expandedCandidate) return;
+      if (!["camera", "streams", "adopt"].includes(appModalKind) || !expandedCandidate) return;
       const device = devices.find(candidate => candidate.candidate_uuid === expandedCandidate);
       if (!device) {
         closeAppModal(false);
@@ -2917,7 +3429,7 @@
         ? `Adopt ${cameraName}`
         : appModalKind === "streams"
           ? `${cameraName} streams`
-          : appModalKind === "frigate-sync" ? `Sync ${cameraName}` : cameraName;
+          : cameraName;
       appModalTitle.textContent = title;
       appModalTitle.title = title;
       appModalBody.replaceChildren(
@@ -2925,9 +3437,7 @@
           ? adoptionDetails(device)
           : appModalKind === "streams"
             ? streamDetails(device)
-            : appModalKind === "frigate-sync"
-              ? frigateSyncDetails(device)
-              : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
+            : (device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device))
       );
     }
 
@@ -3051,10 +3561,6 @@
           streams.type = "button";
           streams.setAttribute("aria-haspopup", "dialog");
           streams.addEventListener("click", () => openCameraStreams(device, streams));
-          const sync = addText(actionStack, "button", "row-action", "Sync");
-          sync.type = "button";
-          sync.setAttribute("aria-haspopup", "dialog");
-          sync.addEventListener("click", () => openCameraSync(device, sync));
         }
         if (!device.adoption) {
           const adopt = addText(actionStack, "button", "row-action", "Adopt");
@@ -3084,18 +3590,16 @@
     }
 
     function render(data) {
+      latestDiscoveryState = data;
       const active = data.status === "queued" || data.status === "running";
+      const busyChanged = busy !== active;
       busy = active;
-      scanButton.disabled = active;
       setText(scanButton, active ? "Scanning..." : "Scan network");
-      stateDot.className = `dot ${active ? "busy" : data.status === "error" ? "error" : "ready"}`;
-      setText(stateLabel, scanStatusLabel(data, active));
+      setText(scanStartButton, active ? "Scanning..." : "Scan network");
+      if (busyChanged && discoveryNetworkConfiguration.length) renderDiscoveryNetworks();
+      syncScanStartDisabled();
       if (data.network?.address) mediaHost = data.network.address;
-      setText(networkLabel, data.network?.subnet || "");
-      renderScannerProgress(data.scanners);
-      renderScanDetails(data, active);
-      errorBox.hidden = data.status !== "error";
-      setText(errorBox, data.error || "");
+      renderCurrentScan(data, active);
 
       const hasResults = Array.isArray(data.devices) && data.devices.length > 0;
       if (hasResults) {
@@ -3106,7 +3610,7 @@
           device.connectivity_status,
           device.adoption?.enabled,
           device.adoption?.thumbnail_captured_at,
-          ...(device.adoption?.frigate || []).map(status => [status.target_id, status.selected, status.status, status.error_code]),
+          ...(device.adoption?.frigate || []).map(status => [status.target_id, status.selected, status.status, status.error_code, status.address_mode]),
           ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
         ]));
         const resultId = `${data.inventory_scan_id || data.scan_id || data.completed_at}:${healthSignature}`;
@@ -3143,29 +3647,104 @@
       }
     }
 
-    scanButton.addEventListener("click", async () => {
+    function closeScanCard(restoreFocus = true) {
+      if (scanCard.hidden) return;
+      scanCard.hidden = true;
+      scanButton.setAttribute("aria-expanded", "false");
+      if (restoreFocus) scanButton.focus();
+    }
+
+    function closeManualCard(restoreFocus = true) {
+      if (manualCard.hidden) return;
+      manualCard.hidden = true;
+      showAddAddress.setAttribute("aria-expanded", "false");
+      if (restoreFocus) showAddAddress.focus();
+    }
+
+    scanButton.addEventListener("click", () => {
+      if (!scanCard.hidden) {
+        closeScanCard();
+        return;
+      }
+      closeManualCard(false);
+      const activeState = latestDiscoveryState && ["queued", "running"].includes(latestDiscoveryState.status)
+        ? latestDiscoveryState
+        : null;
+      if (!scanPanelInitialized || (activeState && activeState.scan_id !== scanPanelScanId)) {
+        scanPanelScanId = activeState?.scan_id || null;
+        resetScanPresentation();
+        scanNetworkAdd.hidden = true;
+        scanNetworkAddToggle.setAttribute("aria-expanded", "false");
+        scanNetworkInput.value = "";
+        scanPanelInitialized = true;
+      }
+      scanCard.hidden = false;
+      scanButton.setAttribute("aria-expanded", "true");
+      if (activeState) renderCurrentScan(activeState, true);
+      loadDiscoveryNetworks();
+    });
+    scanCardCollapse.addEventListener("click", () => closeScanCard());
+    scanStartButton.addEventListener("click", async () => {
       if (busy) return;
-      render({status: "queued", phase: "queued"});
+      if (!selectedDiscoverySubnets.size) {
+        scanNetworkSettingsStatus.className = "scan-network-settings-status error";
+        setText(scanNetworkSettingsStatus, "Select at least one IPv4 subnet before scanning.");
+        return;
+      }
+      const pendingScanId = `pending-${Date.now()}`;
+      scanPanelScanId = pendingScanId;
+      resetScanPresentation();
+      render({status: "queued", phase: "queued", scan_id: pendingScanId, networks: []});
       try {
         const response = await fetch("/internal/discovery/scan", {
           method: "POST", headers: {"X-CamAdmiral-Action": "scan"}
         });
-        render(await response.json());
+        const result = await response.json();
+        scanPanelScanId = result.scan_id || pendingScanId;
+        if (!response.ok && result.status !== "queued" && result.status !== "running") {
+          render({status: "error", phase: "error", scan_id: scanPanelScanId, error: result.message || "Could not start discovery."});
+        } else {
+          render(result);
+        }
       } catch (error) {
-        render({status: "error", phase: "error", error: "Could not start discovery."});
+        render({status: "error", phase: "error", scan_id: pendingScanId, error: "Could not start discovery."});
       }
+    });
+    scanNetworkAdd.addEventListener("submit", async event => {
+      event.preventDefault();
+      let cidr;
+      try {
+        cidr = privateIpv4Cidr(scanNetworkInput.value);
+      } catch (error) {
+        scanNetworkSettingsStatus.className = "scan-network-settings-status error";
+        setText(scanNetworkSettingsStatus, error.message);
+        return;
+      }
+      scanNetworkInput.value = "";
+      if (await addDiscoverySubnet(cidr)) {
+        scanNetworkAdd.hidden = true;
+        scanNetworkAddToggle.setAttribute("aria-expanded", "false");
+        scanNetworkAddToggle.focus();
+      }
+    });
+    scanNetworkAddToggle.addEventListener("click", () => {
+      scanNetworkAdd.hidden = false;
+      scanNetworkAddToggle.setAttribute("aria-expanded", "true");
+      scanNetworkInput.focus();
     });
 
     showAddAddress.addEventListener("click", () => {
-      addressPanel.hidden = false;
-      openAppModal("manual", "Add camera manually", addressPanel, showAddAddress, "compact");
+      if (!manualCard.hidden) {
+        closeManualCard();
+        return;
+      }
+      closeScanCard(false);
+      manualCard.hidden = false;
+      showAddAddress.setAttribute("aria-expanded", "true");
       addressInput.focus();
     });
+    manualCardCollapse.addEventListener("click", () => closeManualCard());
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
-    scanDetails.addEventListener("click", () => {
-      scanDialogContent.hidden = false;
-      openAppModal("scan", "Scan details", scanDialogContent, scanDetails, "wide");
-    });
     addressPanel.addEventListener("submit", async event => {
       event.preventDefault();
       if (busy) return;
@@ -3189,7 +3768,7 @@
         if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
         if (!target.draft) setText(addressStatus, "");
         render(result);
-        if (!target.draft && appModalKind === "manual") closeAppModal();
+        if (!target.draft) closeManualCard(false);
       } catch (error) {
         pendingManualRtsp = null;
         setText(addressStatus, error.message);
@@ -3240,6 +3819,8 @@
       else if (!confirmModal.hidden) closeConfirmation();
       else if (!liveModal.hidden) closeLiveView();
       else if (!appModal.hidden) closeAppModal();
+      else if (!manualCard.hidden) closeManualCard();
+      else if (!scanCard.hidden) closeScanCard();
     });
     document.addEventListener("click", event => {
       if (!event.target.closest(".availability-block, .row-availability-block")) dismissAvailabilityTooltip();

@@ -76,6 +76,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('ROOT / "stop-camadmiral.sh"', launcher)
         self.assertIn("Stop launcher did not stop CamAdmiral", launcher)
         self.assertIn("Restart replaced the existing admin password", launcher)
+        self.assertIn('[str(script), "--update"]', launcher)
+        self.assertIn("Update replaced the existing admin password", launcher)
 
     def test_e2e_snapshot_wait_allows_bounded_recovery(self) -> None:
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
@@ -162,7 +164,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Camera filters and table do not share one surface", browser)
         self.assertIn("touchTargets: scan.height >= 44 && add.height >= 44", browser)
         self.assertIn("equalSize: Math.abs(scan.width - add.width) < 1", browser)
-        self.assertIn("statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5", browser)
+        self.assertIn('get_by_role("heading", name="Scan network")', browser)
+        self.assertIn('expect(page.locator("#scan-start")).to_be_visible()', browser)
+        self.assertIn('expect(page.locator("#scan-log")).to_be_visible()', browser)
         self.assertIn("assert_mobile_settings(page)", browser)
         self.assertIn('page.goto(f"{BASE_URL}/settings/notifications",', browser)
         self.assertIn('to_have_url(re.compile(r"/settings/integrations$"))', browser)
@@ -186,6 +190,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("172.31.0.87", compose)
         self.assertIn("gw_priority: 1", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
+        self.assertIn('scenario("configured-routed-subnet-discovery")', runner)
         multi_subnet_position = runner.index('scenario("multi-subnet-discovery")')
         reset_position = runner.index(
             'run("down", "--volumes", "--remove-orphans")',
@@ -202,6 +207,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
+        self.assertIn("def configured_routed_subnet_discovery()", scenarios)
+        self.assertIn('routed_subnet = "172.29.0.80/28"', scenarios)
+        self.assertIn("Routed subnet unexpectedly used ONVIF multicast", scenarios)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {
