@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from camadmiral.storage import CameraRepository
+from camadmiral.storage import MIGRATIONS, CameraRepository
 from camadmiral.media import ProbeResult
 
 
@@ -60,12 +60,17 @@ class CameraRepositoryTests(unittest.TestCase):
     def test_discovery_network_settings_persist_custom_and_excluded_subnets(self) -> None:
         self.assertEqual(
             self.repository.discovery_network_settings(),
-            {"custom_subnets": [], "excluded_detected_subnets": []},
+            {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            },
         )
 
         self.repository.save_discovery_network_settings(
             custom_subnets=["10.0.202.0/24"],
             excluded_detected_subnets=["192.168.40.0/24"],
+            excluded_custom_subnets=["10.0.202.0/24"],
         )
 
         self.assertEqual(
@@ -73,6 +78,36 @@ class CameraRepositoryTests(unittest.TestCase):
             {
                 "custom_subnets": ["10.0.202.0/24"],
                 "excluded_detected_subnets": ["192.168.40.0/24"],
+                "excluded_custom_subnets": ["10.0.202.0/24"],
+            },
+        )
+
+    def test_discovery_checkbox_migration_preserves_existing_custom_subnets(self) -> None:
+        with self.repository.connect() as connection:
+            connection.execute("DROP TABLE discovery_settings")
+            connection.execute(
+                "CREATE TABLE discovery_settings ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+                "custom_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO discovery_settings VALUES (1, '[\"10.0.202.0/24\"]', '[]', 'now')"
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS),)
+            )
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
             },
         )
 

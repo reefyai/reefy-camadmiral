@@ -480,7 +480,64 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         repository.save_discovery_network_settings.assert_called_once_with(
             custom_subnets=["10.0.202.0/24"],
             excluded_detected_subnets=["192.168.40.0/24"],
+            excluded_custom_subnets=[],
         )
+
+    def test_save_keeps_an_unselected_custom_subnet(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+            "excluded_custom_subnets": [],
+        }
+        result_payload = {"networks": [], "max_custom_hosts": 1024}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(
+                app_module,
+                "_discovery_network_configuration",
+                return_value=result_payload,
+            ),
+        ):
+            response = app_module.update_discovery_networks(
+                app_module.DiscoveryNetworksRequest(
+                    selected_subnets=["192.168.40.0/24"],
+                    custom_subnets=["10.0.202.15/24"],
+                ),
+                "save-discovery-networks",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.save_discovery_network_settings.assert_called_once_with(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=[],
+            excluded_custom_subnets=["10.0.202.0/24"],
+        )
+
+    def test_custom_subnet_checkbox_state_is_returned(self) -> None:
+        repository = Mock()
+        routed = LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("10.0.202.0/24"),
+            directly_connected=False,
+        )
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": ["10.0.202.0/24"],
+            "excluded_detected_subnets": [],
+            "excluded_custom_subnets": ["10.0.202.0/24"],
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(app_module, "routed_scan_interface", return_value=routed),
+        ):
+            response = app_module.discovery_networks()
+
+        payload = json.loads(response.body)
+        custom = next(network for network in payload["networks"] if network["source"] == "custom")
+        self.assertFalse(custom["selected"])
 
     def test_save_rejects_public_or_oversized_custom_subnets(self) -> None:
         for subnet in ("192.0.2.0/24", "10.0.0.0/8"):

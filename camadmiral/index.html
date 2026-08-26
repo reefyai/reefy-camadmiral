@@ -173,25 +173,38 @@
     .scanner-state.error .scanner-dot { background: #fb7185; }
     .scan-dialog-content { min-width: 0; }
     .scan-networks-section { margin-bottom: 18px; }
-    .scan-network-list {
-      display: grid; margin-bottom: 10px; border-top: 1px solid rgba(148, 163, 184, .12);
+    .scan-network-table {
+      overflow: hidden; border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px;
     }
+    .scan-network-table-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 7px 8px 7px 12px; background: rgba(12, 26, 42, .5); color: #b8c8d2;
+      font-size: 12px; font-weight: 800;
+    }
+    .scan-network-add-toggle {
+      width: 30px; height: 30px; border: 1px solid rgba(45, 212, 191, .3); border-radius: 7px;
+      padding: 0; background: rgba(45, 212, 191, .08); color: #8ff8e8; cursor: pointer;
+      font-size: 20px; line-height: 1;
+    }
+    .scan-network-add-toggle:hover { background: rgba(45, 212, 191, .14); }
+    .scan-network-list { display: grid; }
     .scan-network-row {
       display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
-      min-width: 0; border-bottom: 1px solid rgba(148, 163, 184, .12); padding: 10px 2px;
+      min-width: 0; border-top: 1px solid rgba(148, 163, 184, .12); padding: 10px 12px;
     }
-    .scan-network-identity { min-width: 0; }
+    .scan-network-selection { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+    .scan-network-selection input { width: 16px; height: 16px; flex: none; margin: 0; accent-color: #2dd4bf; }
     .scan-network-cidr { color: #e4eef3; font: 700 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .scan-network-row .row-action { min-width: 66px; }
-    .scan-network-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
     .scan-network-add {
-      display: grid; grid-template-columns: minmax(220px, 360px) auto; justify-content: start; gap: 8px;
+      grid-template-columns: minmax(220px, 360px) auto; justify-content: start; gap: 8px;
+      border-top: 1px solid rgba(148, 163, 184, .12); padding: 10px 12px;
     }
-    .scan-network-add input, .scan-network-restore {
+    .scan-network-add:not([hidden]) { display: grid; }
+    .scan-network-add input {
       min-width: 0; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 8px 10px; font: inherit;
     }
-    .scan-network-restore { max-width: 260px; }
     .scan-network-settings-status { min-height: 17px; margin-top: 8px; color: #8ea2b3; font-size: 11px; }
     .scan-network-settings-status.error { color: #fda4af; }
     .scan-action { padding-bottom: 16px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
@@ -564,7 +577,6 @@
       .scan-network-add { width: 100%; grid-template-columns: minmax(0, 1fr) auto; }
       .scan-network-add input { min-height: 44px; }
       .scan-network-add .row-action { min-height: 40px; }
-      .scan-network-restore { width: 100%; max-width: none; min-height: 44px; }
       .scan-run-status { align-items: flex-start; flex-wrap: wrap; }
       .scan-run-status .network { width: 100%; margin-left: 18px; text-align: left; }
       .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
@@ -749,13 +761,16 @@
       <div class="modal-body" id="app-modal-body">
         <div class="scan-dialog-content" id="scan-dialog-content" hidden>
           <section class="scan-networks-section" aria-label="Networks to scan">
-            <div class="scan-network-list" id="scan-network-list"></div>
-            <div class="scan-network-controls">
-              <form class="scan-network-add" id="scan-network-add">
+            <div class="scan-network-table">
+              <div class="scan-network-table-header">
+                <span>Subnets</span>
+                <button class="scan-network-add-toggle" id="scan-network-add-toggle" type="button" aria-label="Add subnet" aria-controls="scan-network-add" aria-expanded="false">+</button>
+              </div>
+              <div class="scan-network-list" id="scan-network-list"></div>
+              <form class="scan-network-add" id="scan-network-add" hidden>
                 <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
                 <button class="row-action" type="submit">Add subnet</button>
               </form>
-              <select class="scan-network-restore" id="scan-network-restore" aria-label="Restore detected subnet" hidden></select>
             </div>
             <div class="scan-network-settings-status" id="scan-network-settings-status" role="status" aria-live="polite"></div>
           </section>
@@ -845,8 +860,8 @@
     const scanLogCount = document.querySelector("#scan-log-count");
     const scanNetworkList = document.querySelector("#scan-network-list");
     const scanNetworkAdd = document.querySelector("#scan-network-add");
+    const scanNetworkAddToggle = document.querySelector("#scan-network-add-toggle");
     const scanNetworkInput = document.querySelector("#scan-network-input");
-    const scanNetworkRestore = document.querySelector("#scan-network-restore");
     const scanNetworkSettingsStatus = document.querySelector("#scan-network-settings-status");
     const toolbar = document.querySelector("#toolbar");
     const searchInput = document.querySelector("#search");
@@ -1029,48 +1044,46 @@
 
     function renderDiscoveryNetworks() {
       scanNetworkList.replaceChildren();
-      scanNetworkRestore.replaceChildren();
-      const restorePrompt = document.createElement("option");
-      restorePrompt.value = "";
-      restorePrompt.textContent = "Restore detected subnet...";
-      scanNetworkRestore.append(restorePrompt);
-      discoveryNetworkConfiguration.filter(network => {
+      discoveryNetworkConfiguration.forEach(network => {
         const cidr = String(network.cidr || network.subnet || "");
-        return cidr && selectedDiscoverySubnets.has(cidr);
-      }).forEach(network => {
-        const cidr = String(network.cidr || network.subnet || "");
+        if (!cidr) return;
         const row = addText(scanNetworkList, "div", "scan-network-row", "");
-        const identity = addText(row, "div", "scan-network-identity", "");
-        addText(identity, "div", "scan-network-cidr", cidr);
-        const remove = addText(row, "button", "row-action", "Remove");
-        remove.type = "button";
-        remove.disabled = scanNetworksSaving || busy;
-        remove.addEventListener("click", async () => {
+        const selection = addText(row, "label", "scan-network-selection", "");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selectedDiscoverySubnets.has(cidr);
+        checkbox.disabled = scanNetworksSaving || busy;
+        checkbox.setAttribute("aria-label", `Include ${cidr} in scans`);
+        selection.append(checkbox);
+        addText(selection, "span", "scan-network-cidr", cidr);
+        checkbox.addEventListener("change", async () => {
           const previousConfiguration = discoveryNetworkConfiguration.slice();
           const previousSubnets = new Set(selectedDiscoverySubnets);
-          selectedDiscoverySubnets.delete(cidr);
+          if (checkbox.checked) selectedDiscoverySubnets.add(cidr);
+          else selectedDiscoverySubnets.delete(cidr);
           renderDiscoveryNetworks();
           await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
         });
+        if (network.source === "custom") {
+          const remove = addText(row, "button", "row-action", "Remove");
+          remove.type = "button";
+          remove.disabled = scanNetworksSaving || busy;
+          remove.addEventListener("click", async () => {
+            const previousConfiguration = discoveryNetworkConfiguration.slice();
+            const previousSubnets = new Set(selectedDiscoverySubnets);
+            discoveryNetworkConfiguration = discoveryNetworkConfiguration.filter(item => String(item.cidr || item.subnet) !== cidr);
+            selectedDiscoverySubnets.delete(cidr);
+            renderDiscoveryNetworks();
+            await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
+          });
+        }
       });
-      discoveryNetworkConfiguration.filter(network => {
-        const cidr = String(network.cidr || network.subnet || "");
-        return network.source === "detected" && cidr && !selectedDiscoverySubnets.has(cidr);
-      }).forEach(network => {
-        const cidr = String(network.cidr || network.subnet || "");
-        const option = document.createElement("option");
-        option.value = cidr;
-        option.textContent = cidr;
-        scanNetworkRestore.append(option);
-      });
-      scanNetworkRestore.hidden = scanNetworkRestore.options.length === 1;
-      scanNetworkRestore.value = "";
-      if (!selectedDiscoverySubnets.size) {
-        addText(scanNetworkList, "div", "settings-copy", "No networks selected. Add a private subnet below.");
+      if (!discoveryNetworkConfiguration.length) {
+        addText(scanNetworkList, "div", "scan-network-row settings-copy", "No subnets available.");
       }
       scanNetworkInput.disabled = scanNetworksSaving || busy;
       scanNetworkAdd.querySelector("button").disabled = scanNetworksSaving || busy;
-      scanNetworkRestore.disabled = scanNetworksSaving || busy;
+      scanNetworkAddToggle.disabled = scanNetworksSaving || busy;
       syncScanStartDisabled();
     }
 
@@ -1110,7 +1123,12 @@
         const response = await fetch("/internal/discovery/networks", {
           method: "PUT",
           headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "save-discovery-networks"},
-          body: JSON.stringify({selected_subnets: [...selectedDiscoverySubnets]})
+          body: JSON.stringify({
+            selected_subnets: [...selectedDiscoverySubnets],
+            custom_subnets: discoveryNetworkConfiguration
+              .filter(network => network.source === "custom")
+              .map(network => String(network.cidr || network.subnet))
+          })
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || "Could not save subnet settings.");
@@ -1132,7 +1150,7 @@
     }
 
     async function addDiscoverySubnet(cidr) {
-      if (selectedDiscoverySubnets.has(cidr)) return;
+      if (selectedDiscoverySubnets.has(cidr)) return true;
       const previousConfiguration = discoveryNetworkConfiguration.slice();
       const previousSubnets = new Set(selectedDiscoverySubnets);
       if (!discoveryNetworkConfiguration.some(network => String(network.cidr || network.subnet) === cidr)) {
@@ -1147,7 +1165,7 @@
       }
       selectedDiscoverySubnets.add(cidr);
       renderDiscoveryNetworks();
-      await saveDiscoveryNetworks(previousConfiguration, previousSubnets);
+      return saveDiscoveryNetworks(previousConfiguration, previousSubnets);
     }
 
     function renderScannerProgress(scanners = {}) {
@@ -3432,6 +3450,9 @@
         : null;
       scanModalScanId = activeState?.scan_id || null;
       resetScanModalPresentation();
+      scanNetworkAdd.hidden = true;
+      scanNetworkAddToggle.setAttribute("aria-expanded", "false");
+      scanNetworkInput.value = "";
       scanDialogContent.hidden = false;
       openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide");
       if (activeState) renderCurrentScan(activeState, true);
@@ -3474,11 +3495,16 @@
         return;
       }
       scanNetworkInput.value = "";
-      await addDiscoverySubnet(cidr);
+      if (await addDiscoverySubnet(cidr)) {
+        scanNetworkAdd.hidden = true;
+        scanNetworkAddToggle.setAttribute("aria-expanded", "false");
+        scanNetworkAddToggle.focus();
+      }
     });
-    scanNetworkRestore.addEventListener("change", async () => {
-      const cidr = scanNetworkRestore.value;
-      if (cidr) await addDiscoverySubnet(cidr);
+    scanNetworkAddToggle.addEventListener("click", () => {
+      scanNetworkAdd.hidden = false;
+      scanNetworkAddToggle.setAttribute("aria-expanded", "true");
+      scanNetworkInput.focus();
     });
 
     showAddAddress.addEventListener("click", () => {

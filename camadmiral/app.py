@@ -155,6 +155,7 @@ class ExplicitAddressRequest(BaseModel):
 
 class DiscoveryNetworksRequest(BaseModel):
     selected_subnets: list[str] = Field(default_factory=list, max_length=64)
+    custom_subnets: list[str] | None = Field(default=None, max_length=64)
 
 
 class NotificationSettingsRequest(BaseModel):
@@ -1711,6 +1712,12 @@ def _discovery_network_configuration(
             excluded.add(str(normalize_private_scan_subnet(value)))
         except ValueError:
             continue
+    excluded_custom: set[str] = set()
+    for value in settings_payload.get("excluded_custom_subnets", []):
+        try:
+            excluded_custom.add(str(custom_scan_subnet(value)))
+        except ValueError:
+            continue
     custom: list[str] = []
     for value in settings_payload.get("custom_subnets", []):
         try:
@@ -1739,7 +1746,7 @@ def _discovery_network_configuration(
             "cidr": subnet,
             "subnet": subnet,
             "hosts": max(0, network.num_addresses - 2),
-            "selected": True,
+            "selected": subnet not in excluded_custom,
             "source": "custom",
             "multicast": False,
         }
@@ -1756,7 +1763,13 @@ def _discovery_network_configuration(
             )
         else:
             row.update(interface.as_dict())
-            row.update({"cidr": subnet, "selected": True, "routable": True})
+            row.update(
+                {
+                    "cidr": subnet,
+                    "selected": subnet not in excluded_custom,
+                    "routable": True,
+                }
+            )
         networks.append(row)
     return {
         "networks": networks,
@@ -1914,6 +1927,19 @@ def update_discovery_networks(
                 custom_scan_subnet(subnet)
             if subnet not in selected:
                 selected.append(subnet)
+        custom_values = (
+            request.custom_subnets
+            if request.custom_subnets is not None
+            else [subnet for subnet in selected if subnet not in detected]
+        )
+        custom: list[str] = []
+        for value in custom_values:
+            subnet = str(custom_scan_subnet(value))
+            if subnet not in detected and subnet not in custom:
+                custom.append(subnet)
+        for subnet in selected:
+            if subnet not in detected and subnet not in custom:
+                custom.append(subnet)
     except ValueError as exc:
         return _secured_json(
             {"status": "invalid_subnet", "message": str(exc)},
@@ -1934,8 +1960,9 @@ def update_discovery_networks(
     ]
     excluded.extend(subnet for subnet in detected if subnet not in selected)
     repository.save_discovery_network_settings(
-        custom_subnets=[subnet for subnet in selected if subnet not in detected],
+        custom_subnets=custom,
         excluded_detected_subnets=sorted(set(excluded), key=ipaddress.ip_network),
+        excluded_custom_subnets=[subnet for subnet in custom if subnet not in selected],
     )
     return _secured_json(_discovery_network_configuration(repository))
 

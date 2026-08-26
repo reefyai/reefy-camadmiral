@@ -254,6 +254,10 @@ MIGRATIONS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     );
     """,
+    """
+    ALTER TABLE discovery_settings
+    ADD COLUMN excluded_custom_subnets_json TEXT NOT NULL DEFAULT '[]';
+    """,
 )
 
 
@@ -699,11 +703,16 @@ class CameraRepository:
     def discovery_network_settings(self) -> dict[str, list[str]]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT custom_subnets_json, excluded_detected_subnets_json "
+                "SELECT custom_subnets_json, excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json "
                 "FROM discovery_settings WHERE singleton_id = 1"
             ).fetchone()
         if row is None:
-            return {"custom_subnets": [], "excluded_detected_subnets": []}
+            return {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            }
 
         def values(column: str) -> list[str]:
             try:
@@ -717,6 +726,7 @@ class CameraRepository:
         return {
             "custom_subnets": values("custom_subnets_json"),
             "excluded_detected_subnets": values("excluded_detected_subnets_json"),
+            "excluded_custom_subnets": values("excluded_custom_subnets_json"),
         }
 
     def save_discovery_network_settings(
@@ -724,19 +734,23 @@ class CameraRepository:
         *,
         custom_subnets: list[str],
         excluded_detected_subnets: list[str],
+        excluded_custom_subnets: list[str],
     ) -> None:
         timestamp = _now()
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO discovery_settings(singleton_id, custom_subnets_json, "
-                "excluded_detected_subnets_json, updated_at) VALUES (1, ?, ?, ?) "
+                "excluded_detected_subnets_json, excluded_custom_subnets_json, "
+                "updated_at) VALUES (1, ?, ?, ?, ?) "
                 "ON CONFLICT(singleton_id) DO UPDATE SET "
                 "custom_subnets_json=excluded.custom_subnets_json, "
                 "excluded_detected_subnets_json=excluded.excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json=excluded.excluded_custom_subnets_json, "
                 "updated_at=excluded.updated_at",
                 (
                     json.dumps(custom_subnets, separators=(",", ":")),
                     json.dumps(excluded_detected_subnets, separators=(",", ":")),
+                    json.dumps(excluded_custom_subnets, separators=(",", ":")),
                     timestamp,
                 ),
             )
