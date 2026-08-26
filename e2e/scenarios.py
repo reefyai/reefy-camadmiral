@@ -921,7 +921,7 @@ def configured_routed_subnet_discovery() -> None:
         if network.get("source") == "detected"
     ]
     large_subnet = "172.29.0.0/16"
-    routed_subnet = "172.29.0.84/29"
+    routed_subnet = "172.29.0.80/28"
     if large_subnet not in detected:
         raise ScenarioFailure("Large connected subnet was not listed in discovery settings")
     selected = [subnet for subnet in detected if subnet != large_subnet]

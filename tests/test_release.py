@@ -206,7 +206,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
         self.assertIn("def configured_routed_subnet_discovery()", scenarios)
-        self.assertIn('routed_subnet = "172.29.0.84/29"', scenarios)
+        self.assertIn('routed_subnet = "172.29.0.80/28"', scenarios)
         self.assertIn("Routed subnet unexpectedly used ONVIF multicast", scenarios)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
