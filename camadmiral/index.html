@@ -367,6 +367,7 @@
     }
     .row-action:hover { background: rgba(45, 212, 191, .14); }
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
+    .syncing-action { display: inline-flex; align-items: center; gap: 6px; }
     .action-stack { display: flex; align-items: center; gap: 8px; }
     .camera-details { min-width: 0; }
     .camera-summary {
@@ -541,7 +542,8 @@
     .adoption-context { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: #91a5b5; font-size: 12px; }
     .adoption-prompt { color: #a9bac6; font-size: 13px; line-height: 1.5; }
     .inline-spinner {
-      width: 14px; height: 14px; flex: none; border: 2px solid rgba(251, 191, 36, .28);
+      display: inline-block; box-sizing: border-box; width: 14px; height: 14px; flex: none;
+      border: 2px solid rgba(251, 191, 36, .28);
       border-top-color: #fbbf24; border-radius: 50%; animation: spin .75s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -2615,6 +2617,7 @@
         sync.type = "button";
         sync.disabled = syncing;
         if (syncing) {
+          sync.classList.add("syncing-action");
           const spinner = addText(sync, "span", "inline-spinner", "");
           spinner.setAttribute("aria-hidden", "true");
           addText(sync, "span", "", "Syncing...");
