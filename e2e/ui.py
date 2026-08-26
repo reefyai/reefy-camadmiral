@@ -51,6 +51,8 @@ def assert_mobile_camera_actions(page: Page) -> None:
         raise UiScenarioFailure("Dashboard repeats the Cameras heading")
     page.get_by_role("button", name="Scan network").click()
     expect(page.get_by_role("heading", name="Scan network")).to_be_visible()
+    expect(page.locator("#scan-card")).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
     expect(page.locator("#scan-start")).to_be_visible()
     expect(page.locator("#scan-run-status")).to_be_hidden()
     expect(page.locator("#scan-results")).to_be_hidden()
@@ -69,6 +71,9 @@ def assert_mobile_camera_actions(page: Page) -> None:
         detected_network = page.locator("#scan-network-list .scan-network-row").filter(
             has_text=detected_cidr
         ).first
+        expect(detected_network.locator(".scan-network-description")).to_contain_text(
+            "Auto-discovered on"
+        )
         if detected_network.get_by_role("button", name="Remove").count():
             raise UiScenarioFailure("Detected subnet has a delete action")
         detected_checkbox = detected_network.get_by_role(
@@ -86,7 +91,7 @@ def assert_mobile_camera_actions(page: Page) -> None:
         )
         expect(detected_checkbox).not_to_be_checked()
         expect(detected_checkbox).to_be_enabled()
-        page.get_by_role("button", name="Close dialog").click()
+        page.get_by_role("button", name="Collapse scan network").click()
         page.get_by_role("button", name="Scan network").click()
         detected_network = page.locator("#scan-network-list .scan-network-row").filter(
             has_text=detected_cidr
@@ -108,8 +113,21 @@ def assert_mobile_camera_actions(page: Page) -> None:
             network_count
         )
         expect(page.locator("#scan-network-input")).to_be_enabled()
+    custom_networks = page.locator("#scan-network-list .scan-network-row").filter(
+        has_text="Custom added"
+    )
+    if custom_networks.count():
+        expect(custom_networks.first.locator(".scan-network-description")).to_have_text(
+            "Custom added"
+        )
     page.locator("#scan-network-add-toggle").click()
     expect(page.locator("#scan-network-add")).to_be_visible()
+    add_button_below_last_subnet = page.locator("#scan-network-add-toggle").evaluate(
+        "button => button.getBoundingClientRect().top >= "
+        "document.querySelector('#scan-network-list').getBoundingClientRect().bottom"
+    )
+    if not add_button_below_last_subnet:
+        raise UiScenarioFailure("Add subnet action is not below the subnet list")
     page.locator("#scan-network-input").fill("10.0.0.0/8")
     page.locator("#scan-network-add button[type=submit]").click()
     expect(page.locator("#scan-network-settings-status")).to_contain_text(
@@ -122,7 +140,13 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(page.locator("#scan-log")).to_be_hidden()
     page.locator("#scan-log-details summary").click()
     expect(page.locator("#scan-log")).to_be_visible()
-    page.locator("#app-modal-close").click()
+    page.get_by_role("button", name="Collapse scan network").click()
+
+    page.get_by_role("button", name="Add camera").click()
+    expect(page.get_by_role("heading", name="Add camera manually")).to_be_visible()
+    expect(page.locator("#manual-card")).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
+    page.get_by_role("button", name="Collapse manual camera form").click()
 
     list_surface = page.locator(".camera-list-surface")
     attached_controls = list_surface.evaluate(

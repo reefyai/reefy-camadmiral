@@ -55,6 +55,23 @@
       width: 120px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
       font-size: 12px; font-weight: 800;
     }
+    .dashboard-inline-card {
+      margin: 0 0 16px; overflow: hidden; border: 1px solid rgba(148, 163, 184, .15);
+      border-radius: 14px; background: rgba(12, 26, 42, .7); box-shadow: 0 18px 42px rgba(0, 0, 0, .12);
+      animation: reveal-card .18s ease-out;
+    }
+    @keyframes reveal-card { from { opacity: 0; transform: translateY(-5px); } }
+    .dashboard-inline-card-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border-bottom: 1px solid rgba(148, 163, 184, .11);
+    }
+    .dashboard-inline-card-header h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .dashboard-inline-card-collapse {
+      width: 30px; height: 30px; border: 0; border-radius: 7px; padding: 0;
+      background: transparent; color: #8ea2b3; cursor: pointer; font-size: 20px; line-height: 1;
+    }
+    .dashboard-inline-card-collapse:hover { background: rgba(148, 163, 184, .1); color: #e0eaf0; }
+    .dashboard-inline-card-body { padding: 14px; }
     .header-secondary {
       border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px; padding: 8px 10px;
       background: rgba(12, 26, 42, .62); color: #a9bac6; font-size: 12px; font-weight: 750; cursor: pointer;
@@ -151,8 +168,8 @@
     .address-panel {
       display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
     }
-    .address-panel .setup-field { flex: 1 1 420px; }
-    .address-panel input {
+    .address-panel .setup-field { flex: 1 1 420px; min-width: 0; }
+    .address-panel .setup-field input {
       width: 100%; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
     }
@@ -171,15 +188,18 @@
     .scanner-state.complete .scanner-dot { background: #22c55e; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
-    .scan-dialog-content { min-width: 0; }
+    .scan-panel-content { min-width: 0; }
     .scan-networks-section { margin-bottom: 18px; }
     .scan-network-table {
       overflow: hidden; border: 1px solid rgba(148, 163, 184, .14); border-radius: 10px;
     }
     .scan-network-table-header {
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 7px 8px 7px 12px; background: rgba(12, 26, 42, .5); color: #b8c8d2;
+      padding: 10px 12px; background: rgba(12, 26, 42, .5); color: #b8c8d2;
       font-size: 12px; font-weight: 800;
+    }
+    .scan-network-add-row {
+      display: flex; align-items: center; min-height: 43px; padding: 6px 12px;
+      border-top: 1px solid rgba(148, 163, 184, .12);
     }
     .scan-network-add-toggle {
       width: 30px; height: 30px; border: 1px solid rgba(45, 212, 191, .3); border-radius: 7px;
@@ -194,7 +214,9 @@
     }
     .scan-network-selection { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
     .scan-network-selection input { width: 16px; height: 16px; flex: none; margin: 0; accent-color: #2dd4bf; }
+    .scan-network-copy { display: grid; gap: 2px; min-width: 0; }
     .scan-network-cidr { color: #e4eef3; font: 700 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scan-network-description { color: #7890a4; font-size: 11px; line-height: 1.35; }
     .scan-network-row .row-action { min-width: 66px; }
     .scan-network-add {
       grid-template-columns: minmax(220px, 360px) auto; justify-content: start; gap: 8px;
@@ -211,13 +233,22 @@
     .scan-action #scan-start { min-height: 40px; }
     .scan-run-status { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: #a9bac6; font-size: 12px; }
     .scan-run-status .network { margin-left: auto; text-align: right; }
-    .scan-dialog-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; font-weight: 700; }
-    .scan-dialog-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scan-panel-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; font-weight: 700; }
+    .scan-panel-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scan-results { padding: 16px 0 6px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
     .scan-results-heading { color: #dce8ee; font-size: 14px; font-weight: 800; }
     .scan-result-summary { margin-top: 7px; color: #d6e2e9; font-size: 13px; }
     .scan-result-detail { display: flex; align-items: center; gap: 12px; margin-top: 7px; color: #7890a4; font-size: 12px; }
     .scan-metadata { color: #7890a4; font-size: 12px; }
+    .scan-network-progress { display: grid; gap: 7px; margin-top: 11px; }
+    .scan-network-progress-row {
+      display: grid; grid-template-columns: minmax(150px, 1fr) auto; align-items: center; gap: 8px 14px;
+      padding: 9px 10px; border: 1px solid rgba(148, 163, 184, .11); border-radius: 8px;
+      background: rgba(5, 15, 27, .38);
+    }
+    .scan-network-progress-name { color: #d6e2e9; font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scan-network-progress-state { color: #8ea2b3; font-size: 11px; font-weight: 750; text-transform: capitalize; }
+    .scan-network-progress-row .scanner-progress { grid-column: 1 / -1; }
     .scan-log {
       max-height: 360px; margin: 0; overflow: auto; border-radius: 8px; padding: 11px 12px;
       background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -572,6 +603,7 @@
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
       #scan-start { min-height: 44px; }
+      .dashboard-inline-card-body { padding: 12px; }
       .scan-network-row { grid-template-columns: minmax(0, 1fr) auto; }
       .scan-network-row .row-action { min-height: 40px; }
       .scan-network-add { width: 100%; grid-template-columns: minmax(0, 1fr) auto; }
@@ -581,6 +613,7 @@
       .scan-run-status .network { width: 100%; margin-left: 18px; text-align: left; }
       .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
       .scanner-progress { flex-wrap: wrap; }
+      .scan-network-progress-row { grid-template-columns: minmax(0, 1fr) auto; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
       .address-panel .setup-field { flex: none; width: 100%; }
       .address-panel .row-action { width: 100%; padding: 9px 12px; }
@@ -676,14 +709,64 @@
     </header>
     <main id="dashboard-view">
       <div class="dashboard-actions">
-        <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
-        <button id="scan" type="button" aria-haspopup="dialog">Scan network</button>
+        <button class="header-secondary" id="show-add-address" type="button" aria-controls="manual-card" aria-expanded="false">Add camera</button>
+        <button id="scan" type="button" aria-controls="scan-card" aria-expanded="false">Scan network</button>
       </div>
-      <form class="address-panel" id="address-panel" hidden>
-        <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
-        <button class="row-action" type="submit">Continue</button>
-        <span class="address-status" id="address-status"></span>
-      </form>
+      <section class="dashboard-inline-card" id="scan-card" aria-labelledby="scan-card-title" hidden>
+        <div class="dashboard-inline-card-header">
+          <h2 id="scan-card-title">Scan network</h2>
+          <button class="dashboard-inline-card-collapse" id="scan-card-collapse" type="button" aria-label="Collapse scan network">&#8722;</button>
+        </div>
+        <div class="dashboard-inline-card-body scan-panel-content" id="scan-panel-content">
+          <section class="scan-networks-section" aria-label="Networks to scan">
+            <div class="scan-network-table">
+              <div class="scan-network-table-header">Subnets</div>
+              <div class="scan-network-list" id="scan-network-list"></div>
+              <div class="scan-network-add-row">
+                <button class="scan-network-add-toggle" id="scan-network-add-toggle" type="button" aria-label="Add subnet" aria-controls="scan-network-add" aria-expanded="false">+</button>
+              </div>
+              <form class="scan-network-add" id="scan-network-add" hidden>
+                <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
+                <button class="row-action" type="submit">Add subnet</button>
+              </form>
+            </div>
+            <div class="scan-network-settings-status" id="scan-network-settings-status" role="status" aria-live="polite"></div>
+          </section>
+          <div class="scan-action">
+            <button id="scan-start" type="button">Scan network</button>
+          </div>
+          <section class="scan-results" id="scan-results" aria-labelledby="scan-results-title" hidden>
+            <div class="scan-results-heading" id="scan-results-title">Scan results</div>
+            <div class="scan-run-status" id="scan-run-status" hidden>
+              <div class="scan-panel-status"><span class="dot" id="dot"></span><span class="scan-panel-status-label" id="state">Scanning network</span></div>
+              <div class="network" id="network"></div>
+            </div>
+            <div class="scan-result-summary" id="scan-result-summary"></div>
+            <div class="scan-network-progress" id="scan-network-progress"></div>
+            <div class="scan-result-detail">
+              <div class="scan-metadata" id="scan-metadata"></div>
+            </div>
+            <div class="errorbox" id="error" hidden></div>
+          </section>
+          <details class="scan-log-details" id="scan-log-details">
+            <summary>Logs <span id="scan-log-count"></span></summary>
+            <pre class="scan-log" id="scan-log"></pre>
+          </details>
+        </div>
+      </section>
+      <section class="dashboard-inline-card" id="manual-card" aria-labelledby="manual-card-title" hidden>
+        <div class="dashboard-inline-card-header">
+          <h2 id="manual-card-title">Add camera manually</h2>
+          <button class="dashboard-inline-card-collapse" id="manual-card-collapse" type="button" aria-label="Collapse manual camera form">&#8722;</button>
+        </div>
+        <div class="dashboard-inline-card-body">
+          <form class="address-panel" id="address-panel">
+            <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
+            <button class="row-action" type="submit">Continue</button>
+            <span class="address-status" id="address-status"></span>
+          </form>
+        </div>
+      </section>
       <section class="camera-list-surface" aria-label="Camera list">
         <div class="toolbar" id="toolbar" hidden>
           <div class="summary">
@@ -758,44 +841,7 @@
         <h2 class="modal-title" id="app-modal-title">Camera details</h2>
         <button class="modal-close" id="app-modal-close" type="button" aria-label="Close dialog">×</button>
       </div>
-      <div class="modal-body" id="app-modal-body">
-        <div class="scan-dialog-content" id="scan-dialog-content" hidden>
-          <section class="scan-networks-section" aria-label="Networks to scan">
-            <div class="scan-network-table">
-              <div class="scan-network-table-header">
-                <span>Subnets</span>
-                <button class="scan-network-add-toggle" id="scan-network-add-toggle" type="button" aria-label="Add subnet" aria-controls="scan-network-add" aria-expanded="false">+</button>
-              </div>
-              <div class="scan-network-list" id="scan-network-list"></div>
-              <form class="scan-network-add" id="scan-network-add" hidden>
-                <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
-                <button class="row-action" type="submit">Add subnet</button>
-              </form>
-            </div>
-            <div class="scan-network-settings-status" id="scan-network-settings-status" role="status" aria-live="polite"></div>
-          </section>
-          <div class="scan-action">
-            <button id="scan-start" type="button">Scan network</button>
-            <div class="scan-run-status" id="scan-run-status" hidden>
-              <div class="scan-dialog-status"><span class="dot" id="dot"></span><span class="scan-dialog-status-label" id="state">Scanning network</span></div>
-              <div class="network" id="network"></div>
-            </div>
-          </div>
-          <section class="scan-results" id="scan-results" aria-labelledby="scan-results-title" hidden>
-            <div class="scan-results-heading" id="scan-results-title">Scan results</div>
-            <div class="scan-result-summary" id="scan-result-summary"></div>
-            <div class="scan-result-detail">
-              <div class="scanner-progress" id="scanner-progress" hidden></div>
-              <div class="scan-metadata" id="scan-metadata"></div>
-            </div>
-            <div class="errorbox" id="error" hidden></div>
-          </section>
-          <details class="scan-log-details" id="scan-log-details">
-            <summary>Logs <span id="scan-log-count"></span></summary>
-            <pre class="scan-log" id="scan-log"></pre>
-          </details>
-        </div>
-      </div>
+      <div class="modal-body" id="app-modal-body"></div>
     </section>
   </div>
   <div class="modal-backdrop confirm-modal" id="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" hidden>
@@ -834,6 +880,10 @@
     const scanButton = document.querySelector("#scan");
     const scanStartButton = document.querySelector("#scan-start");
     const showAddAddress = document.querySelector("#show-add-address");
+    const scanCard = document.querySelector("#scan-card");
+    const scanCardCollapse = document.querySelector("#scan-card-collapse");
+    const manualCard = document.querySelector("#manual-card");
+    const manualCardCollapse = document.querySelector("#manual-card-collapse");
     const dashboardView = document.querySelector("#dashboard-view");
     const incidentsView = document.querySelector("#incidents-view");
     const incidentsList = document.querySelector("#incidents-list");
@@ -853,7 +903,7 @@
     const scanResults = document.querySelector("#scan-results");
     const scanResultSummary = document.querySelector("#scan-result-summary");
     const networkLabel = document.querySelector("#network");
-    const scannerProgress = document.querySelector("#scanner-progress");
+    const scanNetworkProgress = document.querySelector("#scan-network-progress");
     const scanMetadata = document.querySelector("#scan-metadata");
     const scanLog = document.querySelector("#scan-log");
     const scanLogDetails = document.querySelector("#scan-log-details");
@@ -875,7 +925,6 @@
     const appModalTitle = document.querySelector("#app-modal-title");
     const appModalBody = document.querySelector("#app-modal-body");
     const appModalClose = document.querySelector("#app-modal-close");
-    const scanDialogContent = document.querySelector("#scan-dialog-content");
     const confirmModal = document.querySelector("#confirm-modal");
     const confirmTitle = document.querySelector("#confirm-title");
     const confirmMessage = document.querySelector("#confirm-message");
@@ -897,13 +946,14 @@
     let sortKey = "name";
     let sortDirection = 1;
     let cameraFilter = null;
-    let scannerSignature = "";
+    let scanNetworkProgressSignature = "";
     let scanDetailsSignature = "";
     let discoveryNetworkConfiguration = [];
     let selectedDiscoverySubnets = new Set();
     let scanNetworksSaving = false;
     let maxCustomScanHosts = 1024;
-    let scanModalScanId = null;
+    let scanPanelScanId = null;
+    let scanPanelInitialized = false;
     let latestDiscoveryState = null;
     let expandedCandidate = null;
     let appModalKind = null;
@@ -969,7 +1019,6 @@
     function closeAppModal(restoreFocus = true) {
       if (appModal.hidden) return;
       dismissAvailabilityTooltip();
-      if (appModalKind === "manual") addressPanel.hidden = true;
       if (["camera", "streams", "adopt"].includes(appModalKind)) expandedCandidate = null;
       appModal.hidden = true;
       appModalKind = null;
@@ -1055,7 +1104,16 @@
         checkbox.disabled = scanNetworksSaving || busy;
         checkbox.setAttribute("aria-label", `Include ${cidr} in scans`);
         selection.append(checkbox);
-        addText(selection, "span", "scan-network-cidr", cidr);
+        const copy = addText(selection, "span", "scan-network-copy", "");
+        addText(copy, "span", "scan-network-cidr", cidr);
+        addText(
+          copy,
+          "span",
+          "scan-network-description",
+          network.source === "detected"
+            ? `Auto-discovered on ${network.interface || "network interface"}`
+            : "Custom added"
+        );
         checkbox.addEventListener("change", async () => {
           const previousConfiguration = discoveryNetworkConfiguration.slice();
           const previousSubnets = new Set(selectedDiscoverySubnets);
@@ -1168,32 +1226,51 @@
       return saveDiscoveryNetworks(previousConfiguration, previousSubnets);
     }
 
-    function renderScannerProgress(scanners = {}) {
-      const signature = JSON.stringify(scanners);
-      if (signature === scannerSignature) return;
-      scannerSignature = signature;
-      scannerProgress.replaceChildren();
-      ["onvif", "rtsp"].forEach(name => {
-        const state = scanners[name];
-        if (!state) return;
-        const item = addText(scannerProgress, "span", `scanner-state ${state}`, "");
-        addText(item, "span", "scanner-dot", "");
-        const stateLabel = state === "complete" ? "done" : state;
-        addText(item, "span", "", `${name.toUpperCase()} ${stateLabel}`);
+    function renderScanNetworkProgress(networks = []) {
+      const signature = JSON.stringify(networks.map(network => [
+        network.subnet,
+        network.status,
+        network.scanners
+      ]));
+      if (signature === scanNetworkProgressSignature) return;
+      scanNetworkProgressSignature = signature;
+      scanNetworkProgress.replaceChildren();
+      const stateLabels = {
+        queued: "Waiting",
+        running: "Scanning",
+        complete: "Complete",
+        error: "Failed"
+      };
+      networks.forEach(network => {
+        const row = addText(scanNetworkProgress, "div", "scan-network-progress-row", "");
+        addText(row, "span", "scan-network-progress-name", network.subnet || "Unknown subnet");
+        addText(
+          row,
+          "span",
+          "scan-network-progress-state",
+          stateLabels[network.status] || network.status || "Waiting"
+        );
+        const scanners = addText(row, "div", "scanner-progress", "");
+        ["onvif", "rtsp", "reachability"].forEach(name => {
+          const state = network.scanners?.[name];
+          if (!state) return;
+          const item = addText(scanners, "span", `scanner-state ${state}`, "");
+          addText(item, "span", "scanner-dot", "");
+          addText(item, "span", "", `${name.toUpperCase()} ${state === "complete" ? "done" : state}`);
+        });
+        scanners.hidden = scanners.childElementCount === 0;
       });
-      scannerProgress.hidden = scannerProgress.childElementCount === 0;
     }
 
-    function resetScanModalPresentation() {
+    function resetScanPresentation() {
       scanRunStatus.hidden = true;
       scanResults.hidden = true;
       scanLogDetails.open = false;
       stateDot.className = "dot";
       setText(stateLabel, "Ready to scan");
       setText(networkLabel, "");
-      scannerSignature = "";
-      scannerProgress.replaceChildren();
-      scannerProgress.hidden = true;
+      scanNetworkProgressSignature = "";
+      scanNetworkProgress.replaceChildren();
       scanDetailsSignature = "";
       setText(scanResultSummary, "");
       setText(scanMetadata, "");
@@ -1218,30 +1295,40 @@
     }
 
     function renderCurrentScan(data, active) {
-      if (!scanModalScanId || data.scan_id !== scanModalScanId) return;
-      renderScanDetails(data);
+      if (!scanPanelScanId || data.scan_id !== scanPanelScanId) return;
+      if (data.status !== "queued") renderScanDetails(data);
+      const networks = Array.isArray(data.networks) ? data.networks : [];
+      renderScanNetworkProgress(networks);
+      scanResults.hidden = false;
+      scanRunStatus.hidden = false;
       if (active) {
-        scanRunStatus.hidden = false;
-        scanResults.hidden = true;
         stateDot.className = "dot busy";
         setText(stateLabel, scanStatusLabel(data));
-        const activeNetworks = Array.isArray(data.networks)
-          ? data.networks.filter(network => network.status === "running").map(network => network.subnet)
-          : [];
+        const activeNetworks = networks.filter(network => network.status === "running").map(network => network.subnet);
         setText(networkLabel, activeNetworks.length ? activeNetworks.join(", ") : "Preparing selected networks");
+        const completeNetworks = networks.filter(network => network.status === "complete").length;
+        setText(
+          scanResultSummary,
+          networks.length
+            ? `${completeNetworks} of ${networks.length} network${networks.length === 1 ? "" : "s"} complete.`
+            : "Preparing the selected networks."
+        );
+        errorBox.hidden = true;
+        setText(errorBox, "");
         return;
       }
-      scanRunStatus.hidden = true;
-      scanResults.hidden = false;
-      const networks = Array.isArray(data.networks) ? data.networks : [];
       const onlineCameras = Array.isArray(data.devices)
         ? data.devices.filter(device => (device.connectivity_status || device.status) === "online").length
         : 0;
       if (data.status === "error" || data.phase === "error") {
+        stateDot.className = "dot error";
+        setText(stateLabel, "Scan failed");
         setText(scanResultSummary, "The scan did not complete.");
         errorBox.hidden = false;
         setText(errorBox, data.error || "The network scan failed.");
       } else {
+        stateDot.className = "dot ready";
+        setText(stateLabel, "Scan complete");
         setText(
           scanResultSummary,
           `${onlineCameras} camera${onlineCameras === 1 ? "" : "s"} online across ${networks.length} network${networks.length === 1 ? "" : "s"}.`
@@ -1249,7 +1336,7 @@
         errorBox.hidden = true;
         setText(errorBox, "");
       }
-      renderScannerProgress(data.scanners);
+      setText(networkLabel, "");
     }
 
     function scanStatusLabel(data) {
@@ -1315,7 +1402,7 @@
       });
       inspections.set(device.candidate_uuid, {status: "not_onvif"});
       pendingManualRtsp = null;
-      addressPanel.hidden = true;
+      closeManualCard(false);
       addressInput.value = "";
       setText(addressStatus, "");
       renderRows();
@@ -3391,9 +3478,11 @@
     function render(data) {
       latestDiscoveryState = data;
       const active = data.status === "queued" || data.status === "running";
+      const busyChanged = busy !== active;
       busy = active;
       setText(scanButton, active ? "Scanning..." : "Scan network");
       setText(scanStartButton, active ? "Scanning..." : "Scan network");
+      if (busyChanged && discoveryNetworkConfiguration.length) renderDiscoveryNetworks();
       syncScanStartDisabled();
       if (data.network?.address) mediaHost = data.network.address;
       renderCurrentScan(data, active);
@@ -3444,20 +3533,43 @@
       }
     }
 
+    function closeScanCard(restoreFocus = true) {
+      if (scanCard.hidden) return;
+      scanCard.hidden = true;
+      scanButton.setAttribute("aria-expanded", "false");
+      if (restoreFocus) scanButton.focus();
+    }
+
+    function closeManualCard(restoreFocus = true) {
+      if (manualCard.hidden) return;
+      manualCard.hidden = true;
+      showAddAddress.setAttribute("aria-expanded", "false");
+      if (restoreFocus) showAddAddress.focus();
+    }
+
     scanButton.addEventListener("click", () => {
+      if (!scanCard.hidden) {
+        closeScanCard();
+        return;
+      }
+      closeManualCard(false);
       const activeState = latestDiscoveryState && ["queued", "running"].includes(latestDiscoveryState.status)
         ? latestDiscoveryState
         : null;
-      scanModalScanId = activeState?.scan_id || null;
-      resetScanModalPresentation();
-      scanNetworkAdd.hidden = true;
-      scanNetworkAddToggle.setAttribute("aria-expanded", "false");
-      scanNetworkInput.value = "";
-      scanDialogContent.hidden = false;
-      openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide");
+      if (!scanPanelInitialized || (activeState && activeState.scan_id !== scanPanelScanId)) {
+        scanPanelScanId = activeState?.scan_id || null;
+        resetScanPresentation();
+        scanNetworkAdd.hidden = true;
+        scanNetworkAddToggle.setAttribute("aria-expanded", "false");
+        scanNetworkInput.value = "";
+        scanPanelInitialized = true;
+      }
+      scanCard.hidden = false;
+      scanButton.setAttribute("aria-expanded", "true");
       if (activeState) renderCurrentScan(activeState, true);
       loadDiscoveryNetworks();
     });
+    scanCardCollapse.addEventListener("click", () => closeScanCard());
     scanStartButton.addEventListener("click", async () => {
       if (busy) return;
       if (!selectedDiscoverySubnets.size) {
@@ -3466,17 +3578,17 @@
         return;
       }
       const pendingScanId = `pending-${Date.now()}`;
-      scanModalScanId = pendingScanId;
-      resetScanModalPresentation();
+      scanPanelScanId = pendingScanId;
+      resetScanPresentation();
       render({status: "queued", phase: "queued", scan_id: pendingScanId, networks: []});
       try {
         const response = await fetch("/internal/discovery/scan", {
           method: "POST", headers: {"X-CamAdmiral-Action": "scan"}
         });
         const result = await response.json();
-        scanModalScanId = result.scan_id || pendingScanId;
+        scanPanelScanId = result.scan_id || pendingScanId;
         if (!response.ok && result.status !== "queued" && result.status !== "running") {
-          render({status: "error", phase: "error", scan_id: scanModalScanId, error: result.message || "Could not start discovery."});
+          render({status: "error", phase: "error", scan_id: scanPanelScanId, error: result.message || "Could not start discovery."});
         } else {
           render(result);
         }
@@ -3508,10 +3620,16 @@
     });
 
     showAddAddress.addEventListener("click", () => {
-      addressPanel.hidden = false;
-      openAppModal("manual", "Add camera manually", addressPanel, showAddAddress, "compact");
+      if (!manualCard.hidden) {
+        closeManualCard();
+        return;
+      }
+      closeScanCard(false);
+      manualCard.hidden = false;
+      showAddAddress.setAttribute("aria-expanded", "true");
       addressInput.focus();
     });
+    manualCardCollapse.addEventListener("click", () => closeManualCard());
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
     addressPanel.addEventListener("submit", async event => {
       event.preventDefault();
@@ -3536,7 +3654,7 @@
         if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
         if (!target.draft) setText(addressStatus, "");
         render(result);
-        if (!target.draft && appModalKind === "manual") closeAppModal();
+        if (!target.draft) closeManualCard(false);
       } catch (error) {
         pendingManualRtsp = null;
         setText(addressStatus, error.message);
@@ -3587,6 +3705,8 @@
       else if (!confirmModal.hidden) closeConfirmation();
       else if (!liveModal.hidden) closeLiveView();
       else if (!appModal.hidden) closeAppModal();
+      else if (!manualCard.hidden) closeManualCard();
+      else if (!scanCard.hidden) closeScanCard();
     });
     document.addEventListener("click", event => {
       if (!event.target.closest(".availability-block, .row-availability-block")) dismissAvailabilityTooltip();
