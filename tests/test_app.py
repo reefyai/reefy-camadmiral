@@ -488,9 +488,16 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.record_frigate_target_check.assert_called_once()
         queue.assert_called_once()
 
-    def test_add_rejects_non_loopback_target_before_network_access(self) -> None:
+    def test_add_accepts_an_operator_selected_remote_target(self) -> None:
         repository = Mock()
         repository.frigate_targets.return_value = []
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-remote",
+            "name": "Remote",
+            "api_url": "http://192.0.2.10:5000",
+            "selected_cameras": 0,
+            "connection_status": "connected",
+        }
         with (
             patch.object(app_module, "_repository", return_value=repository),
             patch.object(app_module, "_check_frigate_target") as check,
@@ -503,10 +510,13 @@ class FrigateTargetApiTests(unittest.TestCase):
                 "add-frigate-target",
             )
 
-        self.assertEqual(response.status_code, 422)
-        self.assertEqual(json.loads(response.body)["status"], "invalid_target_url")
-        check.assert_not_called()
-        repository.save_frigate_target.assert_not_called()
+        self.assertEqual(response.status_code, 201)
+        check.assert_called_once()
+        repository.save_frigate_target.assert_called_once()
+        self.assertEqual(
+            repository.save_frigate_target.call_args.args[2],
+            "http://192.0.2.10:5000",
+        )
 
     def test_add_rejects_a_blank_name_before_network_access(self) -> None:
         repository = Mock()

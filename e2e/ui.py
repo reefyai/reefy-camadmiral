@@ -27,18 +27,16 @@ def assert_mobile_camera_actions(page: Page) -> None:
         state="attached", timeout=30_000
     )
 
-    action_layout = page.locator(".dashboard-controls").evaluate(
+    action_layout = page.locator(".dashboard-actions").evaluate(
         """
         controls => {
           const scan = controls.querySelector("#scan").getBoundingClientRect();
           const add = controls.querySelector("#show-add-address").getBoundingClientRect();
-          const status = controls.querySelector(".scan-status").getBoundingClientRect();
           return {
             sameRow: Math.abs(scan.top - add.top) < 1,
             primaryLast: add.left < scan.left,
             touchTargets: scan.height >= 44 && add.height >= 44,
             equalSize: Math.abs(scan.width - add.width) < 1 && Math.abs(scan.height - add.height) < 1,
-            statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5,
             insideViewport: scan.left >= 0 && add.right <= window.innerWidth + 0.5,
           };
         }
@@ -51,7 +49,12 @@ def assert_mobile_camera_actions(page: Page) -> None:
         )
     if page.get_by_role("heading", name="Cameras").count():
         raise UiScenarioFailure("Dashboard repeats the Cameras heading")
-    expect(page.locator(".scan-details-link")).to_have_text("View details")
+    page.get_by_role("button", name="Scan network").click()
+    expect(page.get_by_role("heading", name="Scan network")).to_be_visible()
+    expect(page.locator("#state")).to_be_visible()
+    expect(page.locator("#scan-start")).to_be_visible()
+    expect(page.locator("#scan-log")).to_be_visible()
+    page.locator("#app-modal-close").click()
 
     list_surface = page.locator(".camera-list-surface")
     attached_controls = list_surface.evaluate(

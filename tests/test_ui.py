@@ -24,20 +24,23 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('class="app-brand" href="/" aria-label="CamAdmiral dashboard"', self.html)
         self.assertIn('<img src="/app-icon.png" alt=""', self.html)
 
-    def test_dashboard_uses_one_primary_action_and_quiet_scan_status(self) -> None:
+    def test_dashboard_scan_action_owns_status_and_diagnostics_modal(self) -> None:
         self.assertIn('class="primary-nav"', self.html)
-        self.assertIn('class="dashboard-controls"', self.html)
         self.assertIn('class="dashboard-actions"', self.html)
-        self.assertIn('class="scan-status"', self.html)
+        self.assertNotIn('class="dashboard-controls"', self.html)
+        self.assertNotIn('class="scan-status"', self.html)
         self.assertNotIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
         self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
-        self.assertIn('<button id="scan" type="button">Scan network</button>', self.html)
-        self.assertIn('class="scan-details-link">View details</span>', self.html)
+        self.assertIn('<button id="scan" type="button" aria-haspopup="dialog">Scan network</button>', self.html)
+        self.assertIn('<button id="scan-start" type="button">Start scan</button>', self.html)
+        self.assertEqual(self.html.count('id="error"'), 1)
+        self.assertIn('openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide")', self.html)
+        self.assertIn('scanStartButton.addEventListener("click", async () =>', self.html)
         self.assertIn('function scanStatusLabel(data, active)', self.html)
         self.assertIn('`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`', self.html)
         self.assertNotIn('complete: "Scan complete"', self.html)
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
-        self.assertIn("display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn("justify-content: flex-end; gap: 8px; margin-bottom: 16px", self.html)
         self.assertIn("width: 120px; min-height: 38px", self.html)
 
     def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
@@ -281,6 +284,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="frigate-targets"', self.html)
         self.assertIn('openAppModal("frigate"', self.html)
         self.assertIn('"http://127.0.0.1:5000"', self.html)
+        self.assertIn('"http://frigate.local:5000"', self.html)
+        self.assertIn("CamAdmiral will make privileged Frigate API requests to this URL.", self.html)
         self.assertNotIn("Sync adopted cameras", self.html)
         self.assertNotIn("sync_cameras", self.html)
         self.assertNotIn('id="show-notifications"', self.html)

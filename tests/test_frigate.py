@@ -268,13 +268,37 @@ class FrigateTargetTests(unittest.TestCase):
             io.BytesIO(response),
         )
 
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch.object(client._opener, "open", side_effect=error):
             with self.assertRaises(FrigateApiError) as raised:
                 client.runtime_streams()
 
         self.assertEqual(raised.exception.upstream_status, 400)
         self.assertIn("rtsp://***@192.0.2.20/live", raised.exception.upstream_detail)
         self.assertNotIn("synthetic-secret", raised.exception.upstream_detail)
+
+    def test_frigate_client_does_not_follow_redirects(self) -> None:
+        target = FrigateTarget(
+            "frigate-remote",
+            "Remote Frigate",
+            "https://frigate.example.test/proxy",
+        )
+        client = FrigateClient(target)
+        handler = next(
+            item
+            for item in client._opener.handlers
+            if item.__class__.__name__ == "_NoRedirectHandler"
+        )
+
+        self.assertIsNone(
+            handler.redirect_request(
+                Mock(),
+                Mock(),
+                302,
+                "Found",
+                {},
+                "https://redirect.example.test/",
+            )
+        )
 
     def test_all_configured_targets_are_loaded(self) -> None:
         repository = Mock()
@@ -291,14 +315,36 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertEqual(targets[0].api_url, "http://127.0.0.1:20001")
         repository.frigate_targets.assert_called_once_with()
 
-    def test_frigate_url_is_normalized_and_restricted_to_loopback(self) -> None:
+    def test_frigate_url_accepts_operator_selected_http_endpoints(self) -> None:
         self.assertEqual(
             normalize_frigate_api_url("http://127.0.0.1:20001/"),
             "http://127.0.0.1:20001",
         )
-        with self.assertRaises(FrigateApiError) as raised:
-            normalize_frigate_api_url("http://192.0.2.10:5000")
-        self.assertEqual(raised.exception.code, "invalid_target_url")
+        self.assertEqual(
+            normalize_frigate_api_url("http://192.0.2.10:5000"),
+            "http://192.0.2.10:5000",
+        )
+        self.assertEqual(
+            normalize_frigate_api_url("https://frigate.example.test/proxy/"),
+            "https://frigate.example.test/proxy",
+        )
+        self.assertEqual(
+            normalize_frigate_api_url("http://[2001:db8::10]:5000/"),
+            "http://[2001:db8::10]:5000",
+        )
+
+    def test_frigate_url_rejects_unsupported_or_secret_bearing_urls(self) -> None:
+        for value in (
+            "ftp://frigate.example.test/config",
+            "http://user:secret@frigate.example.test:5000",
+            "http://frigate.example.test:5000?target=other",
+            "http://frigate.example.test:5000/#section",
+            "http://frigate.example.test:70000",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(FrigateApiError) as raised:
+                    normalize_frigate_api_url(value)
+                self.assertEqual(raised.exception.code, "invalid_target_url")
 
     def test_media_host_comes_from_private_scanner_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

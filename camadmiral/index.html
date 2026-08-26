@@ -33,12 +33,12 @@
     }
     h1 { margin: 0; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.045em; }
     button { font: inherit; }
-    #scan {
+    #scan, #scan-start {
       border: 0; border-radius: 9px; padding: 9px 13px; background: #2dd4bf; color: #06201e;
       font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(45, 212, 191, .16);
     }
-    #scan:hover { background: #5eead4; }
-    #scan:disabled { cursor: wait; opacity: .6; }
+    #scan:hover, #scan-start:hover { background: #5eead4; }
+    #scan-start:disabled { cursor: wait; opacity: .6; }
     .primary-nav { display: flex; align-items: center; gap: 4px; }
     .primary-nav a {
       position: relative; padding: 10px 12px; color: #8ea2b3; font-size: 13px; font-weight: 750;
@@ -50,13 +50,7 @@
       position: absolute; right: 10px; bottom: 2px; left: 10px; height: 2px; border-radius: 2px;
       background: #2dd4bf; content: "";
     }
-    .dashboard-controls {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 18px;
-      align-items: center; margin-bottom: 16px; padding: 11px 12px;
-      border: 1px solid rgba(148, 163, 184, .13); border-radius: 12px;
-      background: rgba(12, 26, 42, .5);
-    }
-    .dashboard-actions { display: flex; align-items: center; gap: 8px; }
+    .dashboard-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
     .dashboard-actions > button {
       width: 120px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
       font-size: 12px; font-weight: 800;
@@ -163,7 +157,6 @@
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
     }
     .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
-    .scan-status { min-width: 0; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
     .dot.ready { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
@@ -178,15 +171,12 @@
     .scanner-state.complete .scanner-dot { background: #22c55e; }
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
-    .scan-details-trigger {
-      display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; min-height: 30px;
-      border: 0; border-radius: 7px; padding: 5px 7px 5px 4px;
-      background: transparent; color: #7890a4; font-size: 12px; font-weight: 650; cursor: pointer;
-    }
-    .scan-details-trigger:hover { color: #b9fff5; background: rgba(45, 212, 191, .05); }
-    .scan-details-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .scan-details-link { color: #75d9ce; font-weight: 750; white-space: nowrap; }
     .scan-dialog-content { min-width: 0; }
+    .scan-dialog-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px;
+    }
+    .scan-dialog-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; color: #a9bac6; font-size: 13px; font-weight: 700; }
+    .scan-dialog-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
     .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
     .scan-log {
@@ -535,14 +525,13 @@
       h1 { font-size: 32px; }
       .primary-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(148, 163, 184, .1); }
       .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
-      .dashboard-controls { grid-template-columns: 1fr; gap: 8px; padding: 10px; }
-      .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; grid-row: 2; }
+      .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; }
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
-      .scan-status { grid-row: 1; min-width: 0; }
-      .scan-details-trigger { width: 100%; min-height: 34px; padding: 5px 4px; }
       .scan-overview { align-items: flex-start; flex-direction: column; }
+      .scan-dialog-header { align-items: stretch; flex-direction: column; }
+      #scan-start { width: 100%; min-height: 44px; }
       .scanner-progress { flex-wrap: wrap; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
       .address-panel .setup-field { flex: none; width: 100%; }
@@ -638,21 +627,15 @@
       </nav>
     </header>
     <main id="dashboard-view">
-      <div class="dashboard-controls">
-        <div class="scan-status">
-          <button class="scan-details-trigger" id="scan-details" type="button" aria-haspopup="dialog" aria-label="Open scan details"><span class="dot" id="dot"></span><span class="scan-details-label" id="state">Starting</span><span class="scan-details-link">View details</span></button>
-        </div>
-        <div class="dashboard-actions">
-          <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
-          <button id="scan" type="button">Scan network</button>
-        </div>
+      <div class="dashboard-actions">
+        <button class="header-secondary" id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>
+        <button id="scan" type="button" aria-haspopup="dialog">Scan network</button>
       </div>
       <form class="address-panel" id="address-panel" hidden>
         <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
         <button class="row-action" type="submit">Continue</button>
         <span class="address-status" id="address-status"></span>
       </form>
-      <div class="errorbox" id="error" hidden></div>
       <section class="camera-list-surface" aria-label="Camera list">
         <div class="toolbar" id="toolbar" hidden>
           <div class="summary">
@@ -712,7 +695,7 @@
         <div class="settings-section-header">
           <div>
             <h3 id="frigate-settings-title">Frigate integrations</h3>
-            <p>Send adopted cameras to one or more local Frigate instances.</p>
+            <p>Send adopted cameras to one or more Frigate instances.</p>
           </div>
           <button class="row-action" id="add-frigate" type="button">Add Frigate</button>
         </div>
@@ -729,11 +712,16 @@
       </div>
       <div class="modal-body" id="app-modal-body">
         <div class="scan-dialog-content" id="scan-dialog-content" hidden>
+          <div class="scan-dialog-header">
+            <div class="scan-dialog-status"><span class="dot" id="dot"></span><span class="scan-dialog-status-label" id="state">Ready to scan</span></div>
+            <button id="scan-start" type="button">Start scan</button>
+          </div>
           <div class="scan-overview">
             <div class="scanner-progress" id="scanner-progress" hidden></div>
             <div class="network" id="network"></div>
           </div>
           <div class="scan-metadata" id="scan-metadata"></div>
+          <div class="errorbox" id="error" hidden></div>
           <pre class="scan-log" id="scan-log"></pre>
         </div>
       </div>
@@ -773,6 +761,7 @@
   <div class="availability-tooltip" id="availability-tooltip" role="tooltip" hidden></div>
   <script>
     const scanButton = document.querySelector("#scan");
+    const scanStartButton = document.querySelector("#scan-start");
     const showAddAddress = document.querySelector("#show-add-address");
     const dashboardView = document.querySelector("#dashboard-view");
     const incidentsView = document.querySelector("#incidents-view");
@@ -791,7 +780,6 @@
     const stateDot = document.querySelector("#dot");
     const networkLabel = document.querySelector("#network");
     const scannerProgress = document.querySelector("#scanner-progress");
-    const scanDetails = document.querySelector("#scan-details");
     const scanMetadata = document.querySelector("#scan-metadata");
     const scanLog = document.querySelector("#scan-log");
     const toolbar = document.querySelector("#toolbar");
@@ -1408,12 +1396,18 @@
       const url = document.createElement("input");
       url.type = "url";
       url.value = target?.api_url || "http://127.0.0.1:5000";
-      url.placeholder = "http://127.0.0.1:5000";
+      url.placeholder = "http://frigate.local:5000";
       url.maxLength = 512;
       url.required = true;
       url.autocomplete = "off";
       url.spellcheck = false;
       urlField.append(url);
+      addText(
+        form,
+        "div",
+        "settings-copy",
+        "CamAdmiral will make privileged Frigate API requests to this URL. Use an endpoint you trust."
+      );
       const status = addText(form, "div", "settings-status", "");
       const actions = addText(form, "div", "settings-actions", "");
       const save = addText(actions, "button", "row-action", target ? "Save" : "Connect Frigate");
@@ -3117,8 +3111,9 @@
     function render(data) {
       const active = data.status === "queued" || data.status === "running";
       busy = active;
-      scanButton.disabled = active;
       setText(scanButton, active ? "Scanning..." : "Scan network");
+      scanStartButton.disabled = active;
+      setText(scanStartButton, active ? "Scanning..." : data.completed_at ? "Scan again" : "Start scan");
       stateDot.className = `dot ${active ? "busy" : data.status === "error" ? "error" : "ready"}`;
       setText(stateLabel, scanStatusLabel(data, active));
       if (data.network?.address) mediaHost = data.network.address;
@@ -3174,7 +3169,11 @@
       }
     }
 
-    scanButton.addEventListener("click", async () => {
+    scanButton.addEventListener("click", () => {
+      scanDialogContent.hidden = false;
+      openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide");
+    });
+    scanStartButton.addEventListener("click", async () => {
       if (busy) return;
       render({status: "queued", phase: "queued"});
       try {
@@ -3193,10 +3192,6 @@
       addressInput.focus();
     });
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
-    scanDetails.addEventListener("click", () => {
-      scanDialogContent.hidden = false;
-      openAppModal("scan", "Scan details", scanDialogContent, scanDetails, "wide");
-    });
     addressPanel.addEventListener("submit", async event => {
       event.preventDefault();
       if (busy) return;

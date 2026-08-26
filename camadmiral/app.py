@@ -888,7 +888,7 @@ def notification_settings() -> JSONResponse:
 
 def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
     messages = {
-        "invalid_target_url": "Enter a loopback HTTP URL with a port, such as http://127.0.0.1:20001.",
+        "invalid_target_url": "Enter an HTTP or HTTPS Frigate API URL without embedded credentials, a query, or a fragment.",
         "target_unavailable": "CamAdmiral could not reach Frigate at that URL.",
         "authorization_required": "Frigate requires authorization on that endpoint.",
         "capability_unavailable": "This Frigate endpoint does not provide the required camera configuration API.",

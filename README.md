@@ -172,12 +172,13 @@ addresses.
 
 ## Frigate integration
 
-Open **Settings > Integrations** and add the loopback URL for each local Frigate API, such as
-`http://127.0.0.1:5000`. Port 5000 is Frigate's internal API port and must be exposed only
-to trusted local services. CamAdmiral validates the required configuration and runtime
-stream capabilities before saving the integration.
+Open **Settings > Integrations** and add the HTTP or HTTPS URL for each Frigate API. The URL
+may use a loopback address, LAN address, DNS name, IPv6 address, or path-prefixed reverse
+proxy. CamAdmiral validates the required configuration and runtime stream capabilities
+before saving the integration. It then makes privileged configuration requests to that
+endpoint, so connect only to a Frigate API you trust. Redirects are not followed.
 
-Use a camera's **Sync** action to select which Frigate instance should receive it through a
+Use a camera's **Streams** action to select which Frigate instance should receive it through a
 stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
 configuration or remove that CamAdmiral-managed camera from the instance. Each camera and
 Frigate target pairing has a CamAdmiral address mode:

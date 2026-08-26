@@ -67,6 +67,11 @@ class FrigateApiError(RuntimeError):
         )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 @dataclass(frozen=True)
 class FrigateTarget:
     target_id: str
@@ -77,19 +82,30 @@ class FrigateTarget:
 def normalize_frigate_api_url(value: object) -> str:
     if not isinstance(value, str):
         raise FrigateApiError("invalid_target_url")
-    parsed = urllib.parse.urlsplit(value.strip())
-    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    raw = value.strip()
+    if not raw or any(character.isspace() or ord(character) < 32 for character in raw):
         raise FrigateApiError("invalid_target_url")
     try:
+        parsed = urllib.parse.urlsplit(raw)
+        hostname = parsed.hostname
         port = parsed.port
     except ValueError as exc:
         raise FrigateApiError("invalid_target_url") from exc
-    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or port is None or not 1 <= port <= 65535:
+    scheme = parsed.scheme.lower()
+    if (
+        scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
         raise FrigateApiError("invalid_target_url")
-    if parsed.path not in {"", "/"}:
-        raise FrigateApiError("invalid_target_url")
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    return f"http://{host}:{port}"
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = f"{host}:{port}" if port is not None else host
+    path = parsed.path.rstrip("/")
+    return f"{scheme}://{authority}{path}"
 
 
 def load_frigate_targets(repository: Any) -> list[FrigateTarget]:
@@ -103,6 +119,7 @@ class FrigateClient:
     def __init__(self, target: FrigateTarget, timeout: float = 5.0):
         self.target = target
         self.timeout = timeout
+        self._opener = urllib.request.build_opener(_NoRedirectHandler())
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         body = None
@@ -117,7 +134,7 @@ class FrigateClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout) as response:
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                     raise FrigateApiError("response_too_large")
