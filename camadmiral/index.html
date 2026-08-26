@@ -172,49 +172,47 @@
     .scanner-state.error { color: #fda4af; }
     .scanner-state.error .scanner-dot { background: #fb7185; }
     .scan-dialog-content { min-width: 0; }
-    .scan-dialog-header {
-      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px;
+    .scan-networks-section { margin-bottom: 18px; }
+    .scan-networks-heading { margin-bottom: 9px; }
+    .scan-networks-heading strong { display: block; color: #dce8ee; font-size: 14px; }
+    .scan-networks-heading span { display: block; margin-top: 3px; color: #7890a4; font-size: 11px; }
+    .scan-network-list {
+      display: grid; margin-bottom: 10px; border-top: 1px solid rgba(148, 163, 184, .12);
     }
-    .scan-dialog-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; color: #a9bac6; font-size: 13px; font-weight: 700; }
-    .scan-dialog-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .scan-networks-section {
-      margin-bottom: 14px; border: 1px solid rgba(148, 163, 184, .14); border-radius: 11px;
-      padding: 12px; background: rgba(5, 15, 27, .3);
-    }
-    .scan-networks-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
-    .scan-networks-heading strong { color: #dce8ee; font-size: 13px; }
-    .scan-networks-heading span { color: #7890a4; font-size: 11px; }
-    .scan-network-list { display: grid; gap: 7px; margin-bottom: 9px; }
     .scan-network-row {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 9px;
-      min-width: 0; border: 1px solid rgba(148, 163, 184, .11); border-radius: 9px; padding: 8px 9px;
-      background: rgba(12, 26, 42, .52);
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+      min-width: 0; border-bottom: 1px solid rgba(148, 163, 184, .12); padding: 10px 2px;
     }
-    .scan-network-row.excluded { opacity: .65; }
     .scan-network-identity { min-width: 0; }
     .scan-network-cidr { color: #e4eef3; font: 700 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .scan-network-meta { overflow: hidden; color: #7890a4; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-    .scan-network-state { color: #8ea2b3; font-size: 11px; font-weight: 750; text-transform: capitalize; }
-    .scan-network-state.running { color: #fde68a; }
-    .scan-network-state.complete { color: #86efac; }
-    .scan-network-state.error { color: #fda4af; }
     .scan-network-row .row-action { min-width: 66px; }
-    .scan-network-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+    .scan-network-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .scan-network-add input {
       min-width: 0; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
       background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 8px 10px; font: inherit;
     }
-    .scan-network-settings-status { min-height: 17px; margin-top: 7px; color: #8ea2b3; font-size: 11px; }
+    .scan-network-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+    .scan-network-settings-status { min-height: 17px; color: #8ea2b3; font-size: 11px; }
     .scan-network-settings-status.error { color: #fda4af; }
-    .scan-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-    .scan-metadata { margin-bottom: 10px; color: #7890a4; font-size: 12px; }
+    .scan-action { padding-bottom: 16px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
+    .scan-action #scan-start { width: 100%; min-height: 44px; }
+    .scan-run-status { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: #a9bac6; font-size: 12px; }
+    .scan-run-status .network { margin-left: auto; text-align: right; }
+    .scan-dialog-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; font-weight: 700; }
+    .scan-dialog-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scan-results { padding: 16px 0 6px; border-bottom: 1px solid rgba(148, 163, 184, .12); }
+    .scan-results-heading { color: #dce8ee; font-size: 14px; font-weight: 800; }
+    .scan-result-summary { margin-top: 7px; color: #d6e2e9; font-size: 13px; }
+    .scan-result-detail { display: flex; align-items: center; gap: 12px; margin-top: 7px; color: #7890a4; font-size: 12px; }
+    .scan-metadata { color: #7890a4; font-size: 12px; }
     .scan-log {
       max-height: 360px; margin: 0; overflow: auto; border-radius: 8px; padding: 11px 12px;
       background: #040b13; color: #a9bdca; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
     }
-    .scan-log-details { margin-top: 10px; }
-    .scan-log-details summary { color: #8ea2b3; font-size: 12px; font-weight: 750; cursor: pointer; }
+    .scan-log-details { margin-top: 12px; }
+    .scan-log-details summary { color: #8ea2b3; font-size: 12px; cursor: pointer; }
     .scan-log-details[open] summary { margin-bottom: 8px; }
     .camera-list-surface {
       overflow: hidden; border: 1px solid rgba(148, 163, 184, .15); border-radius: 14px;
@@ -561,16 +559,16 @@
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
       #show-add-address { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
-      .scan-overview { align-items: flex-start; flex-direction: column; }
-      .scan-dialog-header { align-items: stretch; flex-direction: column; }
       #scan-start { width: 100%; min-height: 44px; }
-      .scan-networks-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
       .scan-network-row { grid-template-columns: minmax(0, 1fr) auto; }
-      .scan-network-state { grid-column: 1; grid-row: 2; }
-      .scan-network-row .row-action { grid-column: 2; grid-row: 1 / span 2; min-height: 40px; }
-      .scan-network-add { grid-template-columns: 1fr 1fr; }
-      .scan-network-add input { grid-column: 1 / -1; min-height: 44px; }
+      .scan-network-row .row-action { min-height: 40px; }
+      .scan-network-add { grid-template-columns: minmax(0, 1fr) auto; }
+      .scan-network-add input { min-height: 44px; }
       .scan-network-add .row-action { min-height: 40px; }
+      .scan-network-settings-footer { align-items: flex-start; }
+      .scan-run-status { align-items: flex-start; flex-wrap: wrap; }
+      .scan-run-status .network { width: 100%; margin-left: 18px; text-align: left; }
+      .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
       .scanner-progress { flex-wrap: wrap; }
       .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
       .address-panel .setup-field { flex: none; width: 100%; }
@@ -751,31 +749,39 @@
       </div>
       <div class="modal-body" id="app-modal-body">
         <div class="scan-dialog-content" id="scan-dialog-content" hidden>
-          <div class="scan-dialog-header">
-            <div class="scan-dialog-status"><span class="dot" id="dot"></span><span class="scan-dialog-status-label" id="state">Ready to scan</span></div>
-            <button id="scan-start" type="button">Scan network</button>
-          </div>
           <section class="scan-networks-section" aria-labelledby="scan-networks-title">
             <div class="scan-networks-heading">
-              <strong id="scan-networks-title">IPv4 subnets</strong>
-              <span>Detected networks use multicast. Custom routed networks use unicast.</span>
+              <strong id="scan-networks-title">Networks to scan</strong>
+              <span>Custom private subnets can include up to 1,024 usable addresses.</span>
             </div>
             <div class="scan-network-list" id="scan-network-list"></div>
             <form class="scan-network-add" id="scan-network-add">
               <input id="scan-network-input" aria-label="IPv4 subnet" autocomplete="off" maxlength="32" placeholder="10.0.202.0/24">
               <button class="row-action" type="submit">Add subnet</button>
-              <button class="row-action" id="scan-networks-save" type="button">Save</button>
             </form>
-            <div class="scan-network-settings-status" id="scan-network-settings-status"></div>
+            <div class="scan-network-settings-footer">
+              <div class="scan-network-settings-status" id="scan-network-settings-status"></div>
+              <button class="row-action" id="scan-networks-save" type="button">Save</button>
+            </div>
           </section>
-          <div class="scan-overview">
-            <div class="scanner-progress" id="scanner-progress" hidden></div>
-            <div class="network" id="network"></div>
+          <div class="scan-action">
+            <button id="scan-start" type="button">Scan network</button>
+            <div class="scan-run-status" id="scan-run-status" hidden>
+              <div class="scan-dialog-status"><span class="dot" id="dot"></span><span class="scan-dialog-status-label" id="state">Scanning network</span></div>
+              <div class="network" id="network"></div>
+            </div>
           </div>
-          <div class="scan-metadata" id="scan-metadata"></div>
-          <div class="errorbox" id="error" hidden></div>
+          <section class="scan-results" id="scan-results" aria-labelledby="scan-results-title" hidden>
+            <div class="scan-results-heading" id="scan-results-title">Scan results</div>
+            <div class="scan-result-summary" id="scan-result-summary"></div>
+            <div class="scan-result-detail">
+              <div class="scanner-progress" id="scanner-progress" hidden></div>
+              <div class="scan-metadata" id="scan-metadata"></div>
+            </div>
+            <div class="errorbox" id="error" hidden></div>
+          </section>
           <details class="scan-log-details" id="scan-log-details">
-            <summary>Technical logs <span id="scan-log-count"></span></summary>
+            <summary>Logs <span id="scan-log-count"></span></summary>
             <pre class="scan-log" id="scan-log"></pre>
           </details>
         </div>
@@ -833,6 +839,9 @@
     const addressStatus = document.querySelector("#address-status");
     const stateLabel = document.querySelector("#state");
     const stateDot = document.querySelector("#dot");
+    const scanRunStatus = document.querySelector("#scan-run-status");
+    const scanResults = document.querySelector("#scan-results");
+    const scanResultSummary = document.querySelector("#scan-result-summary");
     const networkLabel = document.querySelector("#network");
     const scannerProgress = document.querySelector("#scanner-progress");
     const scanMetadata = document.querySelector("#scan-metadata");
@@ -882,9 +891,11 @@
     let scanDetailsSignature = "";
     let discoveryNetworkConfiguration = [];
     let selectedDiscoverySubnets = new Set();
-    let scanNetworkProgress = new Map();
     let scanNetworksDirty = false;
     let scanNetworksSaving = false;
+    let maxCustomScanHosts = 1024;
+    let scanModalScanId = null;
+    let latestDiscoveryState = null;
     let expandedCandidate = null;
     let appModalKind = null;
     let modalReturnFocus = null;
@@ -989,41 +1000,71 @@
       scanStartButton.disabled = busy || scanNetworksSaving || selectedDiscoverySubnets.size === 0;
     }
 
+    function privateIpv4Cidr(value) {
+      const match = value.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
+      if (!match) throw new Error("Enter a private IPv4 subnet in CIDR notation, such as 10.0.202.0/24.");
+      const octets = match.slice(1, 5).map(Number);
+      const prefix = Number(match[5]);
+      if (octets.some(octet => octet > 255) || prefix > 32) {
+        throw new Error("Enter a valid private IPv4 subnet in CIDR notation.");
+      }
+      const address = octets[0] * 16777216 + octets[1] * 65536 + octets[2] * 256 + octets[3];
+      const blockSize = 2 ** (32 - prefix);
+      const networkAddress = Math.floor(address / blockSize) * blockSize;
+      const lastAddress = networkAddress + blockSize - 1;
+      const privateRanges = [
+        [10 * 16777216, 11 * 16777216 - 1],
+        [172 * 16777216 + 16 * 65536, 172 * 16777216 + 32 * 65536 - 1],
+        [192 * 16777216 + 168 * 65536, 192 * 16777216 + 169 * 65536 - 1]
+      ];
+      if (!privateRanges.some(([start, end]) => networkAddress >= start && lastAddress <= end)) {
+        throw new Error("Only private IPv4 subnets can be scanned.");
+      }
+      const usableHosts = Math.max(0, blockSize - 2);
+      if (usableHosts > maxCustomScanHosts) {
+        throw new Error(`This subnet has ${usableHosts.toLocaleString()} usable addresses. Custom subnets are limited to ${maxCustomScanHosts.toLocaleString()}.`);
+      }
+      const normalizedOctets = [
+        Math.floor(networkAddress / 16777216),
+        Math.floor(networkAddress / 65536) % 256,
+        Math.floor(networkAddress / 256) % 256,
+        networkAddress % 256
+      ];
+      return `${normalizedOctets.join(".")}/${prefix}`;
+    }
+
     function renderDiscoveryNetworks() {
       scanNetworkList.replaceChildren();
-      discoveryNetworkConfiguration.forEach(network => {
+      discoveryNetworkConfiguration.filter(network => {
         const cidr = String(network.cidr || network.subnet || "");
-        if (!cidr) return;
-        const selected = selectedDiscoverySubnets.has(cidr);
-        const progress = scanNetworkProgress.get(cidr);
-        const row = addText(scanNetworkList, "div", `scan-network-row${selected ? "" : " excluded"}`, "");
+        return cidr && selectedDiscoverySubnets.has(cidr);
+      }).forEach(network => {
+        const cidr = String(network.cidr || network.subnet || "");
+        const row = addText(scanNetworkList, "div", "scan-network-row", "");
         const identity = addText(row, "div", "scan-network-identity", "");
         addText(identity, "div", "scan-network-cidr", cidr);
-        const method = network.source === "detected" ? "detected · multicast + unicast" : "custom · routed unicast";
-        const route = network.interface && network.address ? `${network.interface} via ${network.address}` : network.route_error || "route checked when scanning";
-        addText(identity, "div", "scan-network-meta", `${method} · ${route}`);
-        const state = progress?.status || (!selected ? "excluded" : network.routable === false ? "route unavailable" : "ready");
-        addText(row, "span", `scan-network-state ${progress?.status || ""}`, state);
-        const toggle = addText(row, "button", "row-action", selected ? "Remove" : "Add");
+        const method = network.source === "detected" ? "Detected · multicast and unicast" : "Custom · routed unicast";
+        addText(identity, "div", "scan-network-meta", method);
+        const toggle = addText(row, "button", "row-action", "Remove");
         toggle.type = "button";
         toggle.disabled = scanNetworksSaving || busy;
         toggle.addEventListener("click", () => {
-          if (selected) selectedDiscoverySubnets.delete(cidr);
-          else selectedDiscoverySubnets.add(cidr);
+          selectedDiscoverySubnets.delete(cidr);
           scanNetworksDirty = true;
           scanNetworkSettingsStatus.className = "scan-network-settings-status";
           setText(scanNetworkSettingsStatus, "Unsaved subnet changes.");
           renderDiscoveryNetworks();
         });
       });
-      if (!discoveryNetworkConfiguration.length) {
-        addText(scanNetworkList, "div", "settings-copy", "No IPv4 subnets are configured.");
+      if (!selectedDiscoverySubnets.size) {
+        addText(scanNetworkList, "div", "settings-copy", "No networks selected. Add a private subnet below.");
       }
       scanNetworksSave.disabled = !scanNetworksDirty || scanNetworksSaving || busy;
       syncScanStartDisabled();
     }
 
     function applyDiscoveryNetworkConfiguration(data) {
+      if (Number.isFinite(data.max_custom_hosts)) maxCustomScanHosts = data.max_custom_hosts;
       discoveryNetworkConfiguration = Array.isArray(data.networks) ? data.networks : [];
       selectedDiscoverySubnets = new Set(
         discoveryNetworkConfiguration
@@ -1092,51 +1133,80 @@
       scannerProgress.hidden = scannerProgress.childElementCount === 0;
     }
 
-    function renderScanDetails(data, active) {
+    function resetScanModalPresentation() {
+      scanRunStatus.hidden = true;
+      scanResults.hidden = true;
+      scanLogDetails.open = false;
+      stateDot.className = "dot";
+      setText(stateLabel, "Ready to scan");
+      setText(networkLabel, "");
+      scannerSignature = "";
+      scannerProgress.replaceChildren();
+      scannerProgress.hidden = true;
+      scanDetailsSignature = "";
+      setText(scanResultSummary, "");
+      setText(scanMetadata, "");
+      errorBox.hidden = true;
+      setText(errorBox, "");
+      setText(scanLogCount, "");
+      setText(scanLog, "Logs from the next scan will appear here.");
+    }
+
+    function renderScanDetails(data) {
       const log = Array.isArray(data.raw_log) ? data.raw_log : [];
-      const network = data.network || {};
-      const available = log.length || network.interface || data.duration_ms || data.completed_at;
       const metadata = [
-        active && data.completed_at ? "Last completed scan" : null,
-        network.interface,
-        network.address,
-        network.subnet,
-        Number.isFinite(network.hosts) ? `${network.hosts} hosts` : null,
         data.duration_ms ? `${(data.duration_ms / 1000).toFixed(1)}s` : null,
-        data.completed_at
+        data.completed_at ? `Completed ${new Date(data.completed_at).toLocaleString()}` : null
       ].filter(Boolean).join(" · ");
       const signature = JSON.stringify([metadata, log]);
       if (signature === scanDetailsSignature) return;
       scanDetailsSignature = signature;
-      setText(scanMetadata, metadata || "No scan has completed yet.");
+      setText(scanMetadata, metadata);
       setText(scanLogCount, log.length ? `(${log.length})` : "");
-      setText(scanLog, log.length ? log.join("\n") : available ? "No raw scan log is available for this earlier scan." : "Scan diagnostics will appear here.");
+      setText(scanLog, log.length ? log.join("\n") : "No logs were recorded for this scan.");
     }
 
-    function relativeScanTime(value) {
-      const timestamp = Date.parse(value || "");
-      if (!Number.isFinite(timestamp)) return "";
-      const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-      if (seconds < 60) return "just now";
-      const minutes = Math.floor(seconds / 60);
-      if (minutes < 60) return `${minutes}m ago`;
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return `${hours}h ago`;
-      return `${Math.floor(hours / 24)}d ago`;
+    function renderCurrentScan(data, active) {
+      if (!scanModalScanId || data.scan_id !== scanModalScanId) return;
+      renderScanDetails(data);
+      if (active) {
+        scanRunStatus.hidden = false;
+        scanResults.hidden = true;
+        stateDot.className = "dot busy";
+        setText(stateLabel, scanStatusLabel(data));
+        const activeNetworks = Array.isArray(data.networks)
+          ? data.networks.filter(network => network.status === "running").map(network => network.subnet)
+          : [];
+        setText(networkLabel, activeNetworks.length ? activeNetworks.join(", ") : "Preparing selected networks");
+        return;
+      }
+      scanRunStatus.hidden = true;
+      scanResults.hidden = false;
+      const networks = Array.isArray(data.networks) ? data.networks : [];
+      const onlineCameras = Array.isArray(data.devices)
+        ? data.devices.filter(device => (device.connectivity_status || device.status) === "online").length
+        : 0;
+      if (data.status === "error" || data.phase === "error") {
+        setText(scanResultSummary, "The scan did not complete.");
+        errorBox.hidden = false;
+        setText(errorBox, data.error || "The network scan failed.");
+      } else {
+        setText(
+          scanResultSummary,
+          `${onlineCameras} camera${onlineCameras === 1 ? "" : "s"} online across ${networks.length} network${networks.length === 1 ? "" : "s"}.`
+        );
+        errorBox.hidden = true;
+        setText(errorBox, "");
+      }
+      renderScannerProgress(data.scanners);
     }
 
-    function scanStatusLabel(data, active) {
+    function scanStatusLabel(data) {
       const phases = {
         queued: "Starting scan", starting: "Starting scan", scanning: "Scanning network",
         onvif: "Finding ONVIF cameras", rtsp: "Checking RTSP cameras"
       };
-      if (active) return phases[data.phase] || "Scanning network";
-      if (data.status === "error" || data.phase === "error") return "Scan failed";
-      if (!data.completed_at) return "Ready to scan";
-      const parts = [`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`];
-      if (Array.isArray(data.devices)) parts.push(`${data.devices.length} camera${data.devices.length === 1 ? "" : "s"}`);
-      if (Number.isFinite(data.duration_ms)) parts.push(`${(data.duration_ms / 1000).toFixed(1)}s`);
-      return parts.join(" · ");
+      return phases[data.phase] || "Scanning network";
     }
 
     function manualCameraTarget(value) {
@@ -3268,37 +3338,14 @@
     }
 
     function render(data) {
+      latestDiscoveryState = data;
       const active = data.status === "queued" || data.status === "running";
       busy = active;
       setText(scanButton, active ? "Scanning..." : "Scan network");
       setText(scanStartButton, active ? "Scanning..." : "Scan network");
       syncScanStartDisabled();
-      stateDot.className = `dot ${active ? "busy" : data.status === "error" ? "error" : "ready"}`;
-      setText(stateLabel, scanStatusLabel(data, active));
       if (data.network?.address) mediaHost = data.network.address;
-      if (Array.isArray(data.networks)) {
-        scanNetworkProgress = new Map(
-          data.networks
-            .filter(network => network?.subnet)
-            .map(network => [String(network.subnet), network])
-        );
-        renderDiscoveryNetworks();
-      }
-      const activeNetworks = Array.isArray(data.networks)
-        ? data.networks.filter(network => network.status === "running").map(network => network.subnet)
-        : [];
-      setText(
-        networkLabel,
-        activeNetworks.length
-          ? `Scanning ${activeNetworks.join(", ")}`
-          : Array.isArray(data.networks) && data.networks.length
-            ? `${data.networks.length} subnet${data.networks.length === 1 ? "" : "s"}`
-            : data.network?.subnet || ""
-      );
-      renderScannerProgress(data.scanners);
-      renderScanDetails(data, active);
-      errorBox.hidden = data.status !== "error";
-      setText(errorBox, data.error || "");
+      renderCurrentScan(data, active);
 
       const hasResults = Array.isArray(data.devices) && data.devices.length > 0;
       if (hasResults) {
@@ -3347,9 +3394,14 @@
     }
 
     scanButton.addEventListener("click", () => {
+      const activeState = latestDiscoveryState && ["queued", "running"].includes(latestDiscoveryState.status)
+        ? latestDiscoveryState
+        : null;
+      scanModalScanId = activeState?.scan_id || null;
+      resetScanModalPresentation();
       scanDialogContent.hidden = false;
-      scanLogDetails.open = false;
       openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide");
+      if (activeState) renderCurrentScan(activeState, true);
       loadDiscoveryNetworks();
     });
     scanStartButton.addEventListener("click", async () => {
@@ -3360,28 +3412,34 @@
         setText(scanNetworkSettingsStatus, "Select at least one IPv4 subnet before scanning.");
         return;
       }
-      render({status: "queued", phase: "queued"});
+      const pendingScanId = `pending-${Date.now()}`;
+      scanModalScanId = pendingScanId;
+      resetScanModalPresentation();
+      render({status: "queued", phase: "queued", scan_id: pendingScanId, networks: []});
       try {
         const response = await fetch("/internal/discovery/scan", {
           method: "POST", headers: {"X-CamAdmiral-Action": "scan"}
         });
         const result = await response.json();
+        scanModalScanId = result.scan_id || pendingScanId;
         if (!response.ok && result.status !== "queued" && result.status !== "running") {
-          render({status: "error", phase: "error", error: result.message || "Could not start discovery."});
+          render({status: "error", phase: "error", scan_id: scanModalScanId, error: result.message || "Could not start discovery."});
         } else {
           render(result);
         }
       } catch (error) {
-        render({status: "error", phase: "error", error: "Could not start discovery."});
+        render({status: "error", phase: "error", scan_id: pendingScanId, error: "Could not start discovery."});
       }
     });
     scanNetworksSave.addEventListener("click", saveDiscoveryNetworks);
     scanNetworkAdd.addEventListener("submit", event => {
       event.preventDefault();
-      const cidr = scanNetworkInput.value.trim();
-      if (!cidr) {
+      let cidr;
+      try {
+        cidr = privateIpv4Cidr(scanNetworkInput.value);
+      } catch (error) {
         scanNetworkSettingsStatus.className = "scan-network-settings-status error";
-        setText(scanNetworkSettingsStatus, "Enter a private IPv4 subnet in CIDR notation.");
+        setText(scanNetworkSettingsStatus, error.message);
         return;
       }
       if (!discoveryNetworkConfiguration.some(network => String(network.cidr || network.subnet) === cidr)) {
