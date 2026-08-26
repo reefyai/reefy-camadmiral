@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import tempfile
 import unittest
 from pathlib import Path
@@ -299,6 +300,47 @@ class InventoryTests(unittest.TestCase):
 
         by_id = {device["candidate_uuid"]: device for device in stored["devices"]}
         self.assertEqual(by_id["two"]["status"], "online")
+
+    def test_scan_progress_tracks_each_subnet_independently(self) -> None:
+        first = scanner_worker.LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+        second = scanner_worker.LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("10.0.202.0/24"),
+            directly_connected=False,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path = root / "state.json"
+            heartbeat_path = root / "heartbeat.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "networks": [
+                            {"subnet": "192.168.40.0/24", "status": "queued"},
+                            {"subnet": "10.0.202.0/24", "status": "queued"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(scanner_worker, "STATE", state_path),
+                patch.object(scanner_worker, "HEARTBEAT", heartbeat_path),
+            ):
+                scanner_worker.scan_progress("onvif", "running", first)
+                scanner_worker.scan_progress("onvif", "running", second)
+                scanner_worker.scan_progress("onvif", "complete", first)
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        networks = {network["subnet"]: network for network in state["networks"]}
+        self.assertEqual(networks["192.168.40.0/24"]["status"], "complete")
+        self.assertEqual(networks["10.0.202.0/24"]["status"], "running")
+        self.assertEqual(state["scanners"]["onvif"], "running")
 
 
 if __name__ == "__main__":

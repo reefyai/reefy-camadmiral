@@ -241,6 +241,41 @@ MIGRATIONS: tuple[str, ...] = (
     ADD COLUMN restart_recommended INTEGER NOT NULL DEFAULT 0
         CHECK(restart_recommended IN (0, 1));
     """,
+    """
+    ALTER TABLE frigate_camera_selections
+    ADD COLUMN address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost'));
+    """,
+    """
+    CREATE TABLE discovery_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        custom_subnets_json TEXT NOT NULL DEFAULT '[]',
+        excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    ALTER TABLE discovery_settings
+    ADD COLUMN excluded_custom_subnets_json TEXT NOT NULL DEFAULT '[]';
+    """,
+    """
+    ALTER TABLE cameras
+    ADD COLUMN stream_address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(stream_address_mode IN ('lan', 'localhost'));
+    UPDATE cameras
+    SET stream_address_mode = (
+        SELECT address_mode
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+        ORDER BY selected_at DESC, target_id
+        LIMIT 1
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+    );
+    """,
 )
 
 
@@ -683,6 +718,62 @@ class CameraRepository:
         )
         return result
 
+    def discovery_network_settings(self) -> dict[str, list[str]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT custom_subnets_json, excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json "
+                "FROM discovery_settings WHERE singleton_id = 1"
+            ).fetchone()
+        if row is None:
+            return {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            }
+
+        def values(column: str) -> list[str]:
+            try:
+                parsed = json.loads(str(row[column]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+            if not isinstance(parsed, list):
+                return []
+            return [str(value) for value in parsed if isinstance(value, str)]
+
+        return {
+            "custom_subnets": values("custom_subnets_json"),
+            "excluded_detected_subnets": values("excluded_detected_subnets_json"),
+            "excluded_custom_subnets": values("excluded_custom_subnets_json"),
+        }
+
+    def save_discovery_network_settings(
+        self,
+        *,
+        custom_subnets: list[str],
+        excluded_detected_subnets: list[str],
+        excluded_custom_subnets: list[str],
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_settings(singleton_id, custom_subnets_json, "
+                "excluded_detected_subnets_json, excluded_custom_subnets_json, "
+                "updated_at) VALUES (1, ?, ?, ?, ?) "
+                "ON CONFLICT(singleton_id) DO UPDATE SET "
+                "custom_subnets_json=excluded.custom_subnets_json, "
+                "excluded_detected_subnets_json=excluded.excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json=excluded.excluded_custom_subnets_json, "
+                "updated_at=excluded.updated_at",
+                (
+                    json.dumps(custom_subnets, separators=(",", ":")),
+                    json.dumps(excluded_detected_subnets, separators=(",", ":")),
+                    json.dumps(excluded_custom_subnets, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+            connection.commit()
+
     def notification_settings(self) -> dict[str, Any]:
         credentials = self.notification_credentials()
         with self.connect() as connection:
@@ -873,7 +964,8 @@ class CameraRepository:
     def adoption_for_candidate(self, candidate_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             camera = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled "
+                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled, "
+                "stream_address_mode "
                 "FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
             ).fetchone()
@@ -913,6 +1005,7 @@ class CameraRepository:
                 "candidate_uuid": camera["candidate_uuid"],
                 "display_name": camera["display_name"],
                 "enabled": bool(camera["enabled"]),
+                "stream_address_mode": str(camera["stream_address_mode"]),
                 "adopted_at": camera["adopted_at"],
                 "roles": roles,
                 "role_tokens": role_tokens,
@@ -1013,6 +1106,17 @@ class CameraRepository:
             )
             if cursor.rowcount == 1:
                 self._record_camera_health_transition(connection, camera_uuid, timestamp)
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def set_camera_stream_address_mode(self, camera_uuid: str, address_mode: str) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Camera stream address mode is invalid")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE cameras SET stream_address_mode = ?, updated_at = ? WHERE camera_uuid = ?",
+                (address_mode, _now(), camera_uuid),
+            )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -1151,15 +1255,29 @@ class CameraRepository:
         target["restart_recommended"] = bool(target["restart_recommended"])
         return target
 
-    def select_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
+    def select_frigate_camera(
+        self,
+        target_id: str,
+        camera_uuid: str,
+        address_mode: str = "lan",
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
         with self.connect() as connection:
-            cursor = connection.execute(
-                "INSERT OR IGNORE INTO frigate_camera_selections"
-                "(target_id, camera_uuid, selected_at) VALUES (?, ?, ?)",
-                (target_id, camera_uuid, _now()),
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO frigate_camera_selections"
+                "(target_id, camera_uuid, selected_at, address_mode) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(target_id, camera_uuid) DO UPDATE SET "
+                "address_mode=excluded.address_mode",
+                (target_id, camera_uuid, _now(), address_mode),
             )
             connection.commit()
-        return cursor.rowcount == 1
+        return current is None or str(current["address_mode"]) != address_mode
 
     def deselect_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
         with self.connect() as connection:
@@ -1178,6 +1296,34 @@ class CameraRepository:
                 (target_id,),
             ).fetchall()
         return [str(row["camera_uuid"]) for row in rows]
+
+    def frigate_camera_selections(self, target_id: str) -> list[dict[str, str]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT camera_uuid, address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
+                (target_id,),
+            ).fetchall()
+        return [
+            {
+                "camera_uuid": str(row["camera_uuid"]),
+                "address_mode": str(row["address_mode"]),
+            }
+            for row in rows
+        ]
+
+    def frigate_camera_address_mode(
+        self,
+        target_id: str,
+        camera_uuid: str,
+    ) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+        return str(row["address_mode"]) if row is not None else None
 
     def remove_frigate_target(self, target_id: str) -> bool:
         with self.connect() as connection:
@@ -1288,6 +1434,16 @@ class CameraRepository:
                     target_id,
                     camera_uuid,
                 ),
+            )
+            connection.commit()
+
+    def mark_frigate_binding_pending(self, target_id: str, camera_uuid: str) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_bindings SET status='pending', last_error_code=NULL, "
+                "last_attempt_at=?, updated_at=? WHERE target_id=? AND camera_uuid=?",
+                (timestamp, timestamp, target_id, camera_uuid),
             )
             connection.commit()
 

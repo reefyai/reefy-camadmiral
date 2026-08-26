@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from camadmiral.storage import CameraRepository
+from camadmiral.storage import MIGRATIONS, CameraRepository
 from camadmiral.media import ProbeResult
 
 
@@ -29,6 +29,16 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(first["camera_uuid"], second["camera_uuid"])
         self.assertEqual(first["roles"], second["roles"])
         self.assertEqual(second["role_tokens"], {"record": "main", "detect": "sub"})
+        self.assertEqual(second["stream_address_mode"], "lan")
+        self.assertTrue(
+            self.repository.set_camera_stream_address_mode(
+                second["camera_uuid"], "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-1")["stream_address_mode"],
+            "localhost",
+        )
         self.assertEqual(self.repository.credentials_for_candidate("candidate-1"), ("operator", "replacement-secret"))
         self.assertEqual(self.database.stat().st_mode & 0o777, 0o600)
         with self.repository.connect() as connection:
@@ -56,6 +66,60 @@ class CameraRepositoryTests(unittest.TestCase):
                 "SELECT secret_ciphertext FROM service_secrets WHERE name = 'rtsp-access'"
             ).fetchone()[0]
         self.assertNotIn(first.encode(), ciphertext)
+
+    def test_discovery_network_settings_persist_custom_and_excluded_subnets(self) -> None:
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            },
+        )
+
+        self.repository.save_discovery_network_settings(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=["192.168.40.0/24"],
+            excluded_custom_subnets=["10.0.202.0/24"],
+        )
+
+        self.assertEqual(
+            CameraRepository(self.database, b"k" * 32).discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": ["192.168.40.0/24"],
+                "excluded_custom_subnets": ["10.0.202.0/24"],
+            },
+        )
+
+    def test_discovery_checkbox_migration_preserves_existing_custom_subnets(self) -> None:
+        with self.repository.connect() as connection:
+            connection.execute("DROP TABLE discovery_settings")
+            connection.execute(
+                "CREATE TABLE discovery_settings ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+                "custom_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO discovery_settings VALUES (1, '[\"10.0.202.0/24\"]', '[]', 'now')"
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS) - 1,)
+            )
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            },
+        )
 
     def test_frigate_targets_are_managed_in_sqlite(self) -> None:
         self.repository.save_frigate_target(
@@ -99,6 +163,24 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertTrue(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertEqual(
+            self.repository.frigate_camera_selections("frigate-synthetic"),
+            [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
+        )
+        self.assertTrue(
+            self.repository.select_frigate_camera(
+                "frigate-synthetic", camera_uuid, "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-synthetic", camera_uuid),
+            "localhost",
+        )
+        self.assertFalse(
+            self.repository.select_frigate_camera(
+                "frigate-synthetic", camera_uuid, "localhost"
+            )
+        )
+        self.assertEqual(
             self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
             [camera_uuid],
         )
@@ -125,6 +207,86 @@ class CameraRepositoryTests(unittest.TestCase):
         self.repository.migrate()
 
         self.assertEqual(self.repository.selected_frigate_camera_uuids("frigate-existing"), [])
+
+    def test_frigate_address_mode_migration_defaults_existing_selections_to_lan(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.select_frigate_camera("frigate-existing", camera_uuid)
+        with self.repository.connect() as connection:
+            connection.execute("DELETE FROM schema_migrations WHERE version = 16")
+            connection.execute(
+                "CREATE TABLE old_selections AS "
+                "SELECT target_id, camera_uuid, selected_at FROM frigate_camera_selections"
+            )
+            connection.execute("DROP TABLE frigate_camera_selections")
+            connection.execute(
+                "CREATE TABLE frigate_camera_selections ("
+                "target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE, "
+                "camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE, "
+                "selected_at TEXT NOT NULL, PRIMARY KEY(target_id, camera_uuid))"
+            )
+            connection.execute(
+                "INSERT INTO frigate_camera_selections SELECT * FROM old_selections"
+            )
+            connection.execute("DROP TABLE old_selections")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-existing", camera_uuid),
+            "lan",
+        )
+
+    def test_stream_address_mode_migration_preserves_latest_frigate_choice(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.select_frigate_camera(
+            "frigate-existing", camera_uuid, "localhost"
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (len(MIGRATIONS),)
+            )
+            connection.execute("ALTER TABLE cameras DROP COLUMN stream_address_mode")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-existing")["stream_address_mode"],
+            "localhost",
+        )
 
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
         adoption = self.repository.adopt(
@@ -273,6 +435,13 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(binding["status"], "error")
         self.assertEqual(binding["last_error_code"], "target_unavailable")
         self.assertEqual(binding["applied_hash"], "desired-hash")
+
+        self.repository.mark_frigate_binding_pending(
+            "frigate-primary", adoption["camera_uuid"]
+        )
+        binding = self.repository.frigate_binding("frigate-primary", adoption["camera_uuid"])
+        self.assertEqual(binding["status"], "pending")
+        self.assertIsNone(binding["last_error_code"])
 
     def test_preview_prefers_healthy_detection_stream(self) -> None:
         candidate = {"candidate_uuid": "candidate-preview", "display_name": "Camera"}

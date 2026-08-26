@@ -27,18 +27,16 @@ def assert_mobile_camera_actions(page: Page) -> None:
         state="attached", timeout=30_000
     )
 
-    action_layout = page.locator(".dashboard-controls").evaluate(
+    action_layout = page.locator(".dashboard-actions").evaluate(
         """
         controls => {
           const scan = controls.querySelector("#scan").getBoundingClientRect();
           const add = controls.querySelector("#show-add-address").getBoundingClientRect();
-          const status = controls.querySelector(".scan-status").getBoundingClientRect();
           return {
             sameRow: Math.abs(scan.top - add.top) < 1,
             primaryLast: add.left < scan.left,
             touchTargets: scan.height >= 44 && add.height >= 44,
             equalSize: Math.abs(scan.width - add.width) < 1 && Math.abs(scan.height - add.height) < 1,
-            statusAbove: status.bottom <= Math.min(scan.top, add.top) + 0.5,
             insideViewport: scan.left >= 0 && add.right <= window.innerWidth + 0.5,
           };
         }
@@ -51,7 +49,104 @@ def assert_mobile_camera_actions(page: Page) -> None:
         )
     if page.get_by_role("heading", name="Cameras").count():
         raise UiScenarioFailure("Dashboard repeats the Cameras heading")
-    expect(page.locator(".scan-details-link")).to_have_text("View details")
+    page.get_by_role("button", name="Scan network").click()
+    expect(page.get_by_role("heading", name="Scan network")).to_be_visible()
+    expect(page.locator("#scan-card")).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
+    expect(page.locator("#scan-start")).to_be_visible()
+    expect(page.locator("#scan-run-status")).to_be_hidden()
+    expect(page.locator("#scan-results")).to_be_hidden()
+    if page.get_by_text("Excluded", exact=True).count():
+        raise UiScenarioFailure("Removed subnet is shown as Excluded")
+    network_count = page.locator("#scan-network-list .scan-network-row").count()
+    expect(page.locator("#scan-network-add")).to_be_hidden()
+    detected_cidr = page.evaluate(
+        """async () => {
+            const response = await fetch('/internal/discovery/networks', {cache: 'no-store'});
+            const payload = await response.json();
+            return payload.networks?.find(network => network.source === 'detected' && network.selected)?.cidr || null;
+        }"""
+    )
+    if detected_cidr:
+        detected_network = page.locator("#scan-network-list .scan-network-row").filter(
+            has_text=detected_cidr
+        ).first
+        expect(detected_network.locator(".scan-network-description")).to_contain_text(
+            "Auto-discovered on"
+        )
+        if detected_network.get_by_role("button", name="Remove").count():
+            raise UiScenarioFailure("Detected subnet has a delete action")
+        detected_checkbox = detected_network.get_by_role(
+            "checkbox", name=f"Include {detected_cidr} in scans"
+        )
+        detected_checkbox.uncheck()
+        expect(page.locator("#scan-network-list .scan-network-row")).to_have_count(
+            network_count
+        )
+        detected_network = page.locator("#scan-network-list .scan-network-row").filter(
+            has_text=detected_cidr
+        ).first
+        detected_checkbox = detected_network.get_by_role(
+            "checkbox", name=f"Include {detected_cidr} in scans"
+        )
+        expect(detected_checkbox).not_to_be_checked()
+        expect(detected_checkbox).to_be_enabled()
+        page.get_by_role("button", name="Collapse scan network").click()
+        page.get_by_role("button", name="Scan network").click()
+        detected_network = page.locator("#scan-network-list .scan-network-row").filter(
+            has_text=detected_cidr
+        ).first
+        detected_checkbox = detected_network.get_by_role(
+            "checkbox", name=f"Include {detected_cidr} in scans"
+        )
+        expect(detected_checkbox).not_to_be_checked()
+        detected_checkbox.check()
+        detected_network = page.locator("#scan-network-list .scan-network-row").filter(
+            has_text=detected_cidr
+        ).first
+        expect(
+            detected_network.get_by_role(
+                "checkbox", name=f"Include {detected_cidr} in scans"
+            )
+        ).to_be_checked()
+        expect(page.locator("#scan-network-list .scan-network-row")).to_have_count(
+            network_count
+        )
+        expect(page.locator("#scan-network-input")).to_be_enabled()
+    custom_networks = page.locator("#scan-network-list .scan-network-row").filter(
+        has_text="Custom added"
+    )
+    if custom_networks.count():
+        expect(custom_networks.first.locator(".scan-network-description")).to_have_text(
+            "Custom added"
+        )
+    page.locator("#scan-network-add-toggle").click()
+    expect(page.locator("#scan-network-add")).to_be_visible()
+    add_button_below_last_subnet = page.locator("#scan-network-add-toggle").evaluate(
+        "button => button.getBoundingClientRect().top >= "
+        "document.querySelector('#scan-network-list').getBoundingClientRect().bottom"
+    )
+    if not add_button_below_last_subnet:
+        raise UiScenarioFailure("Add subnet action is not below the subnet list")
+    page.locator("#scan-network-input").fill("10.0.0.0/8")
+    page.locator("#scan-network-add button[type=submit]").click()
+    expect(page.locator("#scan-network-settings-status")).to_contain_text(
+        "limited to 1,024"
+    )
+    expect(page.locator("#scan-network-list .scan-network-row")).to_have_count(
+        network_count
+    )
+    expect(page.locator("#scan-log-details")).not_to_have_attribute("open", "")
+    expect(page.locator("#scan-log")).to_be_hidden()
+    page.locator("#scan-log-details summary").click()
+    expect(page.locator("#scan-log")).to_be_visible()
+    page.get_by_role("button", name="Collapse scan network").click()
+
+    page.get_by_role("button", name="Add camera").click()
+    expect(page.get_by_role("heading", name="Add camera manually")).to_be_visible()
+    expect(page.locator("#manual-card")).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
+    page.get_by_role("button", name="Collapse manual camera form").click()
 
     list_surface = page.locator(".camera-list-surface")
     attached_controls = list_surface.evaluate(
@@ -114,10 +209,11 @@ def assert_mobile_camera_actions(page: Page) -> None:
     if failures:
         raise UiScenarioFailure("; ".join(failures))
 
-    sync = page.get_by_role("button", name="Sync").first
-    expect(sync).to_be_visible()
-    sync.click()
-    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    streams = page.get_by_role("button", name="Streams").first
+    expect(streams).to_be_visible()
+    streams.click()
+    expect(page.locator("#app-modal-title")).to_contain_text("streams")
+    expect(page.get_by_text("Frigate destinations")).to_be_visible()
     expect(page.get_by_text("No Frigate integrations configured.")).to_be_visible()
     expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
         "href", "/settings/integrations"
@@ -127,9 +223,9 @@ def assert_mobile_camera_actions(page: Page) -> None:
     page.route(
         "**/internal/frigate-targets/synthetic-target/cameras/**",
         lambda route: route.fulfill(
-            status=200,
+            status=202,
             content_type="application/json",
-            body='{"selected": true}',
+            body='{"status": "syncing", "selected": true, "queued": true}',
         ),
     )
     page.evaluate(
@@ -143,15 +239,55 @@ def assert_mobile_camera_actions(page: Page) -> None:
             status: null,
             error_code: null,
           }];
-          openCameraSync(device);
+          refresh = async () => {
+            await new Promise(resolve => setTimeout(resolve, 400));
+            const current = devices.find(candidate => candidate.adoption?.camera_uuid);
+            const target = current.adoption.frigate.find(
+              candidate => candidate.target_id === "synthetic-target"
+            );
+            target.selected = true;
+            target.status = "error";
+            target.error_code = "camera_start_pending";
+            renderRows();
+          };
+          openCameraStreams(device);
         }
         """
     )
     modal = page.locator("#app-modal")
     expect(modal).to_be_visible()
     modal.get_by_role("button", name="Sync", exact=True).click()
+    syncing = modal.get_by_role("button", name="Syncing...")
+    expect(syncing).to_be_visible()
+    spinner_metrics = syncing.locator(".inline-spinner").evaluate(
+        """
+        spinner => {
+          const bounds = spinner.getBoundingClientRect();
+          const style = getComputedStyle(spinner);
+          return {
+            width: bounds.width,
+            height: bounds.height,
+            flex: style.flex,
+            display: style.display,
+          };
+        }
+        """
+    )
+    if (
+        abs(float(spinner_metrics["width"]) - 14) > 0.5
+        or abs(float(spinner_metrics["height"]) - 14) > 0.5
+        or spinner_metrics["display"] not in {"block", "inline-block"}
+        or not str(spinner_metrics["flex"]).startswith("0 0")
+    ):
+        raise UiScenarioFailure(f"Sync spinner geometry is distorted: {spinner_metrics}")
+    expect(modal.get_by_text("Waiting for camera process")).to_be_visible(timeout=5_000)
+    expect(
+        modal.get_by_text(
+            "Frigate accepted the camera. CamAdmiral will retry until its process appears."
+        )
+    ).to_be_visible()
     expect(modal).to_be_visible()
-    expect(page.locator("#app-modal-title")).to_contain_text("Sync")
+    expect(page.locator("#app-modal-title")).to_contain_text("streams")
     expect(modal.get_by_text("Synthetic Frigate")).to_be_visible()
     page.locator("#app-modal-close").click()
 
@@ -199,6 +335,39 @@ def assert_downstream_password_masking(page: Page) -> None:
     if any(access["password"] in str(value or "") for value in attributes):
         raise UiScenarioFailure("Downstream password is exposed in a URL attribute")
 
+    localhost = page.get_by_role("radio", name="Localhost")
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/stream-address" in response.url
+    ) as localhost_save:
+        localhost.check()
+    if not localhost_save.value.ok:
+        raise UiScenarioFailure("Localhost stream address choice was not saved")
+    expect(localhost).to_be_checked()
+    expect(displayed_urls.first).to_contain_text("@localhost:")
+
+    page.locator("#app-modal-close").click()
+    page.reload(wait_until="domcontentloaded")
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
+    )
+    page.get_by_role("button", name="Streams").first.click()
+    localhost = page.get_by_role("radio", name="Localhost")
+    expect(localhost).to_be_checked()
+    displayed_urls = page.locator("#app-modal-body .downstream-url")
+    expect(displayed_urls.first).to_contain_text("@localhost:")
+
+    lan = page.get_by_role("radio", name="LAN", exact=True)
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/stream-address" in response.url
+    ) as lan_save:
+        lan.check()
+    if not lan_save.value.ok:
+        raise UiScenarioFailure("LAN stream address choice was not saved")
+    expect(lan).to_be_checked()
+    expect(displayed_urls.first).not_to_contain_text("@localhost:")
+
     copy_button = page.locator("#app-modal-body .copy-button").first
     copy_button.click()
     expect(copy_button).to_have_text("✓", timeout=5_000)
@@ -208,6 +377,30 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL does not contain its real password")
     if "********" in copied:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
+
+
+def assert_desktop_stream_layout(page: Page) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
+        state="attached", timeout=30_000
+    )
+    page.get_by_role("button", name="Streams").first.click()
+    expect(page.get_by_text("Frigate destinations")).to_be_visible()
+    page.locator("#app-modal-body .profile-name").first.evaluate(
+        "node => { node.textContent = 'MediaProfile_Channel1_MainStream_With_A_Long_Technical_Name'; }"
+    )
+    collisions = page.locator("#app-modal-body .profile").evaluate_all(
+        """
+        profiles => profiles.filter(profile => {
+          const identity = profile.querySelector('.stream-identity').getBoundingClientRect();
+          const metadata = profile.querySelector('.profile-metadata').getBoundingClientRect();
+          const access = profile.querySelector('.stream-access').getBoundingClientRect();
+          return identity.right > access.left + 0.5 || metadata.right > access.left + 0.5;
+        }).length
+        """
+    )
+    if collisions:
+        raise UiScenarioFailure("Stream profile details overlap the downstream URL column")
 
 
 def assert_mobile_settings(page: Page) -> None:
@@ -269,7 +462,24 @@ def main() -> int:
         finally:
             context.close()
             browser.close()
-    print("CamAdmiral mobile browser E2E passed")
+        desktop_browser = playwright.webkit.launch(headless=True)
+        desktop_context = desktop_browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            http_credentials={"username": "admin", "password": ADMIN_PASSWORD},
+        )
+        desktop_page = desktop_context.new_page()
+        try:
+            assert_desktop_stream_layout(desktop_page)
+        except Exception:
+            desktop_page.screenshot(
+                path=str(ARTIFACT_DIR / "desktop-stream-layout.png"),
+                full_page=True,
+            )
+            raise
+        finally:
+            desktop_context.close()
+            desktop_browser.close()
+    print("CamAdmiral browser E2E passed")
     return 0
 
 

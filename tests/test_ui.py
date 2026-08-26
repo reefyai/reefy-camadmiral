@@ -24,21 +24,71 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('class="app-brand" href="/" aria-label="CamAdmiral dashboard"', self.html)
         self.assertIn('<img src="/app-icon.png" alt=""', self.html)
 
-    def test_dashboard_uses_one_primary_action_and_quiet_scan_status(self) -> None:
+    def test_dashboard_scan_action_expands_inline_status_and_diagnostics(self) -> None:
         self.assertIn('class="primary-nav"', self.html)
-        self.assertIn('class="dashboard-controls"', self.html)
         self.assertIn('class="dashboard-actions"', self.html)
-        self.assertIn('class="scan-status"', self.html)
+        self.assertNotIn('class="dashboard-controls"', self.html)
+        self.assertNotIn('class="scan-status"', self.html)
         self.assertNotIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
-        self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
-        self.assertIn('<button id="scan" type="button">Scan network</button>', self.html)
-        self.assertIn('class="scan-details-link">View details</span>', self.html)
-        self.assertIn('function scanStatusLabel(data, active)', self.html)
-        self.assertIn('`Last scan: ${relativeScanTime(data.completed_at) || "complete"}`', self.html)
+        self.assertIn('id="show-add-address" type="button" aria-controls="manual-card" aria-expanded="false">Add camera</button>', self.html)
+        self.assertIn('<button id="scan" type="button" aria-controls="scan-card" aria-expanded="false">Scan network</button>', self.html)
+        self.assertIn('<button id="scan-start" type="button">Scan network</button>', self.html)
+        self.assertEqual(self.html.count('id="error"'), 1)
+        self.assertIn('id="scan-card" aria-labelledby="scan-card-title" hidden', self.html)
+        self.assertIn('id="manual-card" aria-labelledby="manual-card-title" hidden', self.html)
+        self.assertNotIn('openAppModal("scan"', self.html)
+        self.assertNotIn('openAppModal("manual"', self.html)
+        self.assertIn('scanStartButton.addEventListener("click", async () =>', self.html)
+        self.assertIn('function scanStatusLabel(data)', self.html)
+        self.assertNotIn('Last scan:', self.html)
         self.assertNotIn('complete: "Scan complete"', self.html)
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
-        self.assertIn("display: grid; grid-template-columns: minmax(0, 1fr) auto", self.html)
+        self.assertIn("justify-content: flex-end; gap: 8px; margin-bottom: 16px", self.html)
         self.assertIn("width: 120px; min-height: 38px", self.html)
+        self.assertIn('id="scan-network-list"', self.html)
+        self.assertIn('id="scan-network-input"', self.html)
+        self.assertIn('id="scan-network-add-toggle"', self.html)
+        self.assertIn('aria-label="Add subnet"', self.html)
+        self.assertIn('id="scan-network-add" hidden', self.html)
+        self.assertNotIn('id="scan-networks-save"', self.html)
+        self.assertNotIn('id="scan-networks-title"', self.html)
+        self.assertNotIn('Custom private subnets can include', self.html)
+        self.assertIn('id="scan-results" aria-labelledby="scan-results-title" hidden', self.html)
+        self.assertIn('id="scan-run-status" hidden', self.html)
+        self.assertIn('resetScanPresentation()', self.html)
+        self.assertIn('scanPanelScanId = activeState?.scan_id || null', self.html)
+        self.assertIn('fetch("/internal/discovery/networks"', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "save-discovery-networks"', self.html)
+        self.assertIn('<details class="scan-log-details" id="scan-log-details">', self.html)
+        self.assertIn('<summary>Logs <span id="scan-log-count"></span></summary>', self.html)
+        self.assertNotIn('<details class="scan-log-details" id="scan-log-details" open>', self.html)
+        self.assertNotIn('excluded', self.html.lower())
+        self.assertNotIn('Custom · routed unicast', self.html)
+        self.assertNotIn('"Scan again"', self.html)
+        self.assertNotIn('Restore detected subnet', self.html)
+        self.assertIn('checkbox.type = "checkbox"', self.html)
+        self.assertIn('checkbox.checked = selectedDiscoverySubnets.has(cidr)', self.html)
+        self.assertIn('Auto-discovered on ${network.interface || "network interface"}', self.html)
+        self.assertIn('"Custom added"', self.html)
+        self.assertIn('if (network.source === "custom")', self.html)
+        self.assertIn('scanNetworkAddToggle.addEventListener("click", () =>', self.html)
+        self.assertLess(self.html.index('id="scan-network-list"'), self.html.index('id="scan-network-add-toggle"'))
+        self.assertIn('await saveDiscoveryNetworks(previousConfiguration, previousSubnets)', self.html)
+        self.assertIn('custom_subnets: discoveryNetworkConfiguration', self.html)
+        self.assertIn('.scan-action #scan-start { min-height: 40px; }', self.html)
+        self.assertIn('id="scan-network-progress"', self.html)
+        self.assertIn('function renderScanNetworkProgress(networks = [])', self.html)
+        self.assertIn('scanResults.hidden = false', self.html)
+        self.assertIn('setText(stateLabel, "Scan complete")', self.html)
+        self.assertIn('const busyChanged = busy !== active', self.html)
+        self.assertIn('if (busyChanged && discoveryNetworkConfiguration.length) renderDiscoveryNetworks()', self.html)
+        self.assertNotIn('id="scanner-progress"', self.html)
+
+    def test_custom_subnet_is_validated_before_it_enters_the_list(self) -> None:
+        self.assertIn('function privateIpv4Cidr(value)', self.html)
+        self.assertIn('usableHosts > maxCustomScanHosts', self.html)
+        self.assertIn('Custom subnets are limited to ${maxCustomScanHosts.toLocaleString()}.', self.html)
+        self.assertIn('cidr = privateIpv4Cidr(scanNetworkInput.value)', self.html)
 
     def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
         self.assertIn("function frigateFailureDetail(result, fallback)", self.html)
@@ -156,10 +206,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('result = savedAdoptionInspection(adoption)', self.html)
         self.assertIn("device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device)", self.html)
 
-    def test_popups_share_modal_shell_and_disable_uses_custom_confirmation(self) -> None:
+    def test_detail_popups_share_modal_shell_and_disable_uses_custom_confirmation(self) -> None:
         self.assertGreaterEqual(self.html.count('class="modal-backdrop'), 3)
-        self.assertIn('openAppModal("manual"', self.html)
-        self.assertIn('openAppModal("scan"', self.html)
+        self.assertIn('openAppModal("camera"', self.html)
+        self.assertIn('openAppModal("streams"', self.html)
+        self.assertNotIn('openAppModal("manual"', self.html)
+        self.assertNotIn('openAppModal("scan"', self.html)
         self.assertIn('id="confirm-modal" role="alertdialog"', self.html)
         self.assertNotIn("window.confirm", self.html)
 
@@ -192,8 +244,9 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_downstream_urls_are_selectable_single_line_scrollers(self) -> None:
         self.assertIn('const downstreamPasswordMask = "********"', self.html)
-        self.assertIn("function downstreamUrl(streamKey, maskPassword = false)", self.html)
-        self.assertIn("const displayUrl = managed && enabled ? downstreamUrl(managed.stream_key, true) : null", self.html)
+        self.assertIn('function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan")', self.html)
+        self.assertIn('addressMode === "localhost" ? "localhost" : mediaHost', self.html)
+        self.assertIn("downstreamUrl(managed.stream_key, true, addressMode)", self.html)
         self.assertIn(': displayUrl || (managed ?', self.html)
         self.assertIn('const urlText = addText(row, "div", "downstream-url", value)', self.html)
         self.assertIn("urlText.title = displayUrl", self.html)
@@ -201,7 +254,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("urlText.title = url", self.html)
         self.assertNotIn('`Downstream URL: ${url}`', self.html)
         self.assertIn("urlText.tabIndex = 0", self.html)
-        self.assertIn(".stream-access { min-width: 0; }", self.html)
+        self.assertIn(".stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0;", self.html)
         self.assertIn("overflow-x: auto; overflow-y: hidden", self.html)
         self.assertIn("user-select: text; white-space: nowrap", self.html)
 
@@ -212,9 +265,22 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('addText(metadata, "div", `media-state', self.html)
         self.assertNotIn('addText(endpoint, "div", `media-state', self.html)
 
+    def test_stream_rows_keep_metadata_clear_of_long_profile_names(self) -> None:
+        self.assertIn("grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.6fr)", self.html)
+        self.assertIn(".profile-name { color: #e0eaf0; font-weight: 700; overflow-wrap: anywhere; }", self.html)
+        self.assertIn(".stream-access { grid-column: 2; grid-row: 1 / span 2;", self.html)
+        self.assertIn(".stream-identity, .profile-metadata, .stream-access { grid-column: 1; grid-row: auto; }", self.html)
+
     def test_frigate_status_explains_automatic_retry(self) -> None:
+        self.assertIn("function frigateSyncError(errorCode)", self.html)
         self.assertIn("Waiting for camera process", self.html)
         self.assertIn("CamAdmiral will retry until its process appears.", self.html)
+        self.assertIn("Camera configuration missing", self.html)
+        self.assertIn("Detection settings differ", self.html)
+        self.assertIn("Runtime stream missing", self.html)
+        self.assertIn("[stateLabel, statusHelp] = frigateSyncError(target.error_code)", self.html)
+        self.assertIn('"integration-help frigate-camera-help", statusHelp', self.html)
+        self.assertIn("Error code: ${errorCode}.", self.html)
         self.assertNotIn("Retry pending", self.html)
 
     def test_camera_details_show_bounded_availability_views(self) -> None:
@@ -275,6 +341,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('id="frigate-targets"', self.html)
         self.assertIn('openAppModal("frigate"', self.html)
         self.assertIn('"http://127.0.0.1:5000"', self.html)
+        self.assertIn('"http://frigate.local:5000"', self.html)
+        self.assertIn("CamAdmiral will make privileged Frigate API requests to this URL.", self.html)
         self.assertNotIn("Sync adopted cameras", self.html)
         self.assertNotIn("sync_cameras", self.html)
         self.assertNotIn('id="show-notifications"', self.html)
@@ -292,7 +360,9 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
 
     def test_camera_actions_offer_per_target_sync_and_masked_config_preview(self) -> None:
-        self.assertIn('"row-action", "Sync"', self.html)
+        self.assertIn('"Frigate destinations"', self.html)
+        self.assertIn("frigate.append(frigateSyncDetails(device, addressMode))", self.html)
+        self.assertNotIn("function openCameraSync", self.html)
         self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
         self.assertIn("CamAdmiral will not restart Frigate", self.html)
@@ -302,14 +372,31 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Copy configuration", self.html)
         self.assertIn("Copy includes the working plaintext credential.", self.html)
         self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
+        self.assertIn('[["lan", "LAN"], ["localhost", "Localhost"]]', self.html)
+        self.assertIn('radio.type = "radio"', self.html)
+        self.assertIn("streamAddressModes.set(cameraUuid, value)", self.html)
+        self.assertIn('"X-CamAdmiral-Action": "set-camera-stream-address"', self.html)
+        self.assertIn("adoption.stream_address_mode || \"lan\"", self.html)
+        self.assertNotIn("Localhost works only when Frigate shares the host network.", self.html)
+        self.assertIn("JSON.stringify({address_mode: addressMode})", self.html)
+        self.assertNotIn("addressSelect", self.html)
 
-    def test_successful_camera_sync_refreshes_the_open_dialog(self) -> None:
-        sync_handler = self.html.split('headers: {"X-CamAdmiral-Action": "sync-frigate-camera"}', 1)[1]
-        sync_handler = sync_handler.split("} catch (error) {", 1)[0]
-        self.assertIn("await refresh();", sync_handler)
+    def test_camera_sync_polls_with_a_spinner_until_final_status(self) -> None:
+        sync_handler = self.html.split('"X-CamAdmiral-Action": "sync-frigate-camera"', 1)[1]
+        sync_handler = sync_handler.split('const showConfig =', 1)[0]
+        self.assertIn("await waitForFrigateCameraSync", sync_handler)
+        self.assertIn("frigateSyncProgress.set(syncKey, true)", self.html)
+        self.assertIn("frigateSyncProgress.delete(syncKey)", sync_handler)
         self.assertIn("renderActiveCameraModal();", sync_handler)
+        self.assertIn('addText(sync, "span", "inline-spinner", "")', self.html)
+        self.assertIn('sync.classList.add("syncing-action")', self.html)
+        self.assertIn(".syncing-action { display: inline-flex; align-items: center; gap: 6px; }", self.html)
+        self.assertIn("display: inline-block; box-sizing: border-box; width: 14px; height: 14px", self.html)
+        self.assertIn("async function waitForFrigateCameraSync", self.html)
+        self.assertIn('status?.status === "applied" || status?.status === "error"', self.html)
         self.assertNotIn("closeAppModal", sync_handler)
-        self.assertIn('["camera", "streams", "adopt", "frigate-sync"]', self.html)
+        self.assertIn('["camera", "streams", "adopt"]', self.html)
+        self.assertNotIn('appModalKind === "frigate-sync"', self.html)
 
 
 if __name__ == "__main__":

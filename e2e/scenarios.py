@@ -23,6 +23,7 @@ import yaml
 
 BASE_URL = "http://camadmiral:18080"
 API_TOKEN = "synthetic-e2e-api-token"
+FRIGATE_API_URL = "http://172.30.0.30:5000"
 STATE_PATH = Path("/state/baseline.json")
 OPEN_NAME = "Synthetic open camera"
 AUTH_NAME = "Synthetic authenticated camera"
@@ -912,6 +913,98 @@ def large_subnet_multicast_discovery() -> None:
     )
 
 
+def configured_routed_subnet_discovery() -> None:
+    wait_for_health()
+    configuration = request_json("/internal/discovery/networks")
+    detected = [
+        str(network["cidr"])
+        for network in configuration.get("networks", [])
+        if network.get("source") == "detected"
+    ]
+    large_subnet = "172.29.0.0/16"
+    routed_subnet = "172.29.0.80/28"
+    if large_subnet not in detected:
+        raise ScenarioFailure("Large connected subnet was not listed in discovery settings")
+    selected = [subnet for subnet in detected if subnet != large_subnet]
+    selected.append(routed_subnet)
+    saved = request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={"selected_subnets": selected},
+    )
+    by_cidr = {
+        str(network["cidr"]): network
+        for network in saved.get("networks", [])
+    }
+    if by_cidr.get(large_subnet, {}).get("selected") is not False:
+        raise ScenarioFailure("Removed connected subnet remained selected")
+    custom = by_cidr.get(routed_subnet)
+    if not custom or custom.get("source") != "custom" or custom.get("multicast") is not False:
+        raise ScenarioFailure("Custom routed subnet settings were not persisted")
+
+    full_request = request_json(
+        "/internal/discovery/scan",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan"},
+        expected=202,
+    )
+    scan_id = full_request.get("scan_id")
+
+    def routed_cameras_found() -> dict[str, object] | None:
+        state = discovery()
+        if state.get("scan_id") != scan_id or state.get("status") in {"queued", "running"}:
+            return None
+        onvif_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.87"
+                and device.get("status") == "online"
+                and device.get("onvif")
+            ),
+            None,
+        )
+        rtsp_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.88"
+                and device.get("status") == "online"
+                and device.get("rtsp")
+            ),
+            None,
+        )
+        return state if onvif_camera and rtsp_camera else None
+
+    scanned = wait_for(
+        "unicast ONVIF and RTSP discovery on a configured routed subnet",
+        routed_cameras_found,
+        timeout=90,
+    )
+    custom_progress = next(
+        (
+            network
+            for network in scanned.get("networks", [])
+            if network.get("subnet") == routed_subnet
+        ),
+        None,
+    )
+    if not custom_progress or custom_progress.get("status") != "complete":
+        raise ScenarioFailure("Custom routed subnet did not report completed progress")
+    raw_log = "\n".join(str(line) for line in scanned.get("raw_log", []))
+    if f"multicast skipped for routed subnet {routed_subnet}" not in raw_log:
+        raise ScenarioFailure("Routed subnet unexpectedly used ONVIF multicast")
+
+    request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={"selected_subnets": detected},
+    )
+    print("configured-routed-subnet-discovery: saved selection and unicast scan passed")
+
+
 def load_state() -> dict[str, object]:
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -1175,14 +1268,14 @@ def frigate() -> None:
 
     def integration_connected() -> bool:
         configured = request_json("/internal/frigate-targets").get("targets", [])
-        if any(target.get("api_url") == "http://127.0.0.1:5000" for target in configured):
+        if any(target.get("api_url") == FRIGATE_API_URL for target in configured):
             return True
         status, _body, _headers = request(
             "/internal/frigate-targets",
             method="POST",
             payload={
                 "name": "Synthetic Frigate",
-                "api_url": "http://127.0.0.1:5000",
+                "api_url": FRIGATE_API_URL,
             },
             headers={"X-CamAdmiral-Action": "add-frigate-target"},
             timeout=10,
@@ -1192,12 +1285,27 @@ def frigate() -> None:
     wait_for("Frigate integration setup", integration_connected, timeout=180, interval=2)
     targets = request_json("/internal/frigate-targets").get("targets", [])
     target = next(
-        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        (item for item in targets if item.get("api_url") == FRIGATE_API_URL),
         None,
     )
     if target is None:
         raise ScenarioFailure("Frigate integration disappeared before camera selection")
     target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+
+    for address_mode, expected_host in (
+        ("lan", "172.30.0.20"),
+        ("localhost", "localhost"),
+    ):
+        preview = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(str(state['open_camera_uuid']), safe='')}/config?"
+            + urllib.parse.urlencode({"address_mode": address_mode})
+        )
+        configuration = str(preview.get("configuration") or "")
+        if f"@{expected_host}:18554/" not in configuration:
+            raise ScenarioFailure(
+                f"Frigate {address_mode} preview did not use {expected_host}"
+            )
 
     def frigate_json(path: str) -> dict[str, object]:
         try:
@@ -1220,18 +1328,42 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
 
+    def sync_camera(camera_uuid: object, description: str) -> dict[str, object]:
+        camera_id = str(camera_uuid)
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(camera_id, safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            expected=202,
+            timeout=30,
+        )
+        if selected.get("selected") is not True or selected.get("status") != "syncing":
+            raise ScenarioFailure(f"{description} did not start asynchronously: {selected}")
+
+        def completed() -> dict[str, object] | None:
+            for device in discovery().get("devices", []):
+                adoption = device.get("adoption") or {}
+                if str(adoption.get("camera_uuid")) != camera_id:
+                    continue
+                for status in adoption.get("frigate", []):
+                    if str(status.get("target_id")) != target_id:
+                        continue
+                    if status.get("status") in {"applied", "error"}:
+                        return status
+            return None
+
+        final = wait_for(description, completed, timeout=120, interval=1)
+        if final.get("status") != "applied":
+            raise ScenarioFailure(
+                f"{description} failed with {final.get('error_code') or 'unknown error'}"
+            )
+        return final
+
     # The fixture starts with exactly one operator-owned camera. Frigate
     # 0.17.x requires one restart when the next camera is hot-added.
     first_camera_uuid = state["open_camera_uuid"]
-    selected = request_json(
-        f"/internal/frigate-targets/{target_id}/cameras/"
-        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-        timeout=120,
-    )
-    if selected.get("selected") is not True:
-        raise ScenarioFailure(f"First per-camera Frigate selection failed: {selected}")
+    sync_camera(first_camera_uuid, "first per-camera Frigate synchronization")
 
     def settled_uptime() -> float | bool:
         uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
@@ -1242,16 +1374,7 @@ def frigate() -> None:
     )
 
     second_camera_uuid = state["auth_camera_uuid"]
-    for camera_uuid in (second_camera_uuid,):
-        selected = request_json(
-            f"/internal/frigate-targets/{target_id}/cameras/"
-            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
-            method="POST",
-            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-            timeout=120,
-        )
-        if selected.get("selected") is not True:
-            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
+    sync_camera(second_camera_uuid, "second per-camera Frigate synchronization")
 
     uptime_after_third_camera = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0
@@ -1284,6 +1407,41 @@ def frigate() -> None:
     )
     if not config["cameras"][camera_key].get("live", {}).get("streams", {}):
         raise ScenarioFailure("Frigate camera has no live stream mapping")
+
+    saved_camera = frigate_saved_config().get("cameras", {}).get(camera_key, {})
+    if "fps" in saved_camera.get("detect", {}):
+        raise ScenarioFailure("CamAdmiral injected a camera-level detect FPS")
+    if config["cameras"][camera_key].get("detect", {}).get("fps") != 5:
+        raise ScenarioFailure("Frigate camera did not inherit the global detect FPS")
+    saved_streams = frigate_saved_config().get("go2rtc", {}).get("streams", {})
+    managed_sources = [
+        str(source)
+        for alias, sources in saved_streams.items()
+        if str(alias).startswith(camera_key)
+        for source in (sources if isinstance(sources, list) else [sources])
+    ]
+    if not managed_sources or not all(
+        "@172.30.0.20:18554/" in source for source in managed_sources
+    ):
+        raise ScenarioFailure("Frigate LAN synchronization used the wrong CamAdmiral host")
+
+    updated = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {"cameras": {camera_key: {"detect": {"fps": 12}}}},
+        },
+    )
+    if updated.get("success") is not True:
+        raise ScenarioFailure("Could not seed a legacy camera-level detect FPS")
+    sync_camera(first_camera_uuid, "Frigate FPS inheritance synchronization")
+
+    saved_camera = frigate_saved_config().get("cameras", {}).get(camera_key, {})
+    if "fps" in saved_camera.get("detect", {}):
+        raise ScenarioFailure("Camera-level detect FPS remained after synchronization")
+    config = frigate_json("/api/config")
+    if config["cameras"][camera_key].get("detect", {}).get("fps") != 5:
+        raise ScenarioFailure("Global detect FPS was not restored after synchronization")
 
     last_stats: dict[str, object] = {}
     def frigate_processing() -> bool:
@@ -1566,7 +1724,7 @@ def frigate_restart_verify() -> None:
     wait_for("Frigate after operator restart", frigate_ready, timeout=120, interval=1)
     targets = request_json("/internal/frigate-targets").get("targets", [])
     target = next(
-        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        (item for item in targets if item.get("api_url") == FRIGATE_API_URL),
         None,
     )
     if target is None:
@@ -1630,7 +1788,7 @@ def frigate_ambiguous_delete_setup() -> None:
 def frigate_ambiguous_delete_verify() -> None:
     targets = request_json("/internal/frigate-targets").get("targets", [])
     target = next(
-        (item for item in targets if item.get("api_url") == "http://127.0.0.1:5000"),
+        (item for item in targets if item.get("api_url") == FRIGATE_API_URL),
         None,
     )
     if target is None:
@@ -1665,6 +1823,7 @@ SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
     "large-subnet-multicast-discovery": large_subnet_multicast_discovery,
+    "configured-routed-subnet-discovery": configured_routed_subnet_discovery,
     "runtime-drift": runtime_drift,
     "runtime-recovery": runtime_recovery,
     "camera-outage": camera_outage,

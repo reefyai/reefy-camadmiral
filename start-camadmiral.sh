@@ -9,6 +9,27 @@ VOLUME="camadmiral-data"
 ADMIN_PASSWORD_FILE="/var/lib/camadmiral/standalone-secrets/admin-password"
 API_TOKEN_FILE="/var/lib/camadmiral/standalone-secrets/api-token"
 CONFIG_FILE="/var/lib/camadmiral/standalone.yaml"
+UPDATE=false
+
+usage() {
+    echo "Usage: ./start-camadmiral.sh [--update]" >&2
+}
+
+case $# in
+    0) ;;
+    1)
+        if [ "$1" = "--update" ]; then
+            UPDATE=true
+        else
+            usage
+            exit 2
+        fi
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "Docker is required." >&2
@@ -25,7 +46,12 @@ show_access() {
     echo "Consumer API token: $api_token"
 }
 
+CONTAINER_EXISTS=false
 if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+    CONTAINER_EXISTS=true
+fi
+
+if [ "$CONTAINER_EXISTS" = true ] && [ "$UPDATE" = false ]; then
     docker start "$CONTAINER" >/dev/null
     show_access
     exit 0
@@ -36,6 +62,14 @@ if [ -z "${CAMADMIRAL_IMAGE:-}" ]; then
 elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "CamAdmiral image not found: $IMAGE" >&2
     exit 1
+fi
+
+if [ "$CONTAINER_EXISTS" = true ]; then
+    running=$(docker container inspect --format '{{.State.Running}}' "$CONTAINER")
+    if [ "$running" = "true" ]; then
+        docker stop "$CONTAINER" >/dev/null
+    fi
+    docker rm "$CONTAINER" >/dev/null
 fi
 
 docker volume create "$VOLUME" >/dev/null
@@ -82,4 +116,7 @@ docker run -d \
     --tmpfs /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001 \
     "$IMAGE" >/dev/null
 
+if [ "$UPDATE" = true ] && [ "$CONTAINER_EXISTS" = true ]; then
+    echo "CamAdmiral was updated. Persistent data and credentials were preserved."
+fi
 show_access
