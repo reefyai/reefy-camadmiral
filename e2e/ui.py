@@ -223,9 +223,9 @@ def assert_mobile_camera_actions(page: Page) -> None:
     page.route(
         "**/internal/frigate-targets/synthetic-target/cameras/**",
         lambda route: route.fulfill(
-            status=200,
+            status=202,
             content_type="application/json",
-            body='{"selected": true}',
+            body='{"status": "syncing", "selected": true, "queued": true}',
         ),
     )
     page.evaluate(

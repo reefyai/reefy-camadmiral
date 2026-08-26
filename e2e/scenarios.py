@@ -1312,18 +1312,42 @@ def frigate() -> None:
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise ScenarioFailure(f"Could not update Frigate fixture: {path}") from exc
 
+    def sync_camera(camera_uuid: object, description: str) -> dict[str, object]:
+        camera_id = str(camera_uuid)
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/"
+            f"{urllib.parse.quote(camera_id, safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            expected=202,
+            timeout=30,
+        )
+        if selected.get("selected") is not True or selected.get("status") != "syncing":
+            raise ScenarioFailure(f"{description} did not start asynchronously: {selected}")
+
+        def completed() -> dict[str, object] | None:
+            for device in discovery().get("devices", []):
+                adoption = device.get("adoption") or {}
+                if str(adoption.get("camera_uuid")) != camera_id:
+                    continue
+                for status in adoption.get("frigate", []):
+                    if str(status.get("target_id")) != target_id:
+                        continue
+                    if status.get("status") in {"applied", "error"}:
+                        return status
+            return None
+
+        final = wait_for(description, completed, timeout=120, interval=1)
+        if final.get("status") != "applied":
+            raise ScenarioFailure(
+                f"{description} failed with {final.get('error_code') or 'unknown error'}"
+            )
+        return final
+
     # The fixture starts with exactly one operator-owned camera. Frigate
     # 0.17.x requires one restart when the next camera is hot-added.
     first_camera_uuid = state["open_camera_uuid"]
-    selected = request_json(
-        f"/internal/frigate-targets/{target_id}/cameras/"
-        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-        timeout=120,
-    )
-    if selected.get("selected") is not True:
-        raise ScenarioFailure(f"First per-camera Frigate selection failed: {selected}")
+    sync_camera(first_camera_uuid, "first per-camera Frigate synchronization")
 
     def settled_uptime() -> float | bool:
         uptime = float(frigate_json("/api/stats").get("service", {}).get("uptime") or 0)
@@ -1334,16 +1358,7 @@ def frigate() -> None:
     )
 
     second_camera_uuid = state["auth_camera_uuid"]
-    for camera_uuid in (second_camera_uuid,):
-        selected = request_json(
-            f"/internal/frigate-targets/{target_id}/cameras/"
-            f"{urllib.parse.quote(str(camera_uuid), safe='')}",
-            method="POST",
-            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-            timeout=120,
-        )
-        if selected.get("selected") is not True:
-            raise ScenarioFailure(f"Per-camera Frigate selection failed: {selected}")
+    sync_camera(second_camera_uuid, "second per-camera Frigate synchronization")
 
     uptime_after_third_camera = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0
@@ -1392,15 +1407,7 @@ def frigate() -> None:
     )
     if updated.get("success") is not True:
         raise ScenarioFailure("Could not seed a legacy camera-level detect FPS")
-    selected = request_json(
-        f"/internal/frigate-targets/{target_id}/cameras/"
-        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
-        timeout=120,
-    )
-    if selected.get("selected") is not True:
-        raise ScenarioFailure(f"Frigate FPS inheritance sync failed: {selected}")
+    sync_camera(first_camera_uuid, "Frigate FPS inheritance synchronization")
 
     saved_camera = frigate_saved_config().get("cameras", {}).get(camera_key, {})
     if "fps" in saved_camera.get("detect", {}):
