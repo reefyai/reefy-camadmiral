@@ -32,7 +32,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
         self.assertIn('id="show-add-address" type="button" aria-haspopup="dialog">Add camera</button>', self.html)
         self.assertIn('<button id="scan" type="button" aria-haspopup="dialog">Scan network</button>', self.html)
-        self.assertIn('<button id="scan-start" type="button">Start scan</button>', self.html)
+        self.assertIn('<button id="scan-start" type="button">Scan network</button>', self.html)
         self.assertEqual(self.html.count('id="error"'), 1)
         self.assertIn('openAppModal("scan", "Scan network", scanDialogContent, scanButton, "wide")', self.html)
         self.assertIn('scanStartButton.addEventListener("click", async () =>', self.html)
@@ -42,6 +42,14 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
         self.assertIn("justify-content: flex-end; gap: 8px; margin-bottom: 16px", self.html)
         self.assertIn("width: 120px; min-height: 38px", self.html)
+        self.assertIn('id="scan-network-list"', self.html)
+        self.assertIn('id="scan-network-input"', self.html)
+        self.assertIn('id="scan-networks-save"', self.html)
+        self.assertIn('fetch("/internal/discovery/networks"', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "save-discovery-networks"', self.html)
+        self.assertIn('<details class="scan-log-details" id="scan-log-details">', self.html)
+        self.assertNotIn('<details class="scan-log-details" id="scan-log-details" open>', self.html)
+        self.assertNotIn('"Scan again"', self.html)
 
     def test_frigate_full_sync_failure_shows_stage_resource_and_code(self) -> None:
         self.assertIn("function frigateFailureDetail(result, fallback)", self.html)

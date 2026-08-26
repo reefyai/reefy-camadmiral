@@ -11,6 +11,7 @@ class ScanStateTests(unittest.TestCase):
             "devices": [{"candidate_uuid": "candidate-1", "status": "online"}],
             "summary": {"devices": 1, "online": 1, "offline": 0},
             "network": {"subnet": "192.168.1.0/24"},
+            "networks": [{"subnet": "192.168.1.0/24", "status": "complete"}],
             "duration_ms": 1200,
             "completed_at": "2026-01-01T00:00:01+00:00",
             "raw_log": ["test scan log"],
@@ -22,6 +23,7 @@ class ScanStateTests(unittest.TestCase):
         self.assertEqual(result["inventory_scan_id"], "previous")
         self.assertEqual(len(result["devices"]), 1)
         self.assertEqual(result["raw_log"], ["test scan log"])
+        self.assertEqual(result["networks"][0]["subnet"], "192.168.1.0/24")
 
     def test_completed_result_is_not_replaced(self) -> None:
         state = {"status": "complete", "scan_id": "new", "devices": [{"candidate_uuid": "new"}]}

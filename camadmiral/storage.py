@@ -246,6 +246,14 @@ MIGRATIONS: tuple[str, ...] = (
     ADD COLUMN address_mode TEXT NOT NULL DEFAULT 'lan'
         CHECK(address_mode IN ('lan', 'localhost'));
     """,
+    """
+    CREATE TABLE discovery_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        custom_subnets_json TEXT NOT NULL DEFAULT '[]',
+        excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+    );
+    """,
 )
 
 
@@ -687,6 +695,52 @@ class CameraRepository:
             else None
         )
         return result
+
+    def discovery_network_settings(self) -> dict[str, list[str]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT custom_subnets_json, excluded_detected_subnets_json "
+                "FROM discovery_settings WHERE singleton_id = 1"
+            ).fetchone()
+        if row is None:
+            return {"custom_subnets": [], "excluded_detected_subnets": []}
+
+        def values(column: str) -> list[str]:
+            try:
+                parsed = json.loads(str(row[column]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+            if not isinstance(parsed, list):
+                return []
+            return [str(value) for value in parsed if isinstance(value, str)]
+
+        return {
+            "custom_subnets": values("custom_subnets_json"),
+            "excluded_detected_subnets": values("excluded_detected_subnets_json"),
+        }
+
+    def save_discovery_network_settings(
+        self,
+        *,
+        custom_subnets: list[str],
+        excluded_detected_subnets: list[str],
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_settings(singleton_id, custom_subnets_json, "
+                "excluded_detected_subnets_json, updated_at) VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(singleton_id) DO UPDATE SET "
+                "custom_subnets_json=excluded.custom_subnets_json, "
+                "excluded_detected_subnets_json=excluded.excluded_detected_subnets_json, "
+                "updated_at=excluded.updated_at",
+                (
+                    json.dumps(custom_subnets, separators=(",", ":")),
+                    json.dumps(excluded_detected_subnets, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+            connection.commit()
 
     def notification_settings(self) -> dict[str, Any]:
         credentials = self.notification_credentials()

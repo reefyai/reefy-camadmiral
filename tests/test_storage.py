@@ -57,6 +57,25 @@ class CameraRepositoryTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertNotIn(first.encode(), ciphertext)
 
+    def test_discovery_network_settings_persist_custom_and_excluded_subnets(self) -> None:
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {"custom_subnets": [], "excluded_detected_subnets": []},
+        )
+
+        self.repository.save_discovery_network_settings(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=["192.168.40.0/24"],
+        )
+
+        self.assertEqual(
+            CameraRepository(self.database, b"k" * 32).discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": ["192.168.40.0/24"],
+            },
+        )
+
     def test_frigate_targets_are_managed_in_sqlite(self) -> None:
         self.repository.save_frigate_target(
             "frigate-synthetic",

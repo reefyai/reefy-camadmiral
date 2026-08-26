@@ -188,6 +188,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("172.31.0.87", compose)
         self.assertIn("gw_priority: 1", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
+        self.assertIn('scenario("configured-routed-subnet-discovery")', runner)
         multi_subnet_position = runner.index('scenario("multi-subnet-discovery")')
         reset_position = runner.index(
             'run("down", "--volumes", "--remove-orphans")',
@@ -204,6 +205,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
+        self.assertIn("def configured_routed_subnet_discovery()", scenarios)
+        self.assertIn('routed_subnet = "172.29.0.84/29"', scenarios)
+        self.assertIn("Routed subnet unexpectedly used ONVIF multicast", scenarios)
 
     def test_address_recovery_accepts_idle_recording_stream(self) -> None:
         adoption = {

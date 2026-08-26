@@ -912,6 +912,98 @@ def large_subnet_multicast_discovery() -> None:
     )
 
 
+def configured_routed_subnet_discovery() -> None:
+    wait_for_health()
+    configuration = request_json("/internal/discovery/networks")
+    detected = [
+        str(network["cidr"])
+        for network in configuration.get("networks", [])
+        if network.get("source") == "detected"
+    ]
+    large_subnet = "172.29.0.0/16"
+    routed_subnet = "172.29.0.84/29"
+    if large_subnet not in detected:
+        raise ScenarioFailure("Large connected subnet was not listed in discovery settings")
+    selected = [subnet for subnet in detected if subnet != large_subnet]
+    selected.append(routed_subnet)
+    saved = request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={"selected_subnets": selected},
+    )
+    by_cidr = {
+        str(network["cidr"]): network
+        for network in saved.get("networks", [])
+    }
+    if by_cidr.get(large_subnet, {}).get("selected") is not False:
+        raise ScenarioFailure("Removed connected subnet remained selected")
+    custom = by_cidr.get(routed_subnet)
+    if not custom or custom.get("source") != "custom" or custom.get("multicast") is not False:
+        raise ScenarioFailure("Custom routed subnet settings were not persisted")
+
+    full_request = request_json(
+        "/internal/discovery/scan",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan"},
+        expected=202,
+    )
+    scan_id = full_request.get("scan_id")
+
+    def routed_cameras_found() -> dict[str, object] | None:
+        state = discovery()
+        if state.get("scan_id") != scan_id or state.get("status") in {"queued", "running"}:
+            return None
+        onvif_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.87"
+                and device.get("status") == "online"
+                and device.get("onvif")
+            ),
+            None,
+        )
+        rtsp_camera = next(
+            (
+                device
+                for device in state.get("devices", [])
+                if device.get("ip") == "172.29.0.88"
+                and device.get("status") == "online"
+                and device.get("rtsp")
+            ),
+            None,
+        )
+        return state if onvif_camera and rtsp_camera else None
+
+    scanned = wait_for(
+        "unicast ONVIF and RTSP discovery on a configured routed subnet",
+        routed_cameras_found,
+        timeout=90,
+    )
+    custom_progress = next(
+        (
+            network
+            for network in scanned.get("networks", [])
+            if network.get("subnet") == routed_subnet
+        ),
+        None,
+    )
+    if not custom_progress or custom_progress.get("status") != "complete":
+        raise ScenarioFailure("Custom routed subnet did not report completed progress")
+    raw_log = "\n".join(str(line) for line in scanned.get("raw_log", []))
+    if f"multicast skipped for routed subnet {routed_subnet}" not in raw_log:
+        raise ScenarioFailure("Routed subnet unexpectedly used ONVIF multicast")
+
+    request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={"selected_subnets": detected},
+    )
+    print("configured-routed-subnet-discovery: saved selection and unicast scan passed")
+
+
 def load_state() -> dict[str, object]:
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -1697,6 +1789,7 @@ SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
     "large-subnet-multicast-discovery": large_subnet_multicast_discovery,
+    "configured-routed-subnet-discovery": configured_routed_subnet_discovery,
     "runtime-drift": runtime_drift,
     "runtime-recovery": runtime_recovery,
     "camera-outage": camera_outage,

@@ -28,10 +28,16 @@ likely stream paths after the operator supplies the camera username and password
 
 ### How network discovery works
 
-CamAdmiral scans every connected private IPv4 LAN. ONVIF discovery sends multicast
-WS-Discovery probes for multiple dialects to `239.255.255.250:3702`. RTSP discovery probes
-ports `554` and `8554` and accepts only valid RTSP responses. Both run concurrently and do
-not try camera credentials.
+The **Scan network** dialog lists every connected private IPv4 LAN. An operator can exclude
+detected subnets, add private routed CIDRs, and save that selection for future scans. Custom
+CIDRs are limited to 1,024 usable hosts.
+
+For directly connected networks, ONVIF discovery sends multicast WS-Discovery probes for
+multiple dialects to `239.255.255.250:3702` and follows with bounded unicast probes. Multicast
+is sent separately through each selected local interface. It normally cannot cross a router
+or VLAN boundary, so custom routed CIDRs use unicast ONVIF probes only. RTSP discovery probes
+ports `554` and `8554` and accepts only valid RTSP responses. The protocols and selected
+subnets run concurrently and do not try camera credentials.
 
 On LANs up to 1,024 hosts, unicast ONVIF and RTSP probes cover every address. Larger LANs
 use ONVIF multicast plus addresses already learned in the host ARP table, avoiding an
@@ -40,7 +46,8 @@ marked offline, and recovered after IP changes using ONVIF identity or a unique 
 
 If automatic discovery misses a camera, **Add camera** accepts its IP address or complete
 RTSP URL and probes only that address. The camera must be on a connected private LAN.
-Timestamped protocol logs are available under scan details.
+Timestamped protocol logs are available in the collapsed technical-log section of the scan
+dialog. Per-subnet status shows which networks are queued, scanning, complete, or unavailable.
 
 ![CamAdmiral ONVIF and RTSP network scan details](docs/images/camadmiral-network-scan.png)
 

@@ -26,6 +26,13 @@ from .auth import AdminAuthenticator
 from .config import SecretConfigurationError, database_path, read_secret_file, settings
 from .crypto import load_master_key
 from .diagnostics import snapshot
+from .discovery import (
+    MAX_SCAN_HOSTS,
+    custom_scan_subnet,
+    normalize_private_scan_subnet,
+    private_lan_interfaces,
+    routed_scan_interface,
+)
 from .frigate import (
     FrigateApiError,
     FrigateClient,
@@ -144,6 +151,10 @@ class CameraCredentialRequest(BaseModel):
 
 class ExplicitAddressRequest(BaseModel):
     address: str = Field(min_length=7, max_length=45)
+
+
+class DiscoveryNetworksRequest(BaseModel):
+    selected_subnets: list[str] = Field(default_factory=list, max_length=64)
 
 
 class NotificationSettingsRequest(BaseModel):
@@ -1681,6 +1692,87 @@ def _read_scan_state() -> dict[str, object]:
     return preserve_inventory(state, inventory)
 
 
+def _discovery_network_configuration(
+    repository: CameraRepository,
+) -> dict[str, object]:
+    settings_payload = repository.discovery_network_settings()
+    try:
+        connected = private_lan_interfaces()
+    except (OSError, RuntimeError, ValueError):
+        connected = []
+    connected_by_subnet = {
+        str(interface.network): interface
+        for interface in connected
+    }
+
+    excluded: set[str] = set()
+    for value in settings_payload.get("excluded_detected_subnets", []):
+        try:
+            excluded.add(str(normalize_private_scan_subnet(value)))
+        except ValueError:
+            continue
+    custom: list[str] = []
+    for value in settings_payload.get("custom_subnets", []):
+        try:
+            subnet = str(custom_scan_subnet(value))
+        except ValueError:
+            continue
+        if subnet not in custom:
+            custom.append(subnet)
+
+    networks: list[dict[str, object]] = []
+    for subnet, interface in connected_by_subnet.items():
+        networks.append(
+            {
+                **interface.as_dict(),
+                "cidr": subnet,
+                "selected": subnet not in excluded,
+                "source": "detected",
+                "routable": True,
+            }
+        )
+    for subnet in custom:
+        if subnet in connected_by_subnet:
+            continue
+        network = custom_scan_subnet(subnet)
+        row: dict[str, object] = {
+            "cidr": subnet,
+            "subnet": subnet,
+            "hosts": max(0, network.num_addresses - 2),
+            "selected": True,
+            "source": "custom",
+            "multicast": False,
+        }
+        try:
+            interface = routed_scan_interface(network, interfaces=connected)
+        except (OSError, RuntimeError, ValueError):
+            row.update(
+                {
+                    "interface": None,
+                    "address": None,
+                    "routable": False,
+                    "route_error": "No IPv4 route is currently available.",
+                }
+            )
+        else:
+            row.update(interface.as_dict())
+            row.update({"cidr": subnet, "selected": True, "routable": True})
+        networks.append(row)
+    return {
+        "networks": networks,
+        "max_custom_hosts": MAX_SCAN_HOSTS,
+    }
+
+
+def _selected_discovery_subnets(repository: CameraRepository) -> list[str]:
+    configuration = _discovery_network_configuration(repository)
+    return [
+        str(network["cidr"])
+        for network in configuration["networks"]
+        if network.get("selected")
+    ]
+
+
 def _find_candidate(candidate_uuid: str) -> dict[str, object] | None:
     try:
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
@@ -1795,12 +1887,75 @@ def discovery_state() -> JSONResponse:
     return _secured_json(_decorate_adoptions(_read_scan_state()))
 
 
+@app.get("/internal/discovery/networks", include_in_schema=False)
+def discovery_networks() -> JSONResponse:
+    repository = _repository(required=True)
+    return _secured_json(_discovery_network_configuration(repository))
+
+
+@app.put("/internal/discovery/networks", include_in_schema=False)
+def update_discovery_networks(
+    request: DiscoveryNetworksRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "save-discovery-networks":
+        raise HTTPException(status_code=400, detail="Missing network settings action header")
+    repository = _repository(required=True)
+    try:
+        connected = private_lan_interfaces()
+    except (OSError, RuntimeError, ValueError):
+        connected = []
+    detected = {str(interface.network) for interface in connected}
+    selected: list[str] = []
+    try:
+        for value in request.selected_subnets:
+            subnet = str(normalize_private_scan_subnet(value))
+            if subnet not in detected:
+                custom_scan_subnet(subnet)
+            if subnet not in selected:
+                selected.append(subnet)
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "invalid_subnet", "message": str(exc)},
+            status_code=422,
+        )
+
+    existing = repository.discovery_network_settings()
+    prior_excluded: set[str] = set()
+    for value in existing.get("excluded_detected_subnets", []):
+        try:
+            prior_excluded.add(str(normalize_private_scan_subnet(value)))
+        except ValueError:
+            continue
+    excluded = [
+        subnet
+        for subnet in prior_excluded
+        if subnet not in detected and subnet not in selected
+    ]
+    excluded.extend(subnet for subnet in detected if subnet not in selected)
+    repository.save_discovery_network_settings(
+        custom_subnets=[subnet for subnet in selected if subnet not in detected],
+        excluded_detected_subnets=sorted(set(excluded), key=ipaddress.ip_network),
+    )
+    return _secured_json(_discovery_network_configuration(repository))
+
+
 @app.post("/internal/discovery/scan", include_in_schema=False)
 def start_discovery(
     x_camadmiral_action: str | None = Header(default=None),
 ) -> JSONResponse:
     if x_camadmiral_action != "scan":
         raise HTTPException(status_code=400, detail="Missing scan action header")
+    repository = _repository(required=True)
+    selected_subnets = _selected_discovery_subnets(repository)
+    if not selected_subnets:
+        return _secured_json(
+            {
+                "status": "no_networks",
+                "message": "Select and save at least one IPv4 subnet before scanning.",
+            },
+            status_code=422,
+        )
     with SCAN_REQUEST_LOCK:
         state = _read_scan_state()
         if state.get("status") in {"queued", "running"} or SCAN_REQUEST.exists():
@@ -1808,6 +1963,7 @@ def start_discovery(
         scan_id = str(uuid.uuid4())
         request = {
             "scan_id": scan_id,
+            "subnets": selected_subnets,
             "requested_at": datetime.now(timezone.utc).isoformat(),
             "unix_time": time.time(),
         }
@@ -1815,6 +1971,10 @@ def start_discovery(
         temporary.write_text(json.dumps(request), encoding="utf-8")
         temporary.replace(SCAN_REQUEST)
     queued = {"status": "queued", "phase": "queued", **request}
+    queued["networks"] = [
+        {"subnet": subnet, "status": "queued", "scanners": {}}
+        for subnet in selected_subnets
+    ]
     if state.get("devices"):
         queued.update(
             {
@@ -1822,6 +1982,7 @@ def start_discovery(
                 "devices": state.get("devices"),
                 "summary": state.get("summary"),
                 "network": state.get("network"),
+                "networks": queued["networks"],
                 "duration_ms": state.get("duration_ms"),
                 "completed_at": state.get("completed_at"),
                 "raw_log": state.get("raw_log", []),

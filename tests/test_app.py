@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from starlette.requests import Request
 
 from camadmiral import app as app_module
 from camadmiral.frigate import FrigateTarget
+from camadmiral.discovery import LanInterface
 from camadmiral.onvif_client import OnvifInspectionError
 from camadmiral.media import ProbeResult
 from camadmiral.rtsp_catalog import CatalogCandidate
@@ -423,6 +425,121 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(json.loads(response.body)["status"], "bot_has_webhook")
         repository.save_telegram_settings.assert_not_called()
+
+
+class DiscoveryNetworkApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.detected = LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.40.2"),
+            ipaddress.IPv4Network("192.168.40.0/24"),
+        )
+
+    def test_detected_private_subnets_are_selected_by_default(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+        ):
+            response = app_module.discovery_networks()
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["max_custom_hosts"], 1024)
+        self.assertEqual(payload["networks"][0]["cidr"], "192.168.40.0/24")
+        self.assertTrue(payload["networks"][0]["selected"])
+        self.assertTrue(payload["networks"][0]["multicast"])
+
+    def test_save_normalizes_custom_subnet_and_excludes_removed_detected_subnet(self) -> None:
+        repository = Mock()
+        repository.discovery_network_settings.return_value = {
+            "custom_subnets": [],
+            "excluded_detected_subnets": [],
+        }
+        result_payload = {"networks": [], "max_custom_hosts": 1024}
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            patch.object(
+                app_module,
+                "_discovery_network_configuration",
+                return_value=result_payload,
+            ),
+        ):
+            response = app_module.update_discovery_networks(
+                app_module.DiscoveryNetworksRequest(
+                    selected_subnets=["10.0.202.15/24"]
+                ),
+                "save-discovery-networks",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.save_discovery_network_settings.assert_called_once_with(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=["192.168.40.0/24"],
+        )
+
+    def test_save_rejects_public_or_oversized_custom_subnets(self) -> None:
+        for subnet in ("192.0.2.0/24", "10.0.0.0/8"):
+            repository = Mock()
+            repository.discovery_network_settings.return_value = {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+            }
+            with (
+                self.subTest(subnet=subnet),
+                patch.object(app_module, "_repository", return_value=repository),
+                patch.object(app_module, "private_lan_interfaces", return_value=[self.detected]),
+            ):
+                response = app_module.update_discovery_networks(
+                    app_module.DiscoveryNetworksRequest(selected_subnets=[subnet]),
+                    "save-discovery-networks",
+                )
+
+            self.assertEqual(response.status_code, 422)
+            repository.save_discovery_network_settings.assert_not_called()
+
+    def test_scan_request_captures_saved_subnets(self) -> None:
+        repository = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = Path(directory) / "scan-request.json"
+            with (
+                patch.object(app_module, "_repository", return_value=repository),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["192.168.40.0/24", "10.0.202.0/24"],
+                ),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "idle"}),
+                patch.object(app_module, "_decorate_adoptions", side_effect=lambda state: state),
+                patch.object(app_module, "SCAN_REQUEST", request_path),
+            ):
+                response = app_module.start_discovery("scan")
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            request["subnets"],
+            ["192.168.40.0/24", "10.0.202.0/24"],
+        )
+        payload = json.loads(response.body)
+        self.assertEqual(
+            [network["status"] for network in payload["networks"]],
+            ["queued", "queued"],
+        )
+
+    def test_scan_requires_at_least_one_saved_subnet(self) -> None:
+        with (
+            patch.object(app_module, "_repository", return_value=Mock()),
+            patch.object(app_module, "_selected_discovery_subnets", return_value=[]),
+        ):
+            response = app_module.start_discovery("scan")
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(json.loads(response.body)["status"], "no_networks")
 
 
 class FrigateTargetApiTests(unittest.TestCase):

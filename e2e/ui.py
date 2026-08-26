@@ -53,6 +53,9 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(page.get_by_role("heading", name="Scan network")).to_be_visible()
     expect(page.locator("#state")).to_be_visible()
     expect(page.locator("#scan-start")).to_be_visible()
+    expect(page.locator("#scan-log-details")).not_to_have_attribute("open", "")
+    expect(page.locator("#scan-log")).to_be_hidden()
+    page.locator("#scan-log-details summary").click()
     expect(page.locator("#scan-log")).to_be_visible()
     page.locator("#app-modal-close").click()
 

@@ -77,6 +77,7 @@ def main() -> int:
             "import socket; socket.create_connection(('172.29.0.88', 554), 2).close()",
         )
         scenario("large-subnet-multicast-discovery")
+        scenario("configured-routed-subnet-discovery")
         run("down", "--volumes", "--remove-orphans")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
