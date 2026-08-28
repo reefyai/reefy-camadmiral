@@ -91,6 +91,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
     def test_adopted_name_replaces_scanner_name(self) -> None:
         repository = Mock()
+        repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {"display_name": "Operator name", "streams": []}
         }
@@ -111,6 +112,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
     def test_recovered_media_overrides_stale_offline_scan_in_summary(self) -> None:
         repository = Mock()
+        repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -152,11 +154,12 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(device["connectivity_status"], "online")
         self.assertEqual(
             decorated["summary"],
-            {"devices": 1, "online": 1, "offline": 0},
+            {"devices": 1, "online": 1, "offline": 0, "blocked": 0},
         )
 
     def test_discovery_reports_only_an_available_cached_thumbnail(self) -> None:
         repository = Mock()
+        repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -181,6 +184,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
     def test_each_synced_frigate_target_has_an_independent_status(self) -> None:
         repository = Mock()
+        repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -237,6 +241,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
     def test_frigate_status_includes_safe_internal_error_code(self) -> None:
         repository = Mock()
+        repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -284,6 +289,49 @@ class DiscoveryDecorationTests(unittest.TestCase):
             ],
         )
 
+    def test_blocked_devices_are_excluded_from_regular_summary(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {}
+        repository.blocked_devices.return_value = [
+            {
+                "block_uuid": "block-1",
+                "candidate_uuid": "candidate-1",
+                "onvif_identity": "urn:uuid:blocked-1",
+                "mac": "02:00:00:00:00:41",
+                "display_name": "Synthetic blocked device",
+                "last_ip": "192.0.2.41",
+            }
+        ]
+        state = {
+            "devices": [
+                {
+                    "candidate_uuid": "candidate-1",
+                    "display_name": "Synthetic blocked device",
+                    "ip": "192.0.2.99",
+                    "mac": "02:00:00:00:00:41",
+                    "onvif": {"endpoint_reference": "urn:uuid:blocked-1"},
+                    "status": "online",
+                },
+                {
+                    "candidate_uuid": "candidate-2",
+                    "display_name": "Visible device",
+                    "status": "online",
+                },
+            ]
+        }
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[]),
+        ):
+            decorated = app_module._decorate_adoptions(state)
+
+        self.assertTrue(decorated["devices"][0]["blocked"])
+        self.assertEqual(
+            decorated["summary"],
+            {"devices": 1, "online": 1, "offline": 0, "blocked": 1},
+        )
+
 
 class AvailabilityApiTests(unittest.TestCase):
     def test_supported_window_uses_bounded_bucket_count(self) -> None:
@@ -315,6 +363,131 @@ class AvailabilityApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(json.loads(response.body)["status"], "invalid_window")
         repository.assert_not_called()
+
+
+class CameraLifecycleApiTests(unittest.TestCase):
+    @staticmethod
+    def payload(response) -> dict:
+        return json.loads(response.body)
+
+    def test_block_uses_repository_stable_identity_policy(self) -> None:
+        repository = Mock()
+        repository.adoption_for_candidate.return_value = None
+        repository.block_candidate.return_value = {"block_uuid": "block-1"}
+        candidate = synthetic_candidate(amcrest=False) | {"mac": "02:00:00:00:00:50"}
+        with (
+            patch.object(app_module, "_find_candidate", return_value=candidate),
+            patch.object(app_module, "_repository", return_value=repository),
+        ):
+            response = app_module.block_candidate("candidate-1", "block-camera")
+
+        self.assertEqual(response.status_code, 200)
+        repository.block_candidate.assert_called_once_with(candidate)
+
+    def test_block_rejects_adopted_camera(self) -> None:
+        repository = Mock()
+        repository.adoption_for_candidate.return_value = {"camera_uuid": "camera-1"}
+        with (
+            patch.object(app_module, "_find_candidate", return_value=synthetic_candidate()),
+            patch.object(app_module, "_repository", return_value=repository),
+        ):
+            response = app_module.block_candidate("candidate-1", "block-camera")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.payload(response)["status"], "adopted")
+        repository.block_candidate.assert_not_called()
+
+    def test_unadopt_cleans_frigate_then_local_camera_and_media(self) -> None:
+        repository = Mock()
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
+        repository.unadopt_camera.return_value = True
+        target = FrigateTarget("frigate-1", "Synthetic Frigate", "http://127.0.0.1:20001")
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[target]),
+            patch.object(
+                app_module,
+                "remove_frigate_camera",
+                return_value={"restart_recommended": True},
+            ) as remove,
+            patch.object(app_module, "_reconcile_media") as reconcile,
+        ):
+            response = app_module.unadopt_camera("camera-1", "unadopt-camera")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.payload(response)["restart_recommended"])
+        remove.assert_called_once_with(repository, target, "camera-1")
+        repository.unadopt_camera.assert_called_once_with("camera-1")
+        reconcile.assert_called_once_with()
+
+    def test_unadopt_keeps_local_camera_when_frigate_cleanup_fails(self) -> None:
+        repository = Mock()
+        repository.camera.return_value = {"camera_uuid": "camera-1"}
+        repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
+        target = FrigateTarget("frigate-1", "Synthetic Frigate", "http://127.0.0.1:20001")
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[target]),
+            patch.object(
+                app_module,
+                "remove_frigate_camera",
+                side_effect=app_module.FrigateApiError("synthetic_failure"),
+            ),
+        ):
+            response = app_module.unadopt_camera("camera-1", "unadopt-camera")
+
+        self.assertGreaterEqual(response.status_code, 400)
+        repository.unadopt_camera.assert_not_called()
+
+    def test_unadopt_keeps_recently_reachable_candidate_online(self) -> None:
+        repository = Mock()
+        repository.camera.return_value = {
+            "camera_uuid": "camera-1",
+            "candidate_uuid": "candidate-1",
+        }
+        repository.unadopt_camera.return_value = True
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[]),
+            patch.object(app_module, "_candidate_is_currently_online", return_value=True),
+            patch.object(app_module, "_mark_discovery_candidate_online") as mark_online,
+            patch.object(app_module, "_reconcile_media"),
+        ):
+            response = app_module.unadopt_camera("camera-1", "unadopt-camera")
+
+        self.assertEqual(response.status_code, 200)
+        mark_online.assert_called_once_with("candidate-1")
+
+    def test_recently_reachable_candidate_updates_inventory_and_scan_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            inventory = Path(temporary_directory) / "inventory.json"
+            scan_state = Path(temporary_directory) / "scan-state.json"
+            payload = {
+                "devices": [
+                    {
+                        "candidate_uuid": "candidate-1",
+                        "status": "offline",
+                        "missed_scans": 2,
+                    },
+                    {"candidate_uuid": "candidate-2", "status": "offline"},
+                ]
+            }
+            inventory.write_text(json.dumps(payload), encoding="utf-8")
+            scan_state.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_STATE", scan_state),
+            ):
+                app_module._mark_discovery_candidate_online("candidate-1")
+
+            for path in (inventory, scan_state):
+                updated = json.loads(path.read_text(encoding="utf-8"))
+                candidate = updated["devices"][0]
+                self.assertEqual(candidate["status"], "online")
+                self.assertEqual(candidate["missed_scans"], 0)
+                self.assertEqual(updated["summary"]["online"], 1)
+                self.assertEqual(updated["summary"]["offline"], 1)
 
 
 class IncidentAndNotificationApiTests(unittest.TestCase):

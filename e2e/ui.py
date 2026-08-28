@@ -379,6 +379,72 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
 
 
+def assert_camera_unadopt_block_and_restore(page: Page) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    expect(onvif_row).to_be_visible(timeout=30_000)
+    onvif_row.get_by_role("button", name=re.compile(r"^More actions for")).click()
+    action_menu = page.locator("#camera-action-menu")
+    expect(action_menu).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
+    action_menu.get_by_role("menuitem", name="Unadopt", exact=True).click()
+    expect(page.locator("#confirm-modal")).to_be_visible()
+    with page.expect_response(
+        lambda response: response.request.method == "DELETE"
+        and "/internal/cameras/" in response.url
+    ) as unadopt_response:
+        page.locator("#confirm-action").click()
+    if not unadopt_response.value.ok:
+        raise UiScenarioFailure("Camera could not be unadopted through the UI")
+
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    expect(onvif_row.get_by_role("button", name="Adopt", exact=True)).to_be_visible(
+        timeout=30_000
+    )
+    expect(onvif_row.locator(".device-status")).to_contain_text("online")
+    onvif_row.get_by_role("button", name=re.compile(r"^More actions for")).click()
+    action_menu.get_by_role("menuitem", name="Block device").click()
+    expect(page.locator("#confirm-modal")).to_be_visible()
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and response.url.endswith("/block")
+    ) as block_response:
+        page.locator("#confirm-action").click()
+    if not block_response.value.ok:
+        raise UiScenarioFailure("Device could not be blocked through the UI")
+
+    expect(page.locator("#blocked-count")).to_have_text("1", timeout=30_000)
+    page.locator('[data-camera-filter="blocked"]').click()
+    blocked_row = page.locator("#camera-rows tr.camera-row").first
+    expect(blocked_row).to_be_visible()
+    expect(blocked_row).to_contain_text("blocked")
+    blocked_row.get_by_role("button", name="Unblock").click()
+    with page.expect_response(
+        lambda response: response.request.method == "DELETE"
+        and "/internal/discovery/blocked/" in response.url
+    ) as unblock_response:
+        page.locator("#confirm-action").click()
+    if not unblock_response.value.ok:
+        raise UiScenarioFailure("Device could not be unblocked through the UI")
+
+    expect(page.locator("#blocked-count")).to_have_text("0", timeout=30_000)
+    page.locator('[data-camera-filter="all"]').click()
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    onvif_row.get_by_role("button", name="Adopt", exact=True).click()
+    adopt_modal = page.locator("#app-modal")
+    expect(adopt_modal.get_by_role("button", name="Adopt camera")).to_be_visible(
+        timeout=30_000
+    )
+    adopt_modal.get_by_role("button", name="Adopt camera").click()
+    expect(onvif_row.get_by_role("button", name="Streams")).to_be_visible(timeout=60_000)
+
+
 def assert_desktop_stream_layout(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
     page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
@@ -452,6 +518,7 @@ def main() -> int:
         try:
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
+            assert_camera_unadopt_block_and_restore(page)
             assert_mobile_settings(page)
         except Exception:
             page.screenshot(

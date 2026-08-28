@@ -177,6 +177,13 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('urllib.parse.unquote(parsed.password or "") != access["password"]', browser)
         self.assertIn('has_text="rtsp://"', browser)
         self.assertIn('expect(copy_button).to_have_text("✓", timeout=5_000)', browser)
+        self.assertIn("assert_camera_unadopt_block_and_restore(page)", browser)
+        self.assertIn('get_by_role("menuitem", name="Unadopt", exact=True)', browser)
+        self.assertIn('expect(page.locator("#app-modal")).to_be_hidden()', browser)
+        self.assertIn('to_contain_text("online")', browser)
+        self.assertIn('response.url.endswith("/block")', browser)
+        self.assertIn('data-camera-filter="blocked"', browser)
+        self.assertIn('get_by_role("button", name="Unblock")', browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:

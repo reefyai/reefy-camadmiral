@@ -1012,6 +1012,58 @@ def load_state() -> dict[str, object]:
         raise ScenarioFailure("E2E baseline state is unavailable") from exc
 
 
+def accept_ui_lifecycle_state() -> None:
+    state = load_state()
+
+    def all_cameras_ready() -> dict[str, object] | None:
+        directory = consumer_directory()
+        cameras = directory.get("cameras", [])
+        names = {camera.get("name") for camera in cameras}
+        if len(cameras) != 3 or not {OPEN_NAME, AUTH_NAME}.issubset(names):
+            return None
+        if any(camera.get("state") != "online" for camera in cameras):
+            return None
+        if any(not camera.get("streams") for camera in cameras):
+            return None
+        return directory
+
+    directory = wait_for("healthy cameras after UI lifecycle", all_cameras_ready)
+    previous = state["signature"]
+    current = directory_signature(directory)
+
+    def camera_signature_by_name(
+        signature: dict[str, object], name: str
+    ) -> dict[str, object] | None:
+        return next(
+            (
+                {"id": camera_uuid, **camera}
+                for camera_uuid, camera in signature.items()
+                if camera.get("name") == name
+            ),
+            None,
+        )
+
+    for name in (OPEN_NAME, AUTH_NAME):
+        if camera_signature_by_name(previous, name) != camera_signature_by_name(
+            current, name
+        ):
+            raise ScenarioFailure(
+                f"UI lifecycle changed untouched camera identity: {name}"
+            )
+    previous_onvif = camera_signature_by_name(previous, ONVIF_NAME)
+    recreated = [
+        {"id": camera_uuid, **camera}
+        for camera_uuid, camera in current.items()
+        if camera.get("name") not in {OPEN_NAME, AUTH_NAME}
+    ]
+    if len(recreated) != 1 or recreated[0] == previous_onvif:
+        raise ScenarioFailure("UI lifecycle did not recreate the ONVIF camera identity")
+    state["signature"] = current
+    STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    STATE_PATH.chmod(0o600)
+    print("ui-lifecycle: recreated ONVIF identity checkpoint saved")
+
+
 def runtime_recovery() -> None:
     wait_for_health()
     assert_stable(load_state())
@@ -1831,6 +1883,7 @@ SCENARIOS = {
     "container-restart": container_restart,
     "address-recovery": address_recovery,
     "moved-camera-ready": moved_camera_ready,
+    "accept-ui-lifecycle-state": accept_ui_lifecycle_state,
     "invalid-address": invalid_address,
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
