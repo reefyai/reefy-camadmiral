@@ -395,11 +395,13 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn("enabled.checked", self.html)
         self.assertIn("const body = {enabled: true}", self.html)
 
-    def test_frigate_full_sync_is_one_confirmed_target_action(self) -> None:
-        self.assertIn('"Full sync now"', self.html)
+    def test_frigate_sync_repair_is_one_confirmed_overflow_action(self) -> None:
+        self.assertIn('addCameraMenuAction("Repair sync"', self.html)
         self.assertIn('/full-sync`, {cache: "no-store"}', self.html)
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', self.html)
         self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
+        self.assertIn("No stale CamAdmiral resources were found.", self.html)
+        self.assertNotIn('addText(actions, "button", "row-action", "Full sync now")', self.html)
 
     def test_frigate_camera_selection_is_owned_by_integration_settings(self) -> None:
         self.assertIn("function openFrigateCameraChooser(target, trigger)", self.html)
@@ -417,15 +419,24 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
         self.assertIn("CamAdmiral will not restart Frigate", self.html)
         self.assertIn("Restart required", self.html)
-        self.assertIn("Restart Frigate when convenient, then click Test", self.html)
+        self.assertIn("Test connection from the actions menu", self.html)
         self.assertIn('[["lan", "LAN"], ["localhost", "Localhost"]]', self.html)
         self.assertIn('radio.type = "radio"', self.html)
         self.assertIn("streamAddressModes.set(cameraUuid, value)", self.html)
         self.assertIn('"X-CamAdmiral-Action": "set-camera-stream-address"', self.html)
         self.assertIn("adoption.stream_address_mode || \"lan\"", self.html)
         self.assertNotIn("Localhost works only when Frigate shares the host network.", self.html)
-        self.assertIn('JSON.stringify({address_mode: device.adoption.stream_address_mode || "lan"})', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "set-frigate-target-address"', self.html)
+        self.assertIn("const addressMode = frigateChooserAddressMode(state, device)", self.html)
+        self.assertIn("addFrigateChooserStreams(identity, state, device)", self.html)
+        self.assertNotIn('JSON.stringify({address_mode: device.adoption.stream_address_mode || "lan"})', self.html)
         self.assertNotIn("addressSelect", self.html)
+
+    def test_frigate_maintenance_actions_are_in_overflow_menu(self) -> None:
+        self.assertIn('addCameraMenuAction("Test connection"', self.html)
+        self.assertIn('addCameraMenuAction("Repair sync"', self.html)
+        self.assertIn('addCameraMenuAction("Remove integration"', self.html)
+        self.assertNotIn('addText(actions, "button", "row-action", "Test")', self.html)
 
     def test_bulk_camera_sync_polls_with_per_camera_progress(self) -> None:
         self.assertIn("async function syncFrigateCameraSelection(state)", self.html)

@@ -408,7 +408,12 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
     expect(page.get_by_role("link", name="Notifications")).to_have_attribute("aria-current", "page")
 
-    sync_state: dict[str, object] = {"selected": set(), "pending_polls": {}}
+    sync_state: dict[str, object] = {
+        "selected": set(),
+        "pending_polls": {},
+        "address_mode": "lan",
+        "synced_modes": [],
+    }
 
     def synthetic_frigate_targets(route) -> None:
         selected = sync_state["selected"]
@@ -427,6 +432,7 @@ def assert_mobile_settings(page: Page) -> None:
                             "last_checked_at": "2026-01-01T00:00:00Z",
                             "last_error_code": None,
                             "restart_recommended": False,
+                            "address_mode": sync_state["address_mode"],
                         }
                     ]
                 }
@@ -454,7 +460,7 @@ def assert_mobile_settings(page: Page) -> None:
                     "target_id": "synthetic-target",
                     "target": "Synthetic Frigate",
                     "selected": camera_uuid in selected,
-                    "address_mode": adoption.get("stream_address_mode", "lan"),
+                    "address_mode": sync_state["address_mode"],
                     "status": status,
                 }
             ]
@@ -470,6 +476,8 @@ def assert_mobile_settings(page: Page) -> None:
         selected = sync_state["selected"]
         pending_polls = sync_state["pending_polls"]
         if route.request.method == "POST":
+            body = route.request.post_data_json
+            sync_state["synced_modes"].append(body.get("address_mode"))
             selected.add(camera_uuid)
             pending_polls[camera_uuid] = 2
             route.fulfill(
@@ -486,8 +494,26 @@ def assert_mobile_settings(page: Page) -> None:
                 body='{"status":"removed","selected":false}',
             )
 
+    def synthetic_target_address(route) -> None:
+        body = route.request.post_data_json
+        sync_state["address_mode"] = body["address_mode"]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "updated",
+                    "address_mode": body["address_mode"],
+                    "target": {"address_mode": body["address_mode"]},
+                }
+            ),
+        )
     page.route("**/internal/frigate-targets", synthetic_frigate_targets)
     page.route("**/internal/discovery", synthetic_discovery)
+    page.route(
+        "**/internal/frigate-targets/synthetic-target/address",
+        synthetic_target_address,
+    )
     page.route(
         "**/internal/frigate-targets/synthetic-target/cameras/**",
         synthetic_camera_sync,
@@ -514,6 +540,14 @@ def assert_mobile_settings(page: Page) -> None:
     first_checkbox = choices.first.get_by_role("checkbox")
     expect(first_checkbox).not_to_be_checked()
     first_checkbox.check()
+    expect(modal.get_by_text("Record", exact=True).first).to_be_visible()
+    expect(modal.get_by_text("Detect", exact=True).first).to_be_visible()
+    expect(modal.get_by_role("radio", name="LAN")).to_be_checked()
+    lan_url = modal.locator(".frigate-camera-stream-url").first.inner_text()
+    if "@localhost:" in lan_url or not lan_url.startswith("rtsp://"):
+        raise UiScenarioFailure(f"LAN stream preview is invalid: {lan_url}")
+    modal.get_by_role("radio", name="Localhost").check()
+    expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")
     modal.get_by_role("button", name="Sync cameras").click()
     syncing = modal.get_by_role("button", name="Syncing...")
     expect(syncing).to_be_visible()
@@ -537,6 +571,8 @@ def assert_mobile_settings(page: Page) -> None:
     )
     expect(modal).to_be_visible()
     expect(modal.get_by_role("button", name="Sync cameras")).to_be_enabled()
+    if sync_state["address_mode"] != "localhost" or sync_state["synced_modes"] != ["localhost"]:
+        raise UiScenarioFailure(f"Frigate target address mode was not persisted: {sync_state}")
     page.locator("#app-modal-close").click()
     expect(target).to_contain_text("1 synced camera")
 
@@ -544,6 +580,8 @@ def assert_mobile_settings(page: Page) -> None:
     modal = page.locator("#app-modal")
     first_checkbox = modal.locator(".frigate-camera-choice").first.get_by_role("checkbox")
     expect(first_checkbox).to_be_checked()
+    expect(modal.get_by_role("radio", name="Localhost")).to_be_checked()
+    expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")
     first_checkbox.uncheck()
     with page.expect_response(
         lambda response: response.request.method == "DELETE"
@@ -556,6 +594,12 @@ def assert_mobile_settings(page: Page) -> None:
     expect(modal).to_be_visible()
     page.locator("#app-modal-close").click()
     expect(target).to_contain_text("0 synced cameras")
+
+    target.get_by_role("button", name="More actions for Synthetic Frigate").click()
+    expect(page.get_by_role("menuitem", name="Test connection")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Repair sync")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Remove integration")).to_be_visible()
+    page.keyboard.press("Escape")
 
     overflow = page.locator("#settings-view .settings-section").evaluate_all(
         "sections => sections.filter(section => section.getBoundingClientRect().right > window.innerWidth + 0.5).length"

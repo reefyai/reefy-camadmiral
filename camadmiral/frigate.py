@@ -79,6 +79,7 @@ class FrigateTarget:
     target_id: str
     name: str
     api_url: str
+    address_mode: str | None = None
 
 
 def normalize_frigate_api_url(value: object) -> str:
@@ -112,7 +113,12 @@ def normalize_frigate_api_url(value: object) -> str:
 
 def load_frigate_targets(repository: Any) -> list[FrigateTarget]:
     return [
-        FrigateTarget(str(target["target_id"]), str(target["name"]), str(target["api_url"]))
+        FrigateTarget(
+            str(target["target_id"]),
+            str(target["name"]),
+            str(target["api_url"]),
+            target.get("address_mode"),
+        )
         for target in repository.frigate_targets()
     ]
 
@@ -291,6 +297,8 @@ def frigate_camera_key(camera_uuid: str) -> str:
 
 
 def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str, Any]]:
+    target = repository.frigate_target(target_id)
+    target_address_mode = target.get("address_mode") if target is not None else None
     selections = {
         str(selection["camera_uuid"]): str(selection["address_mode"])
         for selection in repository.frigate_camera_selections(target_id)
@@ -298,7 +306,14 @@ def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str,
     if not selections:
         return []
     return [
-        {**camera, "frigate_address_mode": selections[str(camera["camera_uuid"])]}
+        {
+            **camera,
+            "frigate_address_mode": (
+                str(target_address_mode)
+                if target_address_mode is not None
+                else selections[str(camera["camera_uuid"])]
+            ),
+        }
         for camera in repository.consumer_inventory()
         if str(camera["camera_uuid"]) in selections
     ]

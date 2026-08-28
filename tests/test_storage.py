@@ -138,6 +138,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(target["selected_cameras"], 0)
         self.assertEqual(target["connection_status"], "connected")
         self.assertFalse(target["restart_recommended"])
+        self.assertEqual(target["address_mode"], "lan")
 
         self.repository.record_frigate_target_check(
             "frigate-synthetic",
@@ -167,8 +168,8 @@ class CameraRepositoryTests(unittest.TestCase):
             [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
         )
         self.assertTrue(
-            self.repository.select_frigate_camera(
-                "frigate-synthetic", camera_uuid, "localhost"
+            self.repository.set_frigate_target_address_mode(
+                "frigate-synthetic", "localhost"
             )
         )
         self.assertEqual(
@@ -271,6 +272,9 @@ class CameraRepositoryTests(unittest.TestCase):
             {"record": "main", "detect": "main"},
         )
         camera_uuid = adoption["camera_uuid"]
+        self.repository.set_frigate_target_address_mode(
+            "frigate-existing", "localhost"
+        )
         self.repository.select_frigate_camera(
             "frigate-existing", camera_uuid, "localhost"
         )
@@ -286,6 +290,62 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(
             self.repository.adoption_for_candidate("candidate-existing")["stream_address_mode"],
             "localhost",
+        )
+
+    def test_target_address_migration_preserves_mixed_legacy_selections(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-mixed",
+            "Mixed Frigate",
+            "http://127.0.0.1:20003",
+        )
+        camera_uuids = []
+        for suffix in ("one", "two"):
+            adoption = self.repository.adopt(
+                {
+                    "candidate_uuid": f"candidate-{suffix}",
+                    "display_name": f"Synthetic {suffix}",
+                },
+                "operator",
+                "synthetic-secret",
+                [{
+                    "token": "main",
+                    "name": "Main",
+                    "uri": f"rtsp://192.0.2.30/{suffix}",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }],
+                {"record": "main", "detect": "main"},
+            )
+            camera_uuids.append(adoption["camera_uuid"])
+            self.repository.select_frigate_camera(
+                "frigate-mixed", adoption["camera_uuid"]
+            )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET address_mode = 'localhost' "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                ("frigate-mixed", camera_uuids[1]),
+            )
+            connection.execute("DELETE FROM schema_migrations WHERE version = 21")
+            connection.execute("ALTER TABLE frigate_targets DROP COLUMN address_mode")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertIsNone(
+            self.repository.frigate_target("frigate-mixed")["address_mode"]
+        )
+        self.assertEqual(
+            {
+                selection["address_mode"]
+                for selection in self.repository.frigate_camera_selections(
+                    "frigate-mixed"
+                )
+            },
+            {"lan", "localhost"},
         )
 
     def test_blocked_device_matches_only_stable_onvif_identity_or_mac(self) -> None:

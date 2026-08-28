@@ -293,6 +293,25 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX blocked_devices_candidate
         ON blocked_devices(candidate_uuid);
     """,
+    """
+    ALTER TABLE frigate_targets
+    ADD COLUMN address_mode TEXT DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost') OR address_mode IS NULL);
+    UPDATE frigate_targets
+    SET address_mode = (
+        SELECT CASE
+            WHEN COUNT(DISTINCT selections.address_mode) = 1
+            THEN MIN(selections.address_mode)
+            ELSE NULL
+        END
+        FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    )
+    WHERE EXISTS (
+        SELECT 1 FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    );
+    """,
 )
 
 
@@ -1334,6 +1353,7 @@ class CameraRepository:
             rows = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1377,6 +1397,7 @@ class CameraRepository:
             row = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1389,6 +1410,33 @@ class CameraRepository:
         target["restart_recommended"] = bool(target["restart_recommended"])
         return target
 
+    def set_frigate_target_address_mode(
+        self,
+        target_id: str,
+        address_mode: str,
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
+        timestamp = _now()
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            connection.execute(
+                "UPDATE frigate_targets SET address_mode = ?, updated_at = ? "
+                "WHERE target_id = ?",
+                (address_mode, timestamp, target_id),
+            )
+            connection.execute(
+                "UPDATE frigate_camera_selections SET address_mode = ? WHERE target_id = ?",
+                (address_mode, target_id),
+            )
+            connection.commit()
+        return current["address_mode"] != address_mode
+
     def select_frigate_camera(
         self,
         target_id: str,
@@ -1398,6 +1446,12 @@ class CameraRepository:
         if address_mode not in {"lan", "localhost"}:
             raise ValueError("Frigate address mode is invalid")
         with self.connect() as connection:
+            target = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is not None and target["address_mode"] is not None:
+                address_mode = str(target["address_mode"])
             current = connection.execute(
                 "SELECT address_mode FROM frigate_camera_selections "
                 "WHERE target_id = ? AND camera_uuid = ?",

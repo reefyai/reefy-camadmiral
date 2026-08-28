@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_e2e_python_sources_compile(self) -> None:
+        for source in (ROOT / "e2e").rglob("*.py"):
+            compile(source.read_text(), str(source), "exec")
+
     def test_release_metadata_is_consistent(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "validate-release.py")],

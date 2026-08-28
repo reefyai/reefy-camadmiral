@@ -1034,11 +1034,9 @@ class FrigateReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(FrigateApiError, "runtime_stream_missing"):
             _wait_for_camera_state(self.client, desired, timeout=0, poll_interval=0)
 
-    def test_reconcile_uses_saved_address_mode_for_each_camera(self) -> None:
-        self.repository.select_frigate_camera(
-            self.target.target_id,
-            self.camera_uuid,
-            "localhost",
+    def test_reconcile_uses_saved_address_mode_for_target(self) -> None:
+        self.repository.set_frigate_target_address_mode(
+            self.target.target_id, "localhost"
         )
 
         reconcile_frigate(

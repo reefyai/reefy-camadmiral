@@ -916,6 +916,27 @@ class FrigateTargetApiTests(unittest.TestCase):
             restart_recommended=False,
         )
 
+    def test_target_address_choice_is_saved_without_changing_stream_preference(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "address_mode": "localhost",
+        }
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.set_frigate_target_address(
+                "frigate-synthetic",
+                app_module.FrigateTargetAddressRequest(address_mode="localhost"),
+                "set-frigate-target-address",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.set_frigate_target_address_mode.assert_called_once_with(
+            "frigate-synthetic", "localhost"
+        )
+        repository.set_camera_stream_address_mode.assert_not_called()
+
     def test_remove_leaves_frigate_configuration_untouched(self) -> None:
         repository = Mock()
         repository.remove_frigate_target.return_value = True
