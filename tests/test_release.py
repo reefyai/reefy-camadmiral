@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_e2e_python_sources_compile(self) -> None:
+        for source in (ROOT / "e2e").rglob("*.py"):
+            compile(source.read_text(), str(source), "exec")
+
     def test_release_metadata_is_consistent(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "validate-release.py")],
@@ -136,6 +140,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('method="DELETE"', scenarios)
         self.assertIn("Partial-drift Frigate stream remained in runtime", scenarios)
         self.assertIn("Full sync left the partial-drift stream in Frigate config", scenarios)
+        self.assertLess(
+            scenarios.index('partial_drift_stream = "camadmiral_synthetic_partial_drift"'),
+            scenarios.index('stale_camera = "camadmiral_synthetic_stale"'),
+        )
 
     def test_e2e_full_sync_covers_rejected_delete_after_live_removal(self) -> None:
         runner = (ROOT / "e2e" / "run.py").read_text()
@@ -151,6 +159,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()
         browser = (ROOT / "e2e" / "ui.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
 
         self.assertIn('"127.0.0.1::18080"', compose)
@@ -171,12 +180,28 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('page.goto(f"{BASE_URL}/settings/notifications",', browser)
         self.assertIn('to_have_url(re.compile(r"/settings/integrations$"))', browser)
         self.assertIn('to_have_url(re.compile(r"/incidents$"))', browser)
+        self.assertIn('"pending_until": {}', browser)
+        self.assertIn("time.monotonic() + 2.0", browser)
+        self.assertIn('with page.expect_response(', browser)
+        self.assertIn("Sync spinner geometry is distorted", browser)
         self.assertIn("Settings section extends beyond the mobile viewport", browser)
         self.assertIn("assert_downstream_password_masking(page)", browser)
         self.assertIn('":********@" not in displayed', browser)
         self.assertIn('urllib.parse.unquote(parsed.password or "") != access["password"]', browser)
         self.assertIn('has_text="rtsp://"', browser)
         self.assertIn('expect(copy_button).to_have_text("✓", timeout=5_000)', browser)
+        self.assertIn("assert_camera_unadopt_block_and_restore(page)", browser)
+        self.assertIn('scenario("frigate-unadopt")', runner)
+        self.assertIn('scenario("accept-ui-lifecycle-state")', runner)
+        self.assertIn('"frigate-unadopt": frigate_unadopt', scenarios)
+        self.assertIn('"X-CamAdmiral-Action": "unadopt-camera"', scenarios)
+        self.assertIn('get_by_role("menuitem", name="Unadopt", exact=True)', browser)
+        self.assertIn('expect(page.locator("#app-modal")).to_be_hidden()', browser)
+        self.assertIn('to_contain_text("online")', browser)
+        self.assertIn('response.url.endswith("/block")', browser)
+        self.assertIn('page.reload(wait_until="domcontentloaded")', browser)
+        self.assertIn('data-camera-filter="blocked"', browser)
+        self.assertIn('get_by_role("button", name="Unblock")', browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:

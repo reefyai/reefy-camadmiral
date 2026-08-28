@@ -13,7 +13,7 @@ go2rtc:
     operator_stream:
       - rtsp://camera-open:8554/main
 
-cameras:
+cameras: # No cameras defined, UI wizard should be used
   operator_camera:
     enabled: false
     ffmpeg:

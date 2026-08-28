@@ -276,6 +276,42 @@ MIGRATIONS: tuple[str, ...] = (
         WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
     );
     """,
+    """
+    CREATE TABLE blocked_devices (
+        block_uuid TEXT PRIMARY KEY,
+        candidate_uuid TEXT,
+        onvif_identity TEXT,
+        mac TEXT,
+        display_name TEXT NOT NULL,
+        last_ip TEXT,
+        blocked_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK(onvif_identity IS NOT NULL OR mac IS NOT NULL),
+        UNIQUE(onvif_identity),
+        UNIQUE(mac)
+    );
+    CREATE INDEX blocked_devices_candidate
+        ON blocked_devices(candidate_uuid);
+    """,
+    """
+    ALTER TABLE frigate_targets
+    ADD COLUMN address_mode TEXT DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost') OR address_mode IS NULL);
+    UPDATE frigate_targets
+    SET address_mode = (
+        SELECT CASE
+            WHEN COUNT(DISTINCT selections.address_mode) = 1
+            THEN MIN(selections.address_mode)
+            ELSE NULL
+        END
+        FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    )
+    WHERE EXISTS (
+        SELECT 1 FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    );
+    """,
 )
 
 
@@ -1021,6 +1057,123 @@ class CameraRepository:
             if (adoption := self.adoption_for_candidate(candidate_uuid)) is not None
         }
 
+    @staticmethod
+    def _candidate_stable_identity(candidate: dict[str, Any]) -> tuple[str | None, str | None]:
+        onvif = candidate.get("onvif") or {}
+        onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower() or None
+        mac = str(candidate.get("mac") or "").strip().lower() or None
+        return onvif_identity, mac
+
+    def blocked_devices(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT block_uuid, candidate_uuid, onvif_identity, mac, display_name, "
+                "last_ip, blocked_at, updated_at FROM blocked_devices "
+                "ORDER BY display_name COLLATE NOCASE, block_uuid"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def blocked_device_for_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        onvif_identity, mac = self._candidate_stable_identity(candidate)
+        clauses: list[str] = []
+        values: list[str] = []
+        if onvif_identity:
+            clauses.append("onvif_identity = ?")
+            values.append(onvif_identity)
+        if mac:
+            clauses.append("mac = ?")
+            values.append(mac)
+        if not clauses:
+            return None
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT block_uuid, candidate_uuid, onvif_identity, mac, display_name, "
+                f"last_ip, blocked_at, updated_at FROM blocked_devices WHERE {' OR '.join(clauses)}",
+                values,
+            ).fetchall()
+        if len(rows) > 1:
+            return None
+        return dict(rows[0]) if rows else None
+
+    def block_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        if candidate.get("identity_conflict"):
+            raise ValueError("Camera has a conflicting stable identity")
+        onvif_identity, mac = self._candidate_stable_identity(candidate)
+        if not onvif_identity and not mac:
+            raise ValueError("Camera has no stable ONVIF identity or MAC address")
+        timestamp = _now()
+        display_name = str(candidate.get("display_name") or candidate.get("ip") or "Blocked device")
+        candidate_uuid = str(candidate.get("candidate_uuid") or "") or None
+        last_ip = str(candidate.get("ip") or "") or None
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            clauses: list[str] = []
+            values: list[str] = []
+            if onvif_identity:
+                clauses.append("onvif_identity = ?")
+                values.append(onvif_identity)
+            if mac:
+                clauses.append("mac = ?")
+                values.append(mac)
+            matches = connection.execute(
+                "SELECT block_uuid FROM blocked_devices WHERE " + " OR ".join(clauses),
+                values,
+            ).fetchall()
+            if len(matches) > 1:
+                connection.rollback()
+                raise ValueError("ONVIF identity and MAC match different blocked devices")
+            block_uuid = str(matches[0]["block_uuid"]) if matches else str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO blocked_devices(block_uuid, candidate_uuid, onvif_identity, mac, "
+                "display_name, last_ip, blocked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(block_uuid) DO UPDATE SET candidate_uuid=excluded.candidate_uuid, "
+                "onvif_identity=COALESCE(excluded.onvif_identity, blocked_devices.onvif_identity), "
+                "mac=COALESCE(excluded.mac, blocked_devices.mac), "
+                "display_name=excluded.display_name, last_ip=excluded.last_ip, updated_at=excluded.updated_at",
+                (
+                    block_uuid,
+                    candidate_uuid,
+                    onvif_identity,
+                    mac,
+                    display_name,
+                    last_ip,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        blocked = self.blocked_device_for_candidate(candidate)
+        assert blocked is not None
+        return blocked
+
+    def unblock_device(self, block_uuid: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM blocked_devices WHERE block_uuid = ?",
+                (block_uuid,),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def unadopt_camera(self, camera_uuid: str) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            camera = connection.execute(
+                "SELECT credential_uuid FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                connection.rollback()
+                return False
+            credential_uuid = str(camera["credential_uuid"])
+            connection.execute("DELETE FROM cameras WHERE camera_uuid = ?", (camera_uuid,))
+            connection.execute(
+                "DELETE FROM camera_credentials WHERE credential_uuid = ?",
+                (credential_uuid,),
+            )
+            connection.commit()
+        return True
+
     def consumer_inventory(self) -> list[dict[str, Any]]:
         """Return adopted camera metadata without upstream URLs or credentials."""
         with self.connect() as connection:
@@ -1200,6 +1353,7 @@ class CameraRepository:
             rows = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1243,6 +1397,7 @@ class CameraRepository:
             row = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1255,6 +1410,33 @@ class CameraRepository:
         target["restart_recommended"] = bool(target["restart_recommended"])
         return target
 
+    def set_frigate_target_address_mode(
+        self,
+        target_id: str,
+        address_mode: str,
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
+        timestamp = _now()
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            connection.execute(
+                "UPDATE frigate_targets SET address_mode = ?, updated_at = ? "
+                "WHERE target_id = ?",
+                (address_mode, timestamp, target_id),
+            )
+            connection.execute(
+                "UPDATE frigate_camera_selections SET address_mode = ? WHERE target_id = ?",
+                (address_mode, target_id),
+            )
+            connection.commit()
+        return current["address_mode"] != address_mode
+
     def select_frigate_camera(
         self,
         target_id: str,
@@ -1264,6 +1446,12 @@ class CameraRepository:
         if address_mode not in {"lan", "localhost"}:
             raise ValueError("Frigate address mode is invalid")
         with self.connect() as connection:
+            target = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is not None and target["address_mode"] is not None:
+                address_mode = str(target["address_mode"])
             current = connection.execute(
                 "SELECT address_mode FROM frigate_camera_selections "
                 "WHERE target_id = ? AND camera_uuid = ?",

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -213,82 +215,10 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(streams).to_be_visible()
     streams.click()
     expect(page.locator("#app-modal-title")).to_contain_text("streams")
-    expect(page.get_by_text("Frigate destinations")).to_be_visible()
-    expect(page.get_by_text("No Frigate integrations configured.")).to_be_visible()
-    expect(page.get_by_role("link", name="Open integration settings")).to_have_attribute(
-        "href", "/settings/integrations"
-    )
-    page.locator("#app-modal-close").click()
-
-    page.route(
-        "**/internal/frigate-targets/synthetic-target/cameras/**",
-        lambda route: route.fulfill(
-            status=202,
-            content_type="application/json",
-            body='{"status": "syncing", "selected": true, "queued": true}',
-        ),
-    )
-    page.evaluate(
-        """
-        () => {
-          const device = devices.find(candidate => candidate.adoption?.camera_uuid);
-          device.adoption.frigate = [{
-            target_id: "synthetic-target",
-            target: "Synthetic Frigate",
-            selected: false,
-            status: null,
-            error_code: null,
-          }];
-          refresh = async () => {
-            await new Promise(resolve => setTimeout(resolve, 400));
-            const current = devices.find(candidate => candidate.adoption?.camera_uuid);
-            const target = current.adoption.frigate.find(
-              candidate => candidate.target_id === "synthetic-target"
-            );
-            target.selected = true;
-            target.status = "error";
-            target.error_code = "camera_start_pending";
-            renderRows();
-          };
-          openCameraStreams(device);
-        }
-        """
-    )
     modal = page.locator("#app-modal")
     expect(modal).to_be_visible()
-    modal.get_by_role("button", name="Sync", exact=True).click()
-    syncing = modal.get_by_role("button", name="Syncing...")
-    expect(syncing).to_be_visible()
-    spinner_metrics = syncing.locator(".inline-spinner").evaluate(
-        """
-        spinner => {
-          const bounds = spinner.getBoundingClientRect();
-          const style = getComputedStyle(spinner);
-          return {
-            width: bounds.width,
-            height: bounds.height,
-            flex: style.flex,
-            display: style.display,
-          };
-        }
-        """
-    )
-    if (
-        abs(float(spinner_metrics["width"]) - 14) > 0.5
-        or abs(float(spinner_metrics["height"]) - 14) > 0.5
-        or spinner_metrics["display"] not in {"block", "inline-block"}
-        or not str(spinner_metrics["flex"]).startswith("0 0")
-    ):
-        raise UiScenarioFailure(f"Sync spinner geometry is distorted: {spinner_metrics}")
-    expect(modal.get_by_text("Waiting for camera process")).to_be_visible(timeout=5_000)
-    expect(
-        modal.get_by_text(
-            "Frigate accepted the camera. CamAdmiral will retry until its process appears."
-        )
-    ).to_be_visible()
-    expect(modal).to_be_visible()
-    expect(page.locator("#app-modal-title")).to_contain_text("streams")
-    expect(modal.get_by_text("Synthetic Frigate")).to_be_visible()
+    if modal.get_by_text("Frigate destinations").count():
+        raise UiScenarioFailure("Streams still duplicates Frigate destination controls")
     page.locator("#app-modal-close").click()
 
 
@@ -379,13 +309,81 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
 
 
+def assert_camera_unadopt_block_and_restore(page: Page) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    expect(onvif_row).to_be_visible(timeout=30_000)
+    onvif_row.get_by_role("button", name=re.compile(r"^More actions for")).click()
+    action_menu = page.locator("#camera-action-menu")
+    expect(action_menu).to_be_visible()
+    expect(page.locator("#app-modal")).to_be_hidden()
+    action_menu.get_by_role("menuitem", name="Unadopt", exact=True).click()
+    expect(page.locator("#confirm-modal")).to_be_visible()
+    with page.expect_response(
+        lambda response: response.request.method == "DELETE"
+        and "/internal/cameras/" in response.url
+    ) as unadopt_response:
+        page.locator("#confirm-action").click()
+    if not unadopt_response.value.ok:
+        raise UiScenarioFailure("Camera could not be unadopted through the UI")
+
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    expect(onvif_row.get_by_role("button", name="Adopt", exact=True)).to_be_visible(
+        timeout=30_000
+    )
+    expect(onvif_row.locator(".device-status")).to_contain_text("online")
+    onvif_row.get_by_role("button", name=re.compile(r"^More actions for")).click()
+    action_menu.get_by_role("menuitem", name="Block device").click()
+    expect(page.locator("#confirm-modal")).to_be_visible()
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and response.url.endswith("/block")
+    ) as block_response:
+        page.locator("#confirm-action").click()
+    if not block_response.value.ok:
+        raise UiScenarioFailure("Device could not be blocked through the UI")
+
+    page.reload(wait_until="domcontentloaded")
+    expect(page.locator("#blocked-count")).to_have_text("1", timeout=30_000)
+    page.locator('[data-camera-filter="blocked"]').click()
+    blocked_row = page.locator("#camera-rows tr.camera-row").first
+    expect(blocked_row).to_be_visible()
+    expect(blocked_row).to_contain_text("blocked")
+    blocked_row.get_by_role("button", name="Unblock").click()
+    with page.expect_response(
+        lambda response: response.request.method == "DELETE"
+        and "/internal/discovery/blocked/" in response.url
+    ) as unblock_response:
+        page.locator("#confirm-action").click()
+    if not unblock_response.value.ok:
+        raise UiScenarioFailure("Device could not be unblocked through the UI")
+
+    expect(page.locator("#blocked-count")).to_have_text("0", timeout=30_000)
+    page.locator('[data-camera-filter="all"]').click()
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    onvif_row.get_by_role("button", name="Adopt", exact=True).click()
+    adopt_modal = page.locator("#app-modal")
+    expect(adopt_modal.get_by_role("button", name="Adopt camera")).to_be_visible(
+        timeout=30_000
+    )
+    adopt_modal.get_by_role("button", name="Adopt camera").click()
+    expect(onvif_row.get_by_role("button", name="Streams")).to_be_visible(timeout=60_000)
+
+
 def assert_desktop_stream_layout(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
     page.locator("#camera-rows tr.camera-row").nth(2).wait_for(
         state="attached", timeout=30_000
     )
     page.get_by_role("button", name="Streams").first.click()
-    expect(page.get_by_text("Frigate destinations")).to_be_visible()
+    if page.get_by_text("Frigate destinations").count():
+        raise UiScenarioFailure("Streams still duplicates Frigate destination controls")
     page.locator("#app-modal-body .profile-name").first.evaluate(
         "node => { node.textContent = 'MediaProfile_Channel1_MainStream_With_A_Long_Technical_Name'; }"
     )
@@ -411,12 +409,222 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("heading", name="Telegram notifications")).to_be_visible()
     expect(page.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
     expect(page.get_by_role("link", name="Notifications")).to_have_attribute("aria-current", "page")
+
+    sync_state: dict[str, object] = {
+        "selected": set(),
+        "pending_until": {},
+        "address_mode": "lan",
+        "synced_modes": [],
+    }
+
+    def synthetic_frigate_targets(route) -> None:
+        selected = sync_state["selected"]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "targets": [
+                        {
+                            "target_id": "synthetic-target",
+                            "name": "Synthetic Frigate",
+                            "api_url": "http://192.0.2.20:5000",
+                            "connection_status": "connected",
+                            "selected_cameras": len(selected),
+                            "last_checked_at": "2026-01-01T00:00:00Z",
+                            "last_error_code": None,
+                            "restart_recommended": False,
+                            "address_mode": sync_state["address_mode"],
+                        }
+                    ]
+                }
+            ),
+        )
+
+    def synthetic_discovery(route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        selected = sync_state["selected"]
+        pending_until = sync_state["pending_until"]
+        for device in payload.get("devices", []):
+            adoption = device.get("adoption")
+            if not adoption or not adoption.get("camera_uuid"):
+                continue
+            camera_uuid = adoption["camera_uuid"]
+            status = "not_synced"
+            if camera_uuid in selected:
+                status = (
+                    "pending"
+                    if time.monotonic() < pending_until.get(camera_uuid, 0)
+                    else "applied"
+                )
+            adoption["frigate"] = [
+                {
+                    "target_id": "synthetic-target",
+                    "target": "Synthetic Frigate",
+                    "selected": camera_uuid in selected,
+                    "address_mode": sync_state["address_mode"],
+                    "status": status,
+                }
+            ]
+            adoption["thumbnail_captured_at"] = "2026-01-01T00:00:00Z"
+        route.fulfill(
+            status=response.status,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def synthetic_camera_sync(route) -> None:
+        camera_uuid = urllib.parse.unquote(route.request.url.rsplit("/", 1)[-1])
+        selected = sync_state["selected"]
+        pending_until = sync_state["pending_until"]
+        if route.request.method == "POST":
+            body = route.request.post_data_json
+            sync_state["synced_modes"].append(body.get("address_mode"))
+            selected.add(camera_uuid)
+            pending_until[camera_uuid] = time.monotonic() + 2.0
+            route.fulfill(
+                status=202,
+                content_type="application/json",
+                body='{"status":"syncing","selected":true,"queued":true}',
+            )
+        else:
+            selected.discard(camera_uuid)
+            pending_until.pop(camera_uuid, None)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status":"removed","selected":false}',
+            )
+
+    def synthetic_target_address(route) -> None:
+        body = route.request.post_data_json
+        sync_state["address_mode"] = body["address_mode"]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "updated",
+                    "address_mode": body["address_mode"],
+                    "target": {"address_mode": body["address_mode"]},
+                }
+            ),
+        )
+    page.route("**/internal/frigate-targets", synthetic_frigate_targets)
+    page.route("**/internal/discovery", synthetic_discovery)
+    page.route(
+        "**/internal/frigate-targets/synthetic-target/address",
+        synthetic_target_address,
+    )
+    page.route(
+        "**/internal/frigate-targets/synthetic-target/cameras/**",
+        synthetic_camera_sync,
+    )
     page.get_by_role("link", name="Integrations").click()
     expect(page).to_have_url(re.compile(r"/settings/integrations$"))
     expect(page.get_by_role("heading", name="Frigate integrations")).to_be_visible()
     expect(page.get_by_role("heading", name="Telegram notifications")).to_be_hidden()
     expect(page.get_by_role("link", name="Integrations")).to_have_attribute("aria-current", "page")
     expect(page.locator("a.app-brand")).to_have_attribute("href", "/")
+    target = page.locator(".frigate-target").filter(has_text="Synthetic Frigate")
+    expect(target).to_contain_text("0 synced cameras")
+    choose = target.get_by_role("button", name="Choose cameras")
+    expect(choose).to_be_visible()
+    choose.click()
+    modal = page.locator("#app-modal")
+    expect(page.get_by_role("heading", name="Choose cameras for Synthetic Frigate")).to_be_visible()
+    choices = modal.locator(".frigate-camera-choice")
+    expect(choices.first).to_be_visible()
+    if choices.count() < 1:
+        raise UiScenarioFailure("Frigate camera chooser has no adopted cameras")
+    if not modal.locator(".frigate-camera-thumbnail img").count():
+        raise UiScenarioFailure("Frigate camera chooser has no cached thumbnails")
+    first_checkbox = choices.first.get_by_role("checkbox")
+    expect(first_checkbox).not_to_be_checked()
+    first_checkbox.check()
+    expect(modal.get_by_text("Record", exact=True).first).to_be_visible()
+    expect(modal.get_by_text("Detect", exact=True).first).to_be_visible()
+    expect(modal.get_by_role("radio", name="LAN")).to_be_checked()
+    lan_url = modal.locator(".frigate-camera-stream-url").first.inner_text()
+    access = page.evaluate(
+        """
+        async () => {
+          const response = await fetch("/internal/media/access", {
+            method: "POST",
+            headers: {"X-CamAdmiral-Action": "reveal-media-access"}
+          });
+          return response.json();
+        }
+        """
+    )
+    expected_lan_host = access.get("lan_host")
+    if (
+        not expected_lan_host
+        or f"@{expected_lan_host}:" not in lan_url
+        or "@localhost:" in lan_url
+        or not lan_url.startswith("rtsp://")
+    ):
+        raise UiScenarioFailure(f"LAN stream preview is invalid: {lan_url}")
+    modal.get_by_role("radio", name="Localhost").check()
+    expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/internal/frigate-targets/synthetic-target/cameras/" in response.url
+    ):
+        modal.get_by_role("button", name="Sync cameras").click()
+    syncing = modal.get_by_role("button", name="Syncing...")
+    expect(syncing).to_be_visible()
+    spinner_metrics = syncing.locator(".inline-spinner").evaluate(
+        """
+        spinner => {
+          const bounds = spinner.getBoundingClientRect();
+          const style = getComputedStyle(spinner);
+          return {width: bounds.width, height: bounds.height, flex: style.flex};
+        }
+        """
+    )
+    if (
+        abs(float(spinner_metrics["width"]) - 14) > 0.5
+        or abs(float(spinner_metrics["height"]) - 14) > 0.5
+        or not str(spinner_metrics["flex"]).startswith("0 0")
+    ):
+        raise UiScenarioFailure(f"Sync spinner geometry is distorted: {spinner_metrics}")
+    expect(modal.locator(".frigate-camera-state.applied")).to_have_text(
+        "Synced", timeout=10_000
+    )
+    expect(modal).to_be_visible()
+    expect(modal.get_by_role("button", name="Sync cameras")).to_be_enabled()
+    if sync_state["address_mode"] != "localhost" or sync_state["synced_modes"] != ["localhost"]:
+        raise UiScenarioFailure(f"Frigate target address mode was not persisted: {sync_state}")
+    page.locator("#app-modal-close").click()
+    expect(target).to_contain_text("1 synced camera")
+
+    target.get_by_role("button", name="Choose cameras").click()
+    modal = page.locator("#app-modal")
+    first_checkbox = modal.locator(".frigate-camera-choice").first.get_by_role("checkbox")
+    expect(first_checkbox).to_be_checked()
+    expect(modal.get_by_role("radio", name="Localhost")).to_be_checked()
+    expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")
+    first_checkbox.uncheck()
+    with page.expect_response(
+        lambda response: response.request.method == "DELETE"
+        and "/internal/frigate-targets/synthetic-target/cameras/" in response.url
+    ):
+        modal.get_by_role("button", name="Sync cameras").click()
+    expect(modal.locator(".frigate-camera-state.removed").first).to_have_text(
+        "Not synced", timeout=5_000
+    )
+    expect(modal).to_be_visible()
+    page.locator("#app-modal-close").click()
+    expect(target).to_contain_text("0 synced cameras")
+
+    target.get_by_role("button", name="More actions for Synthetic Frigate").click()
+    expect(page.get_by_role("menuitem", name="Test connection")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Repair sync")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Remove integration")).to_be_visible()
+    page.keyboard.press("Escape")
+
     overflow = page.locator("#settings-view .settings-section").evaluate_all(
         "sections => sections.filter(section => section.getBoundingClientRect().right > window.innerWidth + 0.5).length"
     )
@@ -452,6 +660,7 @@ def main() -> int:
         try:
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
+            assert_camera_unadopt_block_and_restore(page)
             assert_mobile_settings(page)
         except Exception:
             page.screenshot(
