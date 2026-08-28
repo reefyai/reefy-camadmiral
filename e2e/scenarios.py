@@ -1562,6 +1562,55 @@ def frigate() -> None:
         interval=2,
     )
 
+    partial_drift_stream = "camadmiral_synthetic_partial_drift"
+    partial_drift_source = "rtsp://camera-open:8554/sub"
+    seeded = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 0,
+            "config_data": {
+                "go2rtc": {"streams": {partial_drift_stream: [partial_drift_source]}}
+            },
+        },
+    )
+    if seeded.get("success") is not True:
+        raise ScenarioFailure("Could not seed partial Frigate runtime drift")
+    update_frigate(
+        f"/api/go2rtc/streams/{partial_drift_stream}?"
+        + urllib.parse.urlencode({"src": partial_drift_source}),
+        {},
+    )
+    delete_request = urllib.request.Request(
+        f"http://camadmiral:5000/api/go2rtc/streams/{partial_drift_stream}",
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(delete_request, timeout=8) as response:
+            response.read()
+    except (OSError, urllib.error.URLError) as exc:
+        raise ScenarioFailure("Could not create partial Frigate runtime drift") from exc
+    if partial_drift_stream in frigate_json("/api/go2rtc/streams"):
+        raise ScenarioFailure("Partial-drift Frigate stream remained in runtime")
+
+    drift_preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
+    if drift_preview.get("stale_cameras") != 0 or drift_preview.get("stale_streams") != 1:
+        raise ScenarioFailure(
+            f"Partial-drift full sync preview returned unexpected counts: {drift_preview}"
+        )
+    drift_result = request_json(
+        f"/internal/frigate-targets/{target_id}/full-sync",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
+        timeout=120,
+    )
+    if drift_result.get("removed_cameras") != 0 or drift_result.get("removed_streams") != 1:
+        raise ScenarioFailure(
+            f"Partial-drift full sync returned unexpected counts: {drift_result}"
+        )
+    drift_paths = frigate_json("/api/config/raw_paths")
+    if partial_drift_stream in drift_paths.get("go2rtc", {}).get("streams", {}):
+        raise ScenarioFailure("Full sync left the partial-drift stream in Frigate config")
+
     stale_camera = "camadmiral_synthetic_stale"
     operator_camera = "operator_camera"
     stale_streams = {
@@ -1671,55 +1720,6 @@ def frigate() -> None:
     ):
         raise ScenarioFailure("Frigate restart-required state was not persisted")
 
-    partial_drift_stream = "camadmiral_synthetic_partial_drift"
-    partial_drift_source = "rtsp://camera-open:8554/sub"
-    seeded = update_frigate(
-        "/api/config/set",
-        {
-            "requires_restart": 0,
-            "config_data": {
-                "go2rtc": {"streams": {partial_drift_stream: [partial_drift_source]}}
-            },
-        },
-    )
-    if seeded.get("success") is not True:
-        raise ScenarioFailure("Could not seed partial Frigate runtime drift")
-    update_frigate(
-        f"/api/go2rtc/streams/{partial_drift_stream}?"
-        + urllib.parse.urlencode({"src": partial_drift_source}),
-        {},
-    )
-    delete_request = urllib.request.Request(
-        f"http://camadmiral:5000/api/go2rtc/streams/{partial_drift_stream}",
-        method="DELETE",
-    )
-    try:
-        with urllib.request.urlopen(delete_request, timeout=8) as response:
-            response.read()
-    except (OSError, urllib.error.URLError) as exc:
-        raise ScenarioFailure("Could not create partial Frigate runtime drift") from exc
-    if partial_drift_stream in frigate_json("/api/go2rtc/streams"):
-        raise ScenarioFailure("Partial-drift Frigate stream remained in runtime")
-
-    drift_preview = request_json(f"/internal/frigate-targets/{target_id}/full-sync")
-    if drift_preview.get("stale_cameras") != 0 or drift_preview.get("stale_streams") != 1:
-        raise ScenarioFailure(
-            f"Partial-drift full sync preview returned unexpected counts: {drift_preview}"
-        )
-    drift_result = request_json(
-        f"/internal/frigate-targets/{target_id}/full-sync",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
-        timeout=120,
-    )
-    if drift_result.get("removed_cameras") != 0 or drift_result.get("removed_streams") != 1:
-        raise ScenarioFailure(
-            f"Partial-drift full sync returned unexpected counts: {drift_result}"
-        )
-    drift_paths = frigate_json("/api/config/raw_paths")
-    if partial_drift_stream in drift_paths.get("go2rtc", {}).get("streams", {}):
-        raise ScenarioFailure("Full sync left the partial-drift stream in Frigate config")
-
     uptime_before_removal = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0
     )
@@ -1759,7 +1759,32 @@ def frigate() -> None:
             "Frigate removal did not leave a detectable restart-required state"
         )
 
-    print("frigate: removal persisted and operator restart is required")
+    operator_removed = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 1,
+            "config_data": {"cameras": {operator_camera: ""}},
+        },
+    )
+    if operator_removed.get("success") is not True:
+        raise ScenarioFailure("Could not remove operator fixture before final-camera test")
+
+    final_removed = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
+        method="DELETE",
+        headers={"X-CamAdmiral-Action": "remove-frigate-camera"},
+        timeout=30,
+    )
+    if final_removed.get("selected") is not False:
+        raise ScenarioFailure(f"Final Frigate camera removal failed: {final_removed}")
+    saved_after_final_removal = frigate_saved_config()
+    if saved_after_final_removal.get("cameras") != {}:
+        raise ScenarioFailure(
+            "Final Frigate camera removal did not preserve a valid empty cameras mapping"
+        )
+
+    print("frigate: final-camera removal persisted and operator restart is required")
 
 
 def frigate_restart_verify() -> None:

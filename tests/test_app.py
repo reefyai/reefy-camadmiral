@@ -65,6 +65,42 @@ class FakeRepository:
 
 
 class DiscoveryDecorationTests(unittest.TestCase):
+    def test_media_access_reports_current_lan_host_for_url_previews(self) -> None:
+        repository = Mock()
+        repository.rtsp_access_password.return_value = "synthetic-secret"
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "media_host_for_mode",
+                return_value="192.168.50.12",
+            ) as resolve_host,
+        ):
+            response = app_module.media_access("reveal-media-access")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["lan_host"], "192.168.50.12")
+        resolve_host.assert_called_once_with(app_module.INVENTORY, "lan")
+
+    def test_media_access_remains_available_when_lan_host_is_unknown(self) -> None:
+        repository = Mock()
+        repository.rtsp_access_password.return_value = "synthetic-secret"
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "media_host_for_mode",
+                side_effect=app_module.FrigateApiError("media_host_unavailable"),
+            ),
+        ):
+            response = app_module.media_access("reveal-media-access")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "ok")
+        self.assertIsNone(payload["lan_host"])
+
     def test_app_icon_is_served_for_header_and_browser_tab(self) -> None:
         response = app_module.app_icon()
         self.assertEqual(response.media_type, "image/png")
@@ -915,6 +951,27 @@ class FrigateTargetApiTests(unittest.TestCase):
             status="connected",
             restart_recommended=False,
         )
+
+    def test_target_address_choice_is_saved_without_changing_stream_preference(self) -> None:
+        repository = Mock()
+        repository.frigate_target.return_value = {
+            "target_id": "frigate-synthetic",
+            "name": "Local Frigate",
+            "api_url": "http://127.0.0.1:20001",
+            "address_mode": "localhost",
+        }
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.set_frigate_target_address(
+                "frigate-synthetic",
+                app_module.FrigateTargetAddressRequest(address_mode="localhost"),
+                "set-frigate-target-address",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        repository.set_frigate_target_address_mode.assert_called_once_with(
+            "frigate-synthetic", "localhost"
+        )
+        repository.set_camera_stream_address_mode.assert_not_called()
 
     def test_remove_leaves_frigate_configuration_untouched(self) -> None:
         repository = Mock()

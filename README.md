@@ -207,10 +207,9 @@ proxy. CamAdmiral validates the required configuration and runtime stream capabi
 before saving the integration. It then makes privileged configuration requests to that
 endpoint, so connect only to a Frigate API you trust. Redirects are not followed.
 
-Use a camera's **Streams** action to select which Frigate instance should receive it through a
-stable CamAdmiral downstream URL. The same dialog can show and copy the generated Frigate
-configuration or remove that CamAdmiral-managed camera from the instance. Each camera and
-Frigate target pairing has a CamAdmiral address mode:
+Use **Choose cameras** on a Frigate integration to select the adopted cameras that instance
+should receive through stable CamAdmiral downstream URLs. The chooser previews the Record and
+Detect streams before synchronization. Each Frigate target has one CamAdmiral address mode:
 
 - **LAN IP** is the default and uses the host's current default LAN address. CamAdmiral
   reconciles Frigate when DHCP changes that address.
@@ -218,13 +217,15 @@ Frigate target pairing has a CamAdmiral address mode:
   that shares the host network. CamAdmiral saves the operator's selection without probing
   or overriding it.
 
-The address mode applies to both recording and detection streams for that camera. Existing
-Frigate selections migrate to **LAN IP**.
+The address mode applies to every recording and detection stream synchronized to that Frigate
+target. A camera's **Streams** dialog keeps a separate per-camera LAN or Localhost preference
+for displaying and copying downstream URLs. Changing that display preference never changes a
+Frigate target.
 
-Use **Full sync now** to synchronize the selected cameras and remove stale Frigate cameras
-and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral shows one
-confirmation with the cleanup counts. Cameras and streams outside that namespace are never
-removed or changed by full sync.
+Use **Repair sync** from the Frigate target's actions menu to synchronize the selected cameras
+and remove stale Frigate cameras and go2rtc streams in CamAdmiral's reserved `camadmiral_`
+namespace. CamAdmiral shows one confirmation with the cleanup counts. Cameras and streams
+outside that namespace are never removed or changed by sync repair.
 
 Frigate integrations are operational settings stored in CamAdmiral's SQLite database.
 They are included in the `/var/lib/camadmiral` backup boundary and are managed exclusively

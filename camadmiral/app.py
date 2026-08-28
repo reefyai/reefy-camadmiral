@@ -187,6 +187,10 @@ class FrigateCameraSyncRequest(BaseModel):
     address_mode: Literal["lan", "localhost"] = "lan"
 
 
+class FrigateTargetAddressRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"]
+
+
 FACTORY_ONVIF_USERNAME = "admin"
 FACTORY_ONVIF_PASSWORD = "admin"
 
@@ -324,7 +328,11 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             adoption["frigate"] = []
             for target, selections_by_camera, bindings_by_camera in frigate_bindings:
                 binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
-                address_mode = selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+                address_mode = (
+                    str(target.address_mode)
+                    if target.address_mode is not None
+                    else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+                )
                 selected = str(adoption["camera_uuid"]) in selections_by_camera
                 target_status = {
                     "target_id": target.target_id,
@@ -1173,6 +1181,28 @@ def update_frigate_target(
     return _secured_json({"status": "updated", "target": repository.frigate_target(target_id)})
 
 
+@app.post("/internal/frigate-targets/{target_id}/address", include_in_schema=False)
+def set_frigate_target_address(
+    target_id: str,
+    request: FrigateTargetAddressRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-frigate-target-address":
+        raise HTTPException(status_code=400, detail="Missing Frigate address action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.frigate_target(target_id) is None:
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    repository.set_frigate_target_address_mode(target_id, request.address_mode)
+    return _secured_json(
+        {
+            "status": "updated",
+            "address_mode": request.address_mode,
+            "target": repository.frigate_target(target_id),
+        }
+    )
+
+
 @app.post("/internal/frigate-targets/{target_id}/test", include_in_schema=False)
 def test_frigate_target(
     target_id: str,
@@ -1278,11 +1308,18 @@ def preview_frigate_camera_config(
 ) -> JSONResponse:
     repository = _repository(required=True)
     assert repository is not None
-    _current, target = _stored_frigate_target(repository, target_id)
+    current, target = _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     selected_mode = repository.frigate_camera_address_mode(target_id, camera_uuid)
-    effective_mode = address_mode or selected_mode or "lan"
+    effective_mode = (
+        address_mode
+        or (
+            str(current["address_mode"])
+            if current.get("address_mode") is not None
+            else selected_mode or "lan"
+        )
+    )
     try:
         configuration = frigate_camera_configuration(
             repository,
@@ -1309,11 +1346,13 @@ def sync_frigate_camera(
         raise HTTPException(status_code=400, detail="Missing Frigate camera sync action header")
     repository = _repository(required=True)
     assert repository is not None
-    _stored_frigate_target(repository, target_id)
+    current, _target = _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     address_mode = (
-        request.address_mode
+        str(current["address_mode"])
+        if current.get("address_mode") is not None
+        else request.address_mode
         if request is not None
         else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
     )
@@ -1719,12 +1758,17 @@ def media_access(
             status_code=503,
         )
     assert repository is not None
+    try:
+        lan_host = media_host_for_mode(INVENTORY, "lan")
+    except FrigateApiError:
+        lan_host = None
     return _secured_json(
         {
             "status": "ok",
             "username": "camadmiral",
             "password": repository.rtsp_access_password(),
             "port": 18554,
+            "lan_host": lan_host,
         }
     )
 

@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_e2e_python_sources_compile(self) -> None:
+        for source in (ROOT / "e2e").rglob("*.py"):
+            compile(source.read_text(), str(source), "exec")
+
     def test_release_metadata_is_consistent(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "validate-release.py")],
@@ -136,6 +140,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('method="DELETE"', scenarios)
         self.assertIn("Partial-drift Frigate stream remained in runtime", scenarios)
         self.assertIn("Full sync left the partial-drift stream in Frigate config", scenarios)
+        self.assertLess(
+            scenarios.index('partial_drift_stream = "camadmiral_synthetic_partial_drift"'),
+            scenarios.index('stale_camera = "camadmiral_synthetic_stale"'),
+        )
 
     def test_e2e_full_sync_covers_rejected_delete_after_live_removal(self) -> None:
         runner = (ROOT / "e2e" / "run.py").read_text()
@@ -171,6 +179,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('page.goto(f"{BASE_URL}/settings/notifications",', browser)
         self.assertIn('to_have_url(re.compile(r"/settings/integrations$"))', browser)
         self.assertIn('to_have_url(re.compile(r"/incidents$"))', browser)
+        self.assertIn('"pending_until": {}', browser)
+        self.assertIn("time.monotonic() + 2.0", browser)
+        self.assertIn('with page.expect_response(', browser)
+        self.assertIn("Sync spinner geometry is distorted", browser)
         self.assertIn("Settings section extends beyond the mobile viewport", browser)
         self.assertIn("assert_downstream_password_masking(page)", browser)
         self.assertIn('":********@" not in displayed', browser)
