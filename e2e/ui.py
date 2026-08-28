@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -410,7 +411,7 @@ def assert_mobile_settings(page: Page) -> None:
 
     sync_state: dict[str, object] = {
         "selected": set(),
-        "pending_polls": {},
+        "pending_until": {},
         "address_mode": "lan",
         "synced_modes": [],
     }
@@ -443,7 +444,7 @@ def assert_mobile_settings(page: Page) -> None:
         response = route.fetch()
         payload = response.json()
         selected = sync_state["selected"]
-        pending_polls = sync_state["pending_polls"]
+        pending_until = sync_state["pending_until"]
         for device in payload.get("devices", []):
             adoption = device.get("adoption")
             if not adoption or not adoption.get("camera_uuid"):
@@ -451,10 +452,11 @@ def assert_mobile_settings(page: Page) -> None:
             camera_uuid = adoption["camera_uuid"]
             status = "not_synced"
             if camera_uuid in selected:
-                remaining = pending_polls.get(camera_uuid, 0)
-                status = "pending" if remaining else "applied"
-                if remaining:
-                    pending_polls[camera_uuid] = remaining - 1
+                status = (
+                    "pending"
+                    if time.monotonic() < pending_until.get(camera_uuid, 0)
+                    else "applied"
+                )
             adoption["frigate"] = [
                 {
                     "target_id": "synthetic-target",
@@ -474,12 +476,12 @@ def assert_mobile_settings(page: Page) -> None:
     def synthetic_camera_sync(route) -> None:
         camera_uuid = urllib.parse.unquote(route.request.url.rsplit("/", 1)[-1])
         selected = sync_state["selected"]
-        pending_polls = sync_state["pending_polls"]
+        pending_until = sync_state["pending_until"]
         if route.request.method == "POST":
             body = route.request.post_data_json
             sync_state["synced_modes"].append(body.get("address_mode"))
             selected.add(camera_uuid)
-            pending_polls[camera_uuid] = 2
+            pending_until[camera_uuid] = time.monotonic() + 2.0
             route.fulfill(
                 status=202,
                 content_type="application/json",
@@ -487,7 +489,7 @@ def assert_mobile_settings(page: Page) -> None:
             )
         else:
             selected.discard(camera_uuid)
-            pending_polls.pop(camera_uuid, None)
+            pending_until.pop(camera_uuid, None)
             route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -548,7 +550,11 @@ def assert_mobile_settings(page: Page) -> None:
         raise UiScenarioFailure(f"LAN stream preview is invalid: {lan_url}")
     modal.get_by_role("radio", name="Localhost").check()
     expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")
-    modal.get_by_role("button", name="Sync cameras").click()
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and "/internal/frigate-targets/synthetic-target/cameras/" in response.url
+    ):
+        modal.get_by_role("button", name="Sync cameras").click()
     syncing = modal.get_by_role("button", name="Syncing...")
     expect(syncing).to_be_visible()
     spinner_metrics = syncing.locator(".inline-spinner").evaluate(
