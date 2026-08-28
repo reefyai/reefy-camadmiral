@@ -369,6 +369,9 @@
     .row-action:disabled { border-color: rgba(148, 163, 184, .14); color: #60798e; cursor: not-allowed; }
     .syncing-action { display: inline-flex; align-items: center; gap: 6px; }
     .action-stack { display: flex; align-items: center; gap: 8px; }
+    .camera-action-sheet { display: grid; gap: 9px; }
+    .camera-action-sheet .row-action, .camera-action-sheet .danger-action { width: 100%; min-height: 38px; }
+    .camera-action-note { color: #7890a4; font-size: 11px; line-height: 1.45; }
     .camera-details { min-width: 0; }
     .camera-summary {
       display: grid; gap: 9px; margin-bottom: 12px; padding: 12px 13px;
@@ -779,6 +782,7 @@
             <button class="pill summary-filter" data-camera-filter="all" type="button"><strong id="device-count">0</strong> devices</button>
             <button class="pill summary-filter" data-camera-filter="online" type="button" aria-pressed="false"><strong id="online-count">0</strong> online</button>
             <button class="pill summary-filter" data-camera-filter="offline" type="button" aria-pressed="false"><strong id="offline-count">0</strong> offline</button>
+            <button class="pill summary-filter" data-camera-filter="blocked" type="button" aria-pressed="false"><strong id="blocked-count">0</strong> blocked</button>
           </div>
           <div class="toolbar-controls">
             <label class="search"><span>Search cameras</span><input id="search" type="search" placeholder="Search cameras"></label>
@@ -1636,7 +1640,15 @@
         const warningMessage = targetWarning ? "Frigate saved the removal without interrupting running cameras. Restart Frigate when convenient, then click Test to confirm cleanup." : "";
         const errorDetail = addText(summary, "div", targetWarning ? "setup-status warning" : "frigate-target-error", warningMessage || (target.last_error_code ? `Last error code: ${target.last_error_code}.` : ""));
         errorDetail.hidden = !warningMessage && !target.last_error_code;
+        if (!target.selected_cameras) {
+          addText(summary, "div", "settings-copy", "No CamAdmiral cameras synced yet. Open Cameras, choose a camera, then select Streams and Sync now.");
+        }
         const actions = addText(item, "div", "frigate-target-actions", "");
+        if (!target.selected_cameras) {
+          const viewCameras = addText(actions, "button", "row-action", "View cameras");
+          viewCameras.type = "button";
+          viewCameras.addEventListener("click", () => { window.location.href = "/"; });
+        }
         const fullSync = addText(actions, "button", "row-action", "Full sync now");
         fullSync.type = "button";
         fullSync.title = "Synchronize selected cameras and remove stale CamAdmiral resources";
@@ -1831,6 +1843,9 @@
     }
 
     function cameraHealth(device) {
+      if (device.blocked) {
+        return {key: "disabled", label: "blocked"};
+      }
       if (device.adoption && device.adoption.enabled === false) {
         return {key: "disabled", label: "disabled"};
       }
@@ -1865,13 +1880,15 @@
     }
 
     function updateSummaryCounts() {
-      const counts = devices.reduce((result, device) => {
+      const visibleDevices = devices.filter(device => !device.blocked);
+      const counts = visibleDevices.reduce((result, device) => {
         result[cameraConnectivity(device)] += 1;
         return result;
       }, {online: 0, offline: 0});
-      setText(document.querySelector("#device-count"), devices.length);
+      setText(document.querySelector("#device-count"), visibleDevices.length);
       setText(document.querySelector("#online-count"), counts.online);
       setText(document.querySelector("#offline-count"), counts.offline);
+      setText(document.querySelector("#blocked-count"), devices.filter(device => device.blocked).length);
     }
 
     function addCameraSummary(parent, device) {
@@ -3476,12 +3493,116 @@
       renderActiveCameraModal();
     }
 
+    function canBlockCamera(device) {
+      return !device.adoption && !device.blocked && !device.identity_conflict && Boolean(
+        device.mac || device.onvif?.endpoint_reference
+      );
+    }
+
+    function openCameraActions(device, trigger = null) {
+      const sheet = document.createElement("div");
+      sheet.className = "camera-action-sheet";
+      if (device.adoption?.camera_uuid) {
+        const enabled = device.adoption.enabled !== false;
+        const toggle = addText(sheet, "button", "row-action", enabled ? "Disable camera" : "Enable camera");
+        toggle.type = "button";
+        toggle.addEventListener("click", async () => {
+          toggle.disabled = true;
+          try {
+            const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/enabled`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-camera-enabled"},
+              body: JSON.stringify({enabled: !enabled})
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.message || result.detail || "Camera state could not be changed.");
+            closeAppModal(false);
+            lastResultId = null;
+            await refresh();
+          } catch (error) {
+            toggle.disabled = false;
+            addText(sheet, "div", "setup-status error", error.message);
+          }
+        });
+        const unadopt = addText(sheet, "button", "danger-action", "Unadopt");
+        unadopt.type = "button";
+        unadopt.addEventListener("click", () => showConfirmation({
+          title: `Unadopt ${device.display_name || "camera"}?`,
+          message: "CamAdmiral will stop monitoring this camera and remove its saved credentials, streams, availability history, incidents, and managed Frigate configuration. The camera may appear again after the next network scan.",
+          actionLabel: "Unadopt",
+          trigger: unadopt,
+          onConfirm: async () => {
+            const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`, {
+              method: "DELETE",
+              headers: {"X-CamAdmiral-Action": "unadopt-camera"}
+            });
+            const result = await response.json();
+            if (!response.ok) {
+              addText(sheet, "div", "setup-status error", result.message || result.detail || "Camera could not be unadopted.");
+              return;
+            }
+            closeAppModal(false);
+            lastResultId = null;
+            await refresh();
+          }
+        }));
+        addText(sheet, "div", "camera-action-note", "Unadopt removes CamAdmiral's saved camera data. It does not reset or disable the physical camera.");
+      } else if (canBlockCamera(device)) {
+        const block = addText(sheet, "button", "danger-action", "Block device");
+        block.type = "button";
+        block.addEventListener("click", () => showConfirmation({
+          title: `Block ${device.display_name || "device"}?`,
+          message: "This device will be hidden from the camera list and future scans. You can restore it from the Blocked filter.",
+          actionLabel: "Block",
+          trigger: block,
+          onConfirm: async () => {
+            const response = await fetch(`/internal/discovery/${encodeURIComponent(device.candidate_uuid)}/block`, {
+              method: "POST",
+              headers: {"X-CamAdmiral-Action": "block-camera"}
+            });
+            const result = await response.json();
+            if (!response.ok) {
+              addText(sheet, "div", "setup-status error", result.message || result.detail || "Device could not be blocked.");
+              return;
+            }
+            closeAppModal(false);
+            lastResultId = null;
+            await refresh();
+          }
+        }));
+        addText(sheet, "div", "camera-action-note", "Blocking follows this device by its ONVIF identity or MAC address, not by IP address.");
+      }
+      openAppModal("actions", `${device.display_name || device.ip} actions`, sheet, trigger, "compact");
+    }
+
+    function unblockCamera(device, trigger) {
+      showConfirmation({
+        title: `Unblock ${device.display_name || "device"}?`,
+        message: "This device will return to the camera list if it is still present in the current inventory.",
+        actionLabel: "Unblock",
+        trigger,
+        onConfirm: async () => {
+          const response = await fetch(`/internal/discovery/blocked/${encodeURIComponent(device.block_uuid)}`, {
+            method: "DELETE",
+            headers: {"X-CamAdmiral-Action": "unblock-camera"}
+          });
+          const result = await response.json();
+          if (!response.ok) return;
+          lastResultId = null;
+          await refresh();
+        }
+      });
+    }
+
     function renderRows() {
       dismissAvailabilityTooltip();
       const query = searchInput.value.trim().toLocaleLowerCase();
-      const visible = devices.filter(device => (
-        matchesSearch(device, query) && (!cameraFilter || cameraConnectivity(device) === cameraFilter)
-      ));
+      const visible = devices.filter(device => {
+        if (!matchesSearch(device, query)) return false;
+        if (cameraFilter === "blocked") return Boolean(device.blocked);
+        if (device.blocked) return false;
+        return !cameraFilter || cameraConnectivity(device) === cameraFilter;
+      });
       visible.sort((left, right) => {
         const a = sortValue(left, sortKey);
         const b = sortValue(right, sortKey);
@@ -3518,7 +3639,7 @@
           previewCell.title = "Open live view";
           previewCell.addEventListener("click", () => showLiveView(device.adoption.camera_uuid, device.display_name));
         }
-        const previewPlaceholder = addText(previewCell, "span", "preview-placeholder", device.adoption ? "Waiting for video" : "Not adopted");
+        const previewPlaceholder = addText(previewCell, "span", "preview-placeholder", device.blocked ? "Blocked" : device.adoption ? "Waiting for video" : "Not adopted");
         if (device.adoption?.camera_uuid && device.adoption.thumbnail_captured_at) {
           const image = document.createElement("img");
           image.alt = `Recent view from ${device.display_name || "camera"}`;
@@ -3561,13 +3682,28 @@
           streams.type = "button";
           streams.setAttribute("aria-haspopup", "dialog");
           streams.addEventListener("click", () => openCameraStreams(device, streams));
+          const more = addText(actionStack, "button", "row-action", "More");
+          more.type = "button";
+          more.setAttribute("aria-haspopup", "dialog");
+          more.addEventListener("click", () => openCameraActions(device, more));
         }
-        if (!device.adoption) {
+        if (!device.adoption && !device.blocked) {
           const adopt = addText(actionStack, "button", "row-action", "Adopt");
           adopt.type = "button";
           adopt.setAttribute("aria-haspopup", "dialog");
           adopt.disabled = !device.candidate_uuid || device.status !== "online";
           adopt.addEventListener("click", () => openCameraAdoption(device, adopt));
+          if (canBlockCamera(device)) {
+            const more = addText(actionStack, "button", "row-action", "More");
+            more.type = "button";
+            more.setAttribute("aria-haspopup", "dialog");
+            more.addEventListener("click", () => openCameraActions(device, more));
+          }
+        }
+        if (device.blocked && device.block_uuid) {
+          const unblock = addText(actionStack, "button", "row-action", "Unblock");
+          unblock.type = "button";
+          unblock.addEventListener("click", () => unblockCamera(device, unblock));
         }
         cameraRows.append(row);
       });
@@ -3577,7 +3713,7 @@
       setText(empty, devices.length ? `No matching ${filterLabel}cameras.` : "No ONVIF or RTSP cameras found.");
 
       document.querySelectorAll(".summary-filter").forEach(button => {
-        const selected = button.dataset.cameraFilter === cameraFilter;
+        const selected = button.dataset.cameraFilter === (cameraFilter || "all");
         button.classList.toggle("selected", selected);
         if (button.dataset.cameraFilter !== "all") button.setAttribute("aria-pressed", String(selected));
       });
@@ -3607,6 +3743,8 @@
         const healthSignature = JSON.stringify((data.devices || []).map(device => [
           device.candidate_uuid,
           device.display_name,
+          device.blocked,
+          device.block_uuid,
           device.connectivity_status,
           device.adoption?.enabled,
           device.adoption?.thumbnail_captured_at,

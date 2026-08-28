@@ -85,6 +85,7 @@ def main() -> int:
         )
         scenario("baseline")
         ui_scenario()
+        scenario("accept-ui-lifecycle-state")
         run("up", "--detach", "frigate", "frigate-api-proxy")
         scenario("frigate")
         run("restart", "frigate")

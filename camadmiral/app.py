@@ -275,6 +275,18 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     if repository is None:
         return state
     adoptions = repository.adoption_map()
+    blocked_records = repository.blocked_devices()
+    blocked_by_identity = {
+        str(record["onvif_identity"]): record
+        for record in blocked_records
+        if record.get("onvif_identity")
+    }
+    blocked_by_mac = {
+        str(record["mac"]): record
+        for record in blocked_records
+        if record.get("mac")
+    }
+    visible_blocks: set[str] = set()
     frigate_bindings = [
         (
             target,
@@ -290,6 +302,18 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         for target in load_frigate_targets(repository)
     ]
     for device in state.get("devices", []):
+        onvif = device.get("onvif") or {}
+        onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower()
+        mac = str(device.get("mac") or "").strip().lower()
+        identity_match = blocked_by_identity.get(onvif_identity) if onvif_identity else None
+        mac_match = blocked_by_mac.get(mac) if mac else None
+        blocked = identity_match or mac_match
+        if identity_match is not None and mac_match is not None and identity_match is not mac_match:
+            blocked = None
+        if blocked is not None:
+            device["blocked"] = True
+            device["block_uuid"] = blocked["block_uuid"]
+            visible_blocks.add(str(blocked["block_uuid"]))
         candidate_uuid = device.get("candidate_uuid")
         if candidate_uuid in adoptions:
             adoption = adoptions[candidate_uuid]
@@ -318,18 +342,41 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
     devices = state.get("devices", [])
+    for blocked in blocked_records:
+        if str(blocked["block_uuid"]) in visible_blocks:
+            continue
+        onvif_identity = blocked.get("onvif_identity")
+        devices.append(
+            {
+                "candidate_uuid": blocked.get("candidate_uuid") or f'blocked:{blocked["block_uuid"]}',
+                "display_name": blocked["display_name"],
+                "ip": blocked.get("last_ip"),
+                "mac": blocked.get("mac"),
+                "onvif": (
+                    {"endpoint_reference": onvif_identity, "service_urls": []}
+                    if onvif_identity
+                    else None
+                ),
+                "rtsp": [],
+                "status": "offline",
+                "blocked": True,
+                "block_uuid": blocked["block_uuid"],
+            }
+        )
     for device in devices:
         device["connectivity_status"] = _camera_connectivity_status(device)
+    visible_devices = [device for device in devices if not device.get("blocked")]
     summary = dict(state.get("summary") or {})
     summary.update(
         {
-            "devices": len(devices),
+            "devices": len(visible_devices),
             "online": sum(
-                device["connectivity_status"] == "online" for device in devices
+                device["connectivity_status"] == "online" for device in visible_devices
             ),
             "offline": sum(
-                device["connectivity_status"] == "offline" for device in devices
+                device["connectivity_status"] == "offline" for device in visible_devices
             ),
+            "blocked": len(blocked_records),
         }
     )
     state["summary"] = summary
@@ -1498,6 +1545,61 @@ def set_camera_enabled(
     )
 
 
+@app.delete("/internal/cameras/{camera_uuid}", include_in_schema=False)
+def unadopt_camera(
+    camera_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unadopt-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unadopt action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.camera(camera_uuid) is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    targets = [
+        target
+        for target in load_frigate_targets(repository)
+        if camera_uuid in repository.selected_frigate_camera_uuids(target.target_id)
+    ]
+    if targets and not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json(
+            {"status": "sync_busy", "message": "Camera synchronization is already running."},
+            status_code=409,
+        )
+    restart_recommended = False
+    try:
+        for target in targets:
+            try:
+                result = remove_frigate_camera(repository, target, camera_uuid)
+            except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target.target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
+                return _frigate_target_error(exc)
+            target_restart = bool(result.get("restart_recommended"))
+            restart_recommended = restart_recommended or target_restart
+            repository.record_frigate_target_check(
+                target.target_id,
+                status="connected",
+                restart_recommended=target_restart,
+            )
+    finally:
+        if targets:
+            FRIGATE_LOCK.release()
+    if not repository.unadopt_camera(camera_uuid):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    _reconcile_media()
+    return _secured_json(
+        {
+            "status": "unadopted",
+            "camera_uuid": camera_uuid,
+            "restart_recommended": restart_recommended,
+        }
+    )
+
+
 @app.post("/internal/cameras/{camera_uuid}/stream-address", include_in_schema=False)
 def set_camera_stream_address(
     camera_uuid: str,
@@ -2156,6 +2258,47 @@ def add_discovery_address(
             }
         )
     return _secured_json(_decorate_adoptions(queued), status_code=202)
+
+
+@app.post("/internal/discovery/{candidate_uuid}/block", include_in_schema=False)
+def block_candidate(
+    candidate_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "block-camera":
+        raise HTTPException(status_code=400, detail="Missing camera block action header")
+    candidate = _find_candidate(candidate_uuid)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Camera candidate not found")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.adoption_for_candidate(candidate_uuid) is not None:
+        return _secured_json(
+            {"status": "adopted", "message": "Unadopt this camera before blocking it."},
+            status_code=409,
+        )
+    try:
+        blocked = repository.block_candidate(candidate)
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "unstable_identity", "message": str(exc)},
+            status_code=422,
+        )
+    return _secured_json({"status": "blocked", "device": blocked})
+
+
+@app.delete("/internal/discovery/blocked/{block_uuid}", include_in_schema=False)
+def unblock_candidate(
+    block_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unblock-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unblock action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.unblock_device(block_uuid):
+        raise HTTPException(status_code=404, detail="Blocked device not found")
+    return _secured_json({"status": "unblocked"})
 
 
 @app.post("/internal/discovery/{candidate_uuid}/inspect", include_in_schema=False)
