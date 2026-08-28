@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+from yaml.nodes import MappingNode, ScalarNode
 
 from .discovery import default_lan_interface
 
@@ -129,12 +130,24 @@ class FrigateClient:
         self.timeout = timeout
         self._opener = urllib.request.build_opener(_NoRedirectHandler())
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        raw_body: bytes | None = None,
+    ) -> Any:
+        if payload is not None and raw_body is not None:
+            raise ValueError("payload and raw_body are mutually exclusive")
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        elif raw_body is not None:
+            body = raw_body
+            headers["Content-Type"] = "text/plain"
         request = urllib.request.Request(
             f"{self.target.api_url}{path}",
             data=body,
@@ -228,9 +241,7 @@ class FrigateClient:
         return result
 
     def raw_config(self) -> dict[str, Any]:
-        result = self._request("GET", "/api/config/raw")
-        if not isinstance(result, str):
-            raise FrigateApiError("invalid_response")
+        result = self.raw_config_text()
         try:
             parsed = yaml.safe_load(result)
         except yaml.YAMLError as exc:
@@ -238,6 +249,21 @@ class FrigateClient:
         if not isinstance(parsed, dict):
             raise FrigateApiError("invalid_response")
         return parsed
+
+    def raw_config_text(self) -> str:
+        result = self._request("GET", "/api/config/raw")
+        if not isinstance(result, str):
+            raise FrigateApiError("invalid_response")
+        return result
+
+    def save_raw_config(self, raw_config: str) -> None:
+        result = self._request(
+            "POST",
+            "/api/config/save?save_option=save",
+            raw_body=raw_config.encode("utf-8"),
+        )
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise FrigateApiError("configuration_rejected")
 
     def runtime_streams(self) -> dict[str, Any]:
         result = self._request("GET", "/api/go2rtc/streams")
@@ -294,6 +320,82 @@ class FrigateClient:
 def frigate_camera_key(camera_uuid: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
     return f"{KEY_PREFIX}{normalized}"
+
+
+def _empty_top_level_mapping(raw_config: str, mapping_key: str) -> str:
+    """Replace a top-level YAML mapping with an explicit empty mapping.
+
+    Frigate 0.17 can emit an invalid standalone ``{}`` when its incremental
+    updater removes the final child from a mapping whose key has an inline
+    comment. Raw-save the minimal text edit instead so comments and unrelated
+    operator configuration remain untouched.
+    """
+    try:
+        document = yaml.compose(raw_config)
+    except yaml.YAMLError as exc:
+        raise FrigateApiError("invalid_response") from exc
+    if not isinstance(document, MappingNode):
+        raise FrigateApiError("invalid_response")
+
+    mapping_node: MappingNode | None = None
+    key_node: ScalarNode | None = None
+    for candidate_key, candidate_value in document.value:
+        if (
+            isinstance(candidate_key, ScalarNode)
+            and candidate_key.value == mapping_key
+        ):
+            key_node = candidate_key
+            if isinstance(candidate_value, MappingNode):
+                mapping_node = candidate_value
+            break
+    if key_node is None or mapping_node is None:
+        raise FrigateApiError("invalid_response")
+
+    line_start = key_node.start_mark.index - key_node.start_mark.column
+    line_end = raw_config.find("\n", key_node.end_mark.index)
+    if line_end < 0:
+        line_end = len(raw_config)
+        newline = ""
+    else:
+        newline = "\n"
+    colon = raw_config.find(":", key_node.end_mark.index, line_end)
+    if colon < 0:
+        raise FrigateApiError("invalid_response")
+
+    comment = raw_config.find("#", colon + 1, line_end)
+    new_key_line = raw_config[line_start : colon + 1] + " {}"
+    if comment >= 0:
+        new_key_line += " " + raw_config[comment:line_end].strip()
+    new_key_line += newline
+
+    transformed = (
+        raw_config[:line_start]
+        + new_key_line
+        + raw_config[mapping_node.end_mark.index :]
+    )
+    try:
+        parsed = yaml.safe_load(transformed)
+    except yaml.YAMLError as exc:
+        raise FrigateApiError("invalid_response") from exc
+    if not isinstance(parsed, dict) or parsed.get(mapping_key) != {}:
+        raise FrigateApiError("invalid_response")
+    return transformed
+
+
+def _remove_saved_camera(
+    client: FrigateClient,
+    camera_key: str,
+    *,
+    final_camera: bool,
+) -> None:
+    if final_camera:
+        raw_config = client.raw_config_text()
+        client.save_raw_config(_empty_top_level_mapping(raw_config, "cameras"))
+        return
+    client.set_config(
+        {"cameras": {camera_key: ""}},
+        requires_restart=True,
+    )
 
 
 def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str, Any]]:
@@ -377,6 +479,7 @@ def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     }
     return {
         "managed_cameras": len(desired_cameras),
+        "configured_camera_count": len(configured_cameras),
         "desired_cameras": desired_cameras,
         "stale_cameras": stale_cameras,
         "stale_config_streams": sorted(stale_config_streams),
@@ -512,16 +615,24 @@ def full_sync_frigate(
     }
     restart_recommended = bool(stale_cameras or stale_workers)
 
-    for camera_key in stale_cameras:
+    final_stale_camera_empties_section = (
+        bool(stale_cameras)
+        and state["configured_camera_count"] == len(stale_cameras)
+    )
+    for index, camera_key in enumerate(stale_cameras):
         try:
             # Frigate 0.17 shares one mutable camera configuration across
             # several dynamic-update subscribers. Hot removal lets the first
             # subscriber remove the camera and crashes the others with
             # KeyError. Camera removal is therefore always persisted for the
             # next operator-controlled restart instead of attempted live.
-            client.set_config(
-                {"cameras": {camera_key: ""}},
-                requires_restart=True,
+            _remove_saved_camera(
+                client,
+                camera_key,
+                final_camera=(
+                    final_stale_camera_empties_section
+                    and index == len(stale_cameras) - 1
+                ),
             )
         except FrigateApiError as exc:
             raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
@@ -667,9 +778,10 @@ def remove_frigate_camera(
 
     if camera_exists:
         try:
-            client.set_config(
-                {"cameras": {camera_key: ""}},
-                requires_restart=True,
+            _remove_saved_camera(
+                client,
+                camera_key,
+                final_camera=len(configured_cameras) == 1,
             )
         except FrigateApiError as exc:
             raise exc.with_context(stage="remove_camera", resource=camera_key) from exc

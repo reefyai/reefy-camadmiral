@@ -1759,7 +1759,32 @@ def frigate() -> None:
             "Frigate removal did not leave a detectable restart-required state"
         )
 
-    print("frigate: removal persisted and operator restart is required")
+    operator_removed = update_frigate(
+        "/api/config/set",
+        {
+            "requires_restart": 1,
+            "config_data": {"cameras": {operator_camera: ""}},
+        },
+    )
+    if operator_removed.get("success") is not True:
+        raise ScenarioFailure("Could not remove operator fixture before final-camera test")
+
+    final_removed = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(str(first_camera_uuid), safe='')}",
+        method="DELETE",
+        headers={"X-CamAdmiral-Action": "remove-frigate-camera"},
+        timeout=30,
+    )
+    if final_removed.get("selected") is not False:
+        raise ScenarioFailure(f"Final Frigate camera removal failed: {final_removed}")
+    saved_after_final_removal = frigate_saved_config()
+    if saved_after_final_removal.get("cameras") != {}:
+        raise ScenarioFailure(
+            "Final Frigate camera removal did not preserve a valid empty cameras mapping"
+        )
+
+    print("frigate: final-camera removal persisted and operator restart is required")
 
 
 def frigate_restart_verify() -> None:
