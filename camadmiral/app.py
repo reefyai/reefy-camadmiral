@@ -61,6 +61,7 @@ from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
 from .notifications import TelegramClient, TelegramError, notification_text, pairing_message
 from .roles import select_stream_roles
 from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
+from .inventory import inventory_summary
 from .recovery import recover_inventory_addresses
 from .scan_state import preserve_inventory
 from .storage import CameraRepository
@@ -275,6 +276,18 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     if repository is None:
         return state
     adoptions = repository.adoption_map()
+    blocked_records = repository.blocked_devices()
+    blocked_by_identity = {
+        str(record["onvif_identity"]): record
+        for record in blocked_records
+        if record.get("onvif_identity")
+    }
+    blocked_by_mac = {
+        str(record["mac"]): record
+        for record in blocked_records
+        if record.get("mac")
+    }
+    visible_blocks: set[str] = set()
     frigate_bindings = [
         (
             target,
@@ -290,6 +303,18 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         for target in load_frigate_targets(repository)
     ]
     for device in state.get("devices", []):
+        onvif = device.get("onvif") or {}
+        onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower()
+        mac = str(device.get("mac") or "").strip().lower()
+        identity_match = blocked_by_identity.get(onvif_identity) if onvif_identity else None
+        mac_match = blocked_by_mac.get(mac) if mac else None
+        blocked = identity_match or mac_match
+        if identity_match is not None and mac_match is not None and identity_match is not mac_match:
+            blocked = None
+        if blocked is not None:
+            device["blocked"] = True
+            device["block_uuid"] = blocked["block_uuid"]
+            visible_blocks.add(str(blocked["block_uuid"]))
         candidate_uuid = device.get("candidate_uuid")
         if candidate_uuid in adoptions:
             adoption = adoptions[candidate_uuid]
@@ -318,18 +343,41 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
     devices = state.get("devices", [])
+    for blocked in blocked_records:
+        if str(blocked["block_uuid"]) in visible_blocks:
+            continue
+        onvif_identity = blocked.get("onvif_identity")
+        devices.append(
+            {
+                "candidate_uuid": blocked.get("candidate_uuid") or f'blocked:{blocked["block_uuid"]}',
+                "display_name": blocked["display_name"],
+                "ip": blocked.get("last_ip"),
+                "mac": blocked.get("mac"),
+                "onvif": (
+                    {"endpoint_reference": onvif_identity, "service_urls": []}
+                    if onvif_identity
+                    else None
+                ),
+                "rtsp": [],
+                "status": "offline",
+                "blocked": True,
+                "block_uuid": blocked["block_uuid"],
+            }
+        )
     for device in devices:
         device["connectivity_status"] = _camera_connectivity_status(device)
+    visible_devices = [device for device in devices if not device.get("blocked")]
     summary = dict(state.get("summary") or {})
     summary.update(
         {
-            "devices": len(devices),
+            "devices": len(visible_devices),
             "online": sum(
-                device["connectivity_status"] == "online" for device in devices
+                device["connectivity_status"] == "online" for device in visible_devices
             ),
             "offline": sum(
-                device["connectivity_status"] == "offline" for device in devices
+                device["connectivity_status"] == "offline" for device in visible_devices
             ),
+            "blocked": len(blocked_records),
         }
     )
     state["summary"] = summary
@@ -1498,6 +1546,68 @@ def set_camera_enabled(
     )
 
 
+@app.delete("/internal/cameras/{camera_uuid}", include_in_schema=False)
+def unadopt_camera(
+    camera_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unadopt-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unadopt action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    camera = repository.camera(camera_uuid)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    candidate_uuid = str(camera.get("candidate_uuid") or "")
+    candidate_was_online = bool(
+        candidate_uuid and _candidate_is_currently_online(candidate_uuid)
+    )
+    targets = [
+        target
+        for target in load_frigate_targets(repository)
+        if camera_uuid in repository.selected_frigate_camera_uuids(target.target_id)
+    ]
+    if targets and not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json(
+            {"status": "sync_busy", "message": "Camera synchronization is already running."},
+            status_code=409,
+        )
+    restart_recommended = False
+    try:
+        for target in targets:
+            try:
+                result = remove_frigate_camera(repository, target, camera_uuid)
+            except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target.target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
+                return _frigate_target_error(exc)
+            target_restart = bool(result.get("restart_recommended"))
+            restart_recommended = restart_recommended or target_restart
+            repository.record_frigate_target_check(
+                target.target_id,
+                status="connected",
+                restart_recommended=target_restart,
+            )
+    finally:
+        if targets:
+            FRIGATE_LOCK.release()
+    if not repository.unadopt_camera(camera_uuid):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    _reconcile_media()
+    if candidate_was_online:
+        _mark_discovery_candidate_online(candidate_uuid)
+    return _secured_json(
+        {
+            "status": "unadopted",
+            "camera_uuid": camera_uuid,
+            "restart_recommended": restart_recommended,
+        }
+    )
+
+
 @app.post("/internal/cameras/{camera_uuid}/stream-address", include_in_schema=False)
 def set_camera_stream_address(
     camera_uuid: str,
@@ -1783,6 +1893,55 @@ def _read_scan_state() -> dict[str, object]:
     except (OSError, ValueError, json.JSONDecodeError):
         inventory = {}
     return preserve_inventory(state, inventory)
+
+
+def _candidate_is_currently_online(candidate_uuid: str) -> bool:
+    state = _decorate_adoptions(_read_scan_state())
+    return any(
+        device.get("candidate_uuid") == candidate_uuid
+        and device.get("connectivity_status") == "online"
+        for device in state.get("devices", [])
+    )
+
+
+def _mark_discovery_candidate_online(candidate_uuid: str) -> None:
+    """Keep a just-unadopted reachable candidate online until the next scan."""
+    observed_at = datetime.now(timezone.utc).isoformat()
+    with SCAN_REQUEST_LOCK:
+        for path in (INVENTORY, SCAN_STATE):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            devices = payload.get("devices")
+            if not isinstance(devices, list):
+                continue
+            changed = False
+            for device in devices:
+                if not isinstance(device, dict):
+                    continue
+                if device.get("candidate_uuid") != candidate_uuid:
+                    continue
+                device.update(
+                    {
+                        "status": "online",
+                        "last_seen": observed_at,
+                        "missed_scans": 0,
+                    }
+                )
+                changed = True
+            if not changed:
+                continue
+            payload["summary"] = inventory_summary(devices)
+            temporary = path.with_name(f"{path.name}.unadopt.tmp")
+            try:
+                temporary.write_text(json.dumps(payload), encoding="utf-8")
+                temporary.replace(path)
+            except OSError as exc:
+                LOGGER.warning(
+                    "Could not preserve candidate connectivity after unadopt: %s",
+                    exc,
+                )
 
 
 def _discovery_network_configuration(
@@ -2156,6 +2315,47 @@ def add_discovery_address(
             }
         )
     return _secured_json(_decorate_adoptions(queued), status_code=202)
+
+
+@app.post("/internal/discovery/{candidate_uuid}/block", include_in_schema=False)
+def block_candidate(
+    candidate_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "block-camera":
+        raise HTTPException(status_code=400, detail="Missing camera block action header")
+    candidate = _find_candidate(candidate_uuid)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Camera candidate not found")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.adoption_for_candidate(candidate_uuid) is not None:
+        return _secured_json(
+            {"status": "adopted", "message": "Unadopt this camera before blocking it."},
+            status_code=409,
+        )
+    try:
+        blocked = repository.block_candidate(candidate)
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "unstable_identity", "message": str(exc)},
+            status_code=422,
+        )
+    return _secured_json({"status": "blocked", "device": blocked})
+
+
+@app.delete("/internal/discovery/blocked/{block_uuid}", include_in_schema=False)
+def unblock_candidate(
+    block_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unblock-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unblock action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.unblock_device(block_uuid):
+        raise HTTPException(status_code=404, detail="Blocked device not found")
+    return _secured_json({"status": "unblocked"})
 
 
 @app.post("/internal/discovery/{candidate_uuid}/inspect", include_in_schema=False)

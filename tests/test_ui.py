@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -11,6 +13,20 @@ class DiscoveryUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.html = (ROOT / "camadmiral" / "index.html").read_text(encoding="utf-8")
+
+    def test_inline_javascript_parses(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not installed")
+        script = self.html.split("<script>", 1)[1].split("</script>", 1)[0]
+        completed = subprocess.run(
+            [node, "--check", "-"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_manual_camera_entry_accepts_ip_or_rtsp_url(self) -> None:
         self.assertIn("Add camera manually", self.html)
@@ -142,14 +158,39 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('data-camera-filter="all"', self.html)
         self.assertIn('data-camera-filter="online"', self.html)
         self.assertIn('data-camera-filter="offline"', self.html)
+        self.assertIn('data-camera-filter="blocked"', self.html)
         self.assertIn("let cameraFilter = null", self.html)
         self.assertIn("function cameraConnectivity(device)", self.html)
-        self.assertIn("result[cameraConnectivity(device)] += 1", self.html)
-        self.assertIn("!cameraFilter || cameraConnectivity(device) === cameraFilter", self.html)
+        self.assertIn("const visibleDevices = devices.filter(device => !device.blocked)", self.html)
+        self.assertIn('if (cameraFilter === "blocked") return Boolean(device.blocked)', self.html)
+        self.assertIn("return !cameraFilter || cameraConnectivity(device) === cameraFilter", self.html)
         self.assertNotIn("!cameraFilter || device.status === cameraFilter", self.html)
         self.assertIn("updateSummaryCounts();", self.html)
         self.assertIn('cameraFilter = requested === "all" || cameraFilter === requested ? null : requested', self.html)
         self.assertIn('button.classList.toggle("selected", selected)', self.html)
+
+    def test_camera_lifecycle_actions_are_grouped_without_hiding_primary_actions(self) -> None:
+        self.assertIn('addText(actionStack, "button", "row-action", "Details")', self.html)
+        self.assertIn('addText(actionStack, "button", "row-action", "Streams")', self.html)
+        self.assertIn('addText(actionStack, "button", "row-action overflow-action", "⋯")', self.html)
+        self.assertIn('id="camera-action-menu" role="menu"', self.html)
+        self.assertIn('more.setAttribute("aria-haspopup", "menu")', self.html)
+        self.assertNotIn('openAppModal("actions"', self.html)
+        self.assertIn('addCameraMenuAction("Unadopt"', self.html)
+        self.assertIn('headers: {"X-CamAdmiral-Action": "unadopt-camera"}', self.html)
+        self.assertIn('addCameraMenuAction("Block device"', self.html)
+        self.assertIn('headers: {"X-CamAdmiral-Action": "block-camera"}', self.html)
+        self.assertIn('addText(actionStack, "button", "row-action", "Unblock")', self.html)
+
+    def test_new_camera_disable_action_is_not_offered(self) -> None:
+        self.assertNotIn('"Disable camera"', self.html)
+        self.assertIn('addCameraMenuAction("Enable camera"', self.html)
+        self.assertIn("disabled by an earlier CamAdmiral version", self.html)
+
+    def test_empty_frigate_target_guides_user_to_camera_streams(self) -> None:
+        self.assertIn("No CamAdmiral cameras synced yet.", self.html)
+        self.assertIn('addText(actions, "button", "row-action", "View cameras")', self.html)
+        self.assertIn('window.location.href = "/"', self.html)
 
     def test_camera_details_render_in_a_modal_not_in_table_rows(self) -> None:
         self.assertIn('id="app-modal" role="dialog"', self.html)
