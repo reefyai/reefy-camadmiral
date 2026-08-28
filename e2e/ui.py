@@ -347,6 +347,7 @@ def assert_camera_unadopt_block_and_restore(page: Page) -> None:
     if not block_response.value.ok:
         raise UiScenarioFailure("Device could not be blocked through the UI")
 
+    page.reload(wait_until="domcontentloaded")
     expect(page.locator("#blocked-count")).to_have_text("1", timeout=30_000)
     page.locator('[data-camera-filter="blocked"]').click()
     blocked_row = page.locator("#camera-rows tr.camera-row").first

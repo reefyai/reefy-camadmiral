@@ -1819,6 +1819,129 @@ def frigate_restart_verify() -> None:
     print("frigate: injection, processing, and CamAdmiral-only full sync passed")
 
 
+def frigate_unadopt() -> None:
+    targets = request_json("/internal/frigate-targets").get("targets", [])
+    target = next(
+        (item for item in targets if item.get("api_url") == FRIGATE_API_URL),
+        None,
+    )
+    if target is None:
+        raise ScenarioFailure("Frigate integration missing for unadopt test")
+    target_id = urllib.parse.quote(str(target["target_id"]), safe="")
+
+    directory = consumer_directory()
+    lifecycle_cameras = [
+        camera
+        for camera in directory.get("cameras", [])
+        if camera.get("name") not in {OPEN_NAME, AUTH_NAME}
+    ]
+    if len(lifecycle_cameras) != 1:
+        raise ScenarioFailure(
+            f"Expected one dedicated unadopt camera, found {len(lifecycle_cameras)}"
+        )
+    camera = lifecycle_cameras[0]
+    camera_uuid = str(camera["id"])
+    candidate = next(
+        (
+            device
+            for device in discovery().get("devices", [])
+            if str((device.get("adoption") or {}).get("camera_uuid")) == camera_uuid
+        ),
+        None,
+    )
+    if candidate is None:
+        raise ScenarioFailure("ONVIF candidate missing before Frigate unadopt test")
+    candidate_uuid = str(candidate["candidate_uuid"])
+
+    selected = request_json(
+        f"/internal/frigate-targets/{target_id}/cameras/"
+        f"{urllib.parse.quote(camera_uuid, safe='')}",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+        expected=202,
+        timeout=30,
+    )
+    if selected.get("selected") is not True:
+        raise ScenarioFailure(f"Frigate unadopt fixture was not selected: {selected}")
+
+    camera_key = "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
+
+    def synced() -> bool:
+        saved = frigate_saved_config()
+        cameras = saved.get("cameras", {})
+        streams = saved.get("go2rtc", {}).get("streams", {})
+        if camera_key not in cameras or not all(
+            alias in streams for alias in (f"{camera_key}_record", f"{camera_key}_detect")
+        ):
+            return False
+        current = discovery_device(candidate_uuid)
+        if current is None:
+            return False
+        adoption = current.get("adoption") or {}
+        target_status = next(
+            (
+                status
+                for status in adoption.get("frigate", [])
+                if str(status.get("target_id")) == str(target["target_id"])
+            ),
+            None,
+        )
+        return target_status is not None and target_status.get("status") == "applied"
+
+    wait_for("completed Frigate camera sync before unadopt", synced, timeout=120, interval=1)
+
+    removed = request_json(
+        f"/internal/cameras/{urllib.parse.quote(camera_uuid, safe='')}",
+        method="DELETE",
+        headers={"X-CamAdmiral-Action": "unadopt-camera"},
+        timeout=120,
+    )
+    if removed.get("status") != "unadopted":
+        raise ScenarioFailure(f"Camera unadopt failed: {removed}")
+    if removed.get("restart_recommended") is not True:
+        raise ScenarioFailure("Frigate-backed unadopt did not recommend a restart")
+
+    saved = frigate_saved_config()
+    if camera_key in saved.get("cameras", {}):
+        raise ScenarioFailure("Unadopt left the camera in saved Frigate configuration")
+    remaining_streams = saved.get("go2rtc", {}).get("streams", {})
+    if any(
+        alias in remaining_streams
+        for alias in (f"{camera_key}_record", f"{camera_key}_detect")
+    ):
+        raise ScenarioFailure("Unadopt left camera streams in saved Frigate configuration")
+
+    def candidate_is_unadopted() -> dict[str, object] | None:
+        device = discovery_device(candidate_uuid)
+        if (
+            device is None
+            or device.get("adoption")
+            or device.get("connectivity_status") != "online"
+        ):
+            return None
+        return device
+
+    wait_for("online unadopted ONVIF candidate", candidate_is_unadopted)
+    adoption = request_json(
+        f"/internal/discovery/{urllib.parse.quote(candidate_uuid, safe='')}/adopt",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "adopt"},
+        payload={"username": "", "password": "", "allow_factory_credentials": False},
+        timeout=120,
+    )
+    replacement_uuid = str((adoption.get("adoption") or {}).get("camera_uuid") or "")
+    if not replacement_uuid or replacement_uuid == camera_uuid:
+        raise ScenarioFailure("Re-adoption did not create a replacement camera identity")
+    request_json(
+        f"/internal/cameras/{urllib.parse.quote(replacement_uuid, safe='')}/update",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "update-camera"},
+        payload={"display_name": ONVIF_NAME},
+    )
+    wait_for_online({OPEN_NAME, AUTH_NAME, ONVIF_NAME})
+    print("frigate: full unadopt cleanup and ONVIF re-adoption passed")
+
+
 AMBIGUOUS_DELETE_STREAM = "camadmiral_synthetic_ambiguous_delete_detect"
 AMBIGUOUS_DELETE_SOURCE = "rtsp://camera-open:8554/sub"
 
@@ -1914,6 +2037,7 @@ SCENARIOS = {
     "credential-repair": credential_repair,
     "frigate": frigate,
     "frigate-restart-verify": frigate_restart_verify,
+    "frigate-unadopt": frigate_unadopt,
     "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
     "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
     "relay-latency": relay_latency,

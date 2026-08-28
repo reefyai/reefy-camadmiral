@@ -90,6 +90,10 @@ def main() -> int:
         scenario("frigate")
         run("restart", "frigate")
         scenario("frigate-restart-verify")
+        scenario("frigate-unadopt")
+        scenario("accept-ui-lifecycle-state")
+        run("restart", "frigate")
+        scenario("frigate-restart-verify")
         scenario("frigate-ambiguous-delete-setup")
         run(
             "exec", "-T", "frigate", "python3", "-c",

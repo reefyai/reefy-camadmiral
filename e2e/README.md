@@ -20,7 +20,8 @@ The isolated Docker Compose lab covers:
 - periodic cache-only camera thumbnails, snapshots, and authenticated stable downstream RTSP URLs
 - two downstream consumers sharing one physical-camera session
 - reversible camera disable and enable
-- camera unadopt cleanup plus persistent stable-identity block and unblock
+- camera unadopt cleanup, including removal from a real Frigate target,
+  plus persistent stable-identity block and unblock
 - out-of-band managed-stream deletion and automatic runtime-drift repair
 - go2rtc child failure without a CamAdmiral container restart
 - synthetic camera outage across a CamAdmiral restart and recovery without user action
