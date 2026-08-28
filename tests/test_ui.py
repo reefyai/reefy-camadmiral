@@ -187,10 +187,11 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('addCameraMenuAction("Enable camera"', self.html)
         self.assertIn("disabled by an earlier CamAdmiral version", self.html)
 
-    def test_empty_frigate_target_guides_user_to_camera_streams(self) -> None:
-        self.assertIn("No CamAdmiral cameras synced yet.", self.html)
-        self.assertIn('addText(actions, "button", "row-action", "View cameras")', self.html)
-        self.assertIn('window.location.href = "/"', self.html)
+    def test_every_frigate_target_offers_camera_selection(self) -> None:
+        self.assertIn('addText(actions, "button", "row-action", "Choose cameras")', self.html)
+        self.assertIn("openFrigateCameraChooser(target, chooseCameras)", self.html)
+        self.assertNotIn("No CamAdmiral cameras synced yet.", self.html)
+        self.assertNotIn('addText(actions, "button", "row-action", "View cameras")', self.html)
 
     def test_camera_details_render_in_a_modal_not_in_table_rows(self) -> None:
         self.assertIn('id="app-modal" role="dialog"', self.html)
@@ -319,8 +320,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("Camera configuration missing", self.html)
         self.assertIn("Detection settings differ", self.html)
         self.assertIn("Runtime stream missing", self.html)
-        self.assertIn("[stateLabel, statusHelp] = frigateSyncError(target.error_code)", self.html)
-        self.assertIn('"integration-help frigate-camera-help", statusHelp', self.html)
+        self.assertIn("const [label, help] = frigateSyncError(targetStatus.error_code)", self.html)
+        self.assertIn('"frigate-camera-help", cameraState.help', self.html)
         self.assertIn("Error code: ${errorCode}.", self.html)
         self.assertNotIn("Retry pending", self.html)
 
@@ -400,44 +401,47 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('"X-CamAdmiral-Action": "full-sync-frigate-target"', self.html)
         self.assertIn("Other Frigate cameras and streams will not be changed.", self.html)
 
-    def test_camera_actions_offer_per_target_sync_and_masked_config_preview(self) -> None:
-        self.assertIn('"Frigate destinations"', self.html)
-        self.assertIn("frigate.append(frigateSyncDetails(device, addressMode))", self.html)
-        self.assertNotIn("function openCameraSync", self.html)
+    def test_frigate_camera_selection_is_owned_by_integration_settings(self) -> None:
+        self.assertIn("function openFrigateCameraChooser(target, trigger)", self.html)
+        self.assertIn('openAppModal("frigate-cameras", `Choose cameras for ${target.name}`', self.html)
+        self.assertIn('checkbox.setAttribute("aria-label", `Sync ${device.display_name || "camera"}`)', self.html)
+        self.assertIn('addText(actions, "button", "row-action", "Sync cameras")', self.html)
+        self.assertIn("addFrigateCameraThumbnail(choice, device)", self.html)
+        self.assertIn("/thumbnail.jpg?captured=", self.html)
+        self.assertNotIn('"Frigate destinations"', self.html)
+        self.assertNotIn("function frigateSyncDetails", self.html)
+        self.assertIn("addFrigateStatus(integrations, adoption)", self.html)
+        self.assertIn("Choose cameras in Frigate integration settings to add this camera.", self.html)
+        self.assertNotIn("Use the Sync action to add this camera.", self.html)
         self.assertIn('"X-CamAdmiral-Action": "sync-frigate-camera"', self.html)
         self.assertIn('"X-CamAdmiral-Action": "remove-frigate-camera"', self.html)
         self.assertIn("CamAdmiral will not restart Frigate", self.html)
         self.assertIn("Restart required", self.html)
         self.assertIn("Restart Frigate when convenient, then click Test", self.html)
-        self.assertIn("display_configuration", self.html)
-        self.assertIn("Copy configuration", self.html)
-        self.assertIn("Copy includes the working plaintext credential.", self.html)
-        self.assertIn(".config-preview-note { margin: 10px 0 0; color: #f59e0b;", self.html)
         self.assertIn('[["lan", "LAN"], ["localhost", "Localhost"]]', self.html)
         self.assertIn('radio.type = "radio"', self.html)
         self.assertIn("streamAddressModes.set(cameraUuid, value)", self.html)
         self.assertIn('"X-CamAdmiral-Action": "set-camera-stream-address"', self.html)
         self.assertIn("adoption.stream_address_mode || \"lan\"", self.html)
         self.assertNotIn("Localhost works only when Frigate shares the host network.", self.html)
-        self.assertIn("JSON.stringify({address_mode: addressMode})", self.html)
+        self.assertIn('JSON.stringify({address_mode: device.adoption.stream_address_mode || "lan"})', self.html)
         self.assertNotIn("addressSelect", self.html)
 
-    def test_camera_sync_polls_with_a_spinner_until_final_status(self) -> None:
-        sync_handler = self.html.split('"X-CamAdmiral-Action": "sync-frigate-camera"', 1)[1]
-        sync_handler = sync_handler.split('const showConfig =', 1)[0]
-        self.assertIn("await waitForFrigateCameraSync", sync_handler)
-        self.assertIn("frigateSyncProgress.set(syncKey, true)", self.html)
-        self.assertIn("frigateSyncProgress.delete(syncKey)", sync_handler)
-        self.assertIn("renderActiveCameraModal();", sync_handler)
+    def test_bulk_camera_sync_polls_with_per_camera_progress(self) -> None:
+        self.assertIn("async function syncFrigateCameraSelection(state)", self.html)
+        self.assertIn("const deadline = Date.now() + 35000", self.html)
+        self.assertIn("state.cameras = await loadFrigateChooserCameras()", self.html)
+        self.assertIn('targetStatus?.status === "applied"', self.html)
+        self.assertIn('label: "Still syncing"', self.html)
+        self.assertIn("Background retries will continue.", self.html)
+        self.assertIn('state.progress.set(device.adoption.camera_uuid, {label: "Removing"', self.html)
+        self.assertIn('state.progress.set(device.adoption.camera_uuid, {label: "Syncing"', self.html)
+        self.assertIn('addText(status, "span", "inline-spinner", "")', self.html)
         self.assertIn('addText(sync, "span", "inline-spinner", "")', self.html)
         self.assertIn('sync.classList.add("syncing-action")', self.html)
         self.assertIn(".syncing-action { display: inline-flex; align-items: center; gap: 6px; }", self.html)
         self.assertIn("display: inline-block; box-sizing: border-box; width: 14px; height: 14px", self.html)
-        self.assertIn("async function waitForFrigateCameraSync", self.html)
-        self.assertIn('status?.status === "applied" || status?.status === "error"', self.html)
-        self.assertNotIn("closeAppModal", sync_handler)
-        self.assertIn('["camera", "streams", "adopt"]', self.html)
-        self.assertNotIn('appModalKind === "frigate-sync"', self.html)
+        self.assertIn('if (appModalKind !== "frigate-cameras") return', self.html)
 
 
 if __name__ == "__main__":

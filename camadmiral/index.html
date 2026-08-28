@@ -134,14 +134,34 @@
     .frigate-target-state.error { color: #fda4af; }
     .frigate-target-error { margin-top: 6px; color: #fda4af; font-size: 11px; overflow-wrap: anywhere; }
     .frigate-target-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
-    .frigate-camera-list { display: grid; gap: 9px; }
-    .frigate-camera-item {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 14px;
-      padding: 12px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 10px;
-      background: rgba(5, 15, 27, .42);
+    .frigate-camera-chooser { display: grid; gap: 12px; }
+    .frigate-camera-chooser-copy { margin: 0; color: #8ea2b3; font-size: 12px; line-height: 1.45; }
+    .frigate-camera-list { display: grid; gap: 8px; }
+    .frigate-camera-choice {
+      display: grid; grid-template-columns: auto 88px minmax(0, 1fr); align-items: center; gap: 12px;
+      padding: 10px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 10px;
+      background: rgba(5, 15, 27, .42); cursor: pointer;
     }
-    .frigate-camera-help { margin-top: 5px; max-width: 620px; }
-    .frigate-camera-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .frigate-camera-choice:hover { border-color: rgba(45, 212, 191, .28); }
+    .frigate-camera-choice input { margin: 0; accent-color: #2dd4bf; }
+    .frigate-camera-thumbnail {
+      position: relative; width: 88px; height: 50px; overflow: hidden; border-radius: 7px;
+      border: 1px solid rgba(148, 163, 184, .14); background: #050b12;
+    }
+    .frigate-camera-thumbnail img {
+      position: relative; z-index: 1; width: 100%; height: 100%; display: block; object-fit: cover; opacity: 0;
+    }
+    .frigate-camera-thumbnail img.ready { opacity: 1; }
+    .frigate-camera-identity { min-width: 0; }
+    .frigate-camera-name, .frigate-camera-meta, .frigate-camera-help { display: block; }
+    .frigate-camera-name { color: #e0eaf0; font-size: 13px; font-weight: 800; overflow-wrap: anywhere; }
+    .frigate-camera-meta { margin-top: 4px; color: #7890a4; font-size: 11px; text-transform: capitalize; }
+    .frigate-camera-state { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: #8ea2b3; font-size: 11px; }
+    .frigate-camera-state.applied { color: #86efac; }
+    .frigate-camera-state.error { color: #fcd34d; }
+    .frigate-camera-state.removed { color: #7890a4; }
+    .frigate-camera-help { margin-top: 4px; color: #7890a4; font-size: 11px; line-height: 1.35; }
+    .frigate-camera-chooser-actions { display: flex; justify-content: flex-end; gap: 9px; }
     .stream-address-choice {
       display: flex; align-items: center; gap: 12px 18px; margin-bottom: 12px; padding: 10px 12px;
       border: 1px solid rgba(148, 163, 184, .12); border-radius: 9px; background: rgba(5, 15, 27, .32);
@@ -151,13 +171,6 @@
     .stream-address-option { display: flex; align-items: center; gap: 6px; color: #b8c7d2; font-size: 12px; cursor: pointer; }
     .stream-address-option input { margin: 0; accent-color: #2dd4bf; }
     .stream-address-error { color: #fda4af; font-size: 11px; line-height: 1.4; }
-    .config-preview {
-      max-height: 52vh; overflow: auto; margin: 0; padding: 12px; border: 1px solid rgba(148, 163, 184, .14);
-      border-radius: 9px; background: #030a12; color: #b9fff5;
-      font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
-    }
-    .config-preview-note { margin: 10px 0 0; color: #f59e0b; font-size: 11px; }
-    .config-preview-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
     .settings-empty { color: #7890a4; font-size: 12px; }
     .incident-list { display: grid; gap: 9px; }
     .incident-item {
@@ -705,9 +718,9 @@
       .settings-section-header > .row-action { width: 100%; }
       .frigate-target { grid-template-columns: 1fr; }
       .frigate-target-actions { justify-content: flex-start; }
-      .frigate-camera-item { grid-template-columns: 1fr; }
-      .frigate-camera-actions { display: grid; grid-template-columns: 1fr 1fr; justify-content: stretch; }
-      .frigate-camera-actions > * { width: 100%; }
+      .frigate-camera-choice { grid-template-columns: auto 72px minmax(0, 1fr); gap: 9px; padding: 9px; }
+      .frigate-camera-thumbnail { width: 72px; height: 46px; }
+      .frigate-camera-chooser-actions > * { min-height: 40px; }
       .incident-item { grid-template-columns: 1fr; }
       .incident-state, .incident-meta { grid-column: 1; }
     }
@@ -1004,8 +1017,6 @@
     const streamAddressModes = new Map();
     const streamAddressSaveChains = new Map();
     const streamAddressSaveErrors = new Map();
-    const frigateSyncProgress = new Map();
-    const frigateSyncUiErrors = new Map();
     const rowAvailabilityResults = new Map();
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
@@ -1632,6 +1643,238 @@
       return parts.join(" ");
     }
 
+    function frigateStatusForCamera(device, targetId) {
+      return (device.adoption?.frigate || []).find(status => status.target_id === targetId) || null;
+    }
+
+    function addFrigateCameraThumbnail(parent, device) {
+      const thumbnail = addText(parent, "span", "frigate-camera-thumbnail", "");
+      const placeholder = addText(thumbnail, "span", "preview-placeholder", "No recent view");
+      const cameraUuid = device.adoption?.camera_uuid;
+      const capturedAt = device.adoption?.thumbnail_captured_at;
+      if (!cameraUuid || !capturedAt) return thumbnail;
+      const image = document.createElement("img");
+      image.alt = `Recent view from ${device.display_name || "camera"}`;
+      image.loading = "lazy";
+      image.addEventListener("load", () => {
+        image.classList.add("ready");
+        placeholder.hidden = true;
+      });
+      image.addEventListener("error", () => {
+        image.classList.remove("ready");
+        placeholder.hidden = false;
+      });
+      image.src = `/internal/cameras/${encodeURIComponent(cameraUuid)}/thumbnail.jpg?captured=${encodeURIComponent(capturedAt)}`;
+      thumbnail.append(image);
+      return thumbnail;
+    }
+
+    async function loadFrigateChooserCameras() {
+      const response = await fetch("/internal/discovery", {cache: "no-store"});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || result.detail || "Cameras could not be loaded.");
+      return (result.devices || [])
+        .filter(device => Boolean(device.adoption?.camera_uuid) && !device.blocked)
+        .sort((left, right) => (left.display_name || left.ip || "").localeCompare(right.display_name || right.ip || ""));
+    }
+
+    function frigateChooserCameraState(state, device) {
+      const cameraUuid = device.adoption.camera_uuid;
+      const progress = state.progress.get(cameraUuid);
+      if (progress) return progress;
+      const targetStatus = frigateStatusForCamera(device, state.target.target_id);
+      if (!targetStatus?.selected) return {label: "Not synced", kind: "removed", help: ""};
+      if (targetStatus.status === "applied") return {label: "Synced", kind: "applied", help: ""};
+      if (targetStatus.status === "error") {
+        const [label, help] = frigateSyncError(targetStatus.error_code);
+        return {label, kind: "error", help, errorCode: targetStatus.error_code};
+      }
+      return {
+        label: "Syncing",
+        kind: "syncing",
+        help: "Applying the camera and verifying Frigate's saved and running configuration."
+      };
+    }
+
+    function frigateChooserContent(state) {
+      const content = addText(document.createElement("div"), "div", "frigate-camera-chooser", "");
+      addText(content, "p", "frigate-camera-chooser-copy", "Select the adopted cameras this Frigate instance should receive.");
+      const list = addText(content, "div", "frigate-camera-list", "");
+      if (!state.cameras.length) {
+        addText(list, "div", "settings-empty", "No adopted cameras available.");
+      }
+      state.cameras.forEach(device => {
+        const cameraUuid = device.adoption.camera_uuid;
+        const choice = addText(list, "label", "frigate-camera-choice", "");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.selected.has(cameraUuid);
+        checkbox.disabled = state.running;
+        checkbox.setAttribute("aria-label", `Sync ${device.display_name || "camera"}`);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.selected.add(cameraUuid);
+          else state.selected.delete(cameraUuid);
+        });
+        choice.append(checkbox);
+        addFrigateCameraThumbnail(choice, device);
+        const identity = addText(choice, "span", "frigate-camera-identity", "");
+        addText(identity, "span", "frigate-camera-name", device.display_name || device.ip || "Camera");
+        const health = cameraHealth(device);
+        addText(identity, "span", "frigate-camera-meta", health.label);
+        const cameraState = frigateChooserCameraState(state, device);
+        const status = addText(identity, "span", `frigate-camera-state ${cameraState.kind || ""}`, "");
+        if (cameraState.kind === "syncing" || cameraState.kind === "removing") {
+          const spinner = addText(status, "span", "inline-spinner", "");
+          spinner.setAttribute("aria-hidden", "true");
+        }
+        addText(status, "span", "", cameraState.label);
+        if (cameraState.errorCode) status.title = cameraState.errorCode;
+        if (cameraState.help) addText(identity, "span", "frigate-camera-help", cameraState.help);
+      });
+      const actions = addText(content, "div", "frigate-camera-chooser-actions", "");
+      const cancel = addText(actions, "button", "secondary-action", "Cancel");
+      cancel.type = "button";
+      cancel.disabled = state.running;
+      cancel.addEventListener("click", () => closeAppModal());
+      const sync = addText(actions, "button", "row-action", "Sync cameras");
+      sync.type = "button";
+      sync.disabled = state.running || !state.cameras.length;
+      if (state.running) {
+        sync.classList.add("syncing-action");
+        sync.replaceChildren();
+        const spinner = addText(sync, "span", "inline-spinner", "");
+        spinner.setAttribute("aria-hidden", "true");
+        addText(sync, "span", "", "Syncing...");
+      }
+      sync.addEventListener("click", () => syncFrigateCameraSelection(state));
+      return content;
+    }
+
+    function updateFrigateCameraChooser(state) {
+      if (appModalKind !== "frigate-cameras") return;
+      appModalBody.replaceChildren(frigateChooserContent(state));
+    }
+
+    async function syncFrigateCameraSelection(state) {
+      if (state.running) return;
+      state.running = true;
+      state.progress.clear();
+      const selected = new Set(state.selected);
+      const removals = state.cameras.filter(device => state.initialSelected.has(device.adoption.camera_uuid) && !selected.has(device.adoption.camera_uuid));
+      const syncs = state.cameras.filter(device => selected.has(device.adoption.camera_uuid));
+      removals.forEach(device => state.progress.set(device.adoption.camera_uuid, {label: "Removing", kind: "removing", help: "Removing this managed camera and its stream aliases."}));
+      syncs.forEach(device => state.progress.set(device.adoption.camera_uuid, {label: "Syncing", kind: "syncing", help: "Applying the camera and verifying Frigate's saved and running configuration."}));
+      updateFrigateCameraChooser(state);
+
+      for (const device of removals) {
+        const cameraUuid = device.adoption.camera_uuid;
+        try {
+          const response = await fetch(
+            `/internal/frigate-targets/${encodeURIComponent(state.target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}`,
+            {method: "DELETE", headers: {"X-CamAdmiral-Action": "remove-frigate-camera"}}
+          );
+          const result = await response.json();
+          if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera removal failed."));
+          state.progress.set(cameraUuid, {label: "Not synced", kind: "removed", help: ""});
+        } catch (error) {
+          state.progress.set(cameraUuid, {label: "Removal failed", kind: "error", help: error.message || "Camera removal failed."});
+        }
+        updateFrigateCameraChooser(state);
+      }
+
+      const pending = new Set();
+      for (const device of syncs) {
+        const cameraUuid = device.adoption.camera_uuid;
+        try {
+          const response = await fetch(
+            `/internal/frigate-targets/${encodeURIComponent(state.target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}`,
+            {
+              method: "POST",
+              headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "sync-frigate-camera"},
+              body: JSON.stringify({address_mode: device.adoption.stream_address_mode || "lan"})
+            }
+          );
+          const result = await response.json();
+          if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
+          pending.add(cameraUuid);
+        } catch (error) {
+          state.progress.set(cameraUuid, {label: "Sync failed", kind: "error", help: error.message || "Camera sync failed."});
+        }
+      }
+      updateFrigateCameraChooser(state);
+
+      const deadline = Date.now() + 35000;
+      const latestErrors = new Map();
+      while (pending.size && Date.now() < deadline) {
+        try {
+          state.cameras = await loadFrigateChooserCameras();
+          state.cameras.forEach(device => {
+            const cameraUuid = device.adoption.camera_uuid;
+            if (!pending.has(cameraUuid)) return;
+            const targetStatus = frigateStatusForCamera(device, state.target.target_id);
+            if (targetStatus?.status === "applied") {
+              pending.delete(cameraUuid);
+              latestErrors.delete(cameraUuid);
+              state.progress.set(cameraUuid, {label: "Synced", kind: "applied", help: ""});
+            } else if (targetStatus?.status === "error") {
+              latestErrors.set(cameraUuid, targetStatus.error_code || "verification_failed");
+            }
+          });
+          updateFrigateCameraChooser(state);
+        } catch (_) {}
+        if (pending.size) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      pending.forEach(cameraUuid => {
+        const errorCode = latestErrors.get(cameraUuid);
+        if (errorCode) {
+          const [label, help] = frigateSyncError(errorCode);
+          state.progress.set(cameraUuid, {label, kind: "error", help, errorCode});
+        } else {
+          state.progress.set(cameraUuid, {
+            label: "Still syncing",
+            kind: "error",
+            help: "Synchronization is still running. Background retries will continue."
+          });
+        }
+      });
+      try { state.cameras = await loadFrigateChooserCameras(); } catch (_) {}
+      state.initialSelected = new Set(
+        state.cameras
+          .filter(device => frigateStatusForCamera(device, state.target.target_id)?.selected)
+          .map(device => device.adoption.camera_uuid)
+      );
+      state.selected = new Set(state.initialSelected);
+      state.running = false;
+      updateFrigateCameraChooser(state);
+      await loadFrigateTargets();
+    }
+
+    async function openFrigateCameraChooser(target, trigger) {
+      const loading = addText(document.createElement("div"), "div", "settings-copy", "Loading cameras...");
+      openAppModal("frigate-cameras", `Choose cameras for ${target.name}`, loading, trigger, "wide");
+      try {
+        const cameras = await loadFrigateChooserCameras();
+        const initialSelected = new Set(
+          cameras
+            .filter(device => frigateStatusForCamera(device, target.target_id)?.selected)
+            .map(device => device.adoption.camera_uuid)
+        );
+        const state = {
+          target,
+          cameras,
+          initialSelected,
+          selected: new Set(initialSelected),
+          progress: new Map(),
+          running: false
+        };
+        updateFrigateCameraChooser(state);
+      } catch (error) {
+        if (appModalKind === "frigate-cameras") {
+          appModalBody.replaceChildren(addText(document.createElement("div"), "div", "errorbox", error.message || "Cameras could not be loaded."));
+        }
+      }
+    }
+
     function renderFrigateTargets(data) {
       frigateTargets.replaceChildren();
       const targets = data.targets || [];
@@ -1653,15 +1896,10 @@
         const warningMessage = targetWarning ? "Frigate saved the removal without interrupting running cameras. Restart Frigate when convenient, then click Test to confirm cleanup." : "";
         const errorDetail = addText(summary, "div", targetWarning ? "setup-status warning" : "frigate-target-error", warningMessage || (target.last_error_code ? `Last error code: ${target.last_error_code}.` : ""));
         errorDetail.hidden = !warningMessage && !target.last_error_code;
-        if (!target.selected_cameras) {
-          addText(summary, "div", "settings-copy", "No CamAdmiral cameras synced yet. Open Cameras, choose a camera, then select Streams and Sync now.");
-        }
         const actions = addText(item, "div", "frigate-target-actions", "");
-        if (!target.selected_cameras) {
-          const viewCameras = addText(actions, "button", "row-action", "View cameras");
-          viewCameras.type = "button";
-          viewCameras.addEventListener("click", () => { window.location.href = "/"; });
-        }
+        const chooseCameras = addText(actions, "button", "row-action", "Choose cameras");
+        chooseCameras.type = "button";
+        chooseCameras.addEventListener("click", () => openFrigateCameraChooser(target, chooseCameras));
         const fullSync = addText(actions, "button", "row-action", "Full sync now");
         fullSync.type = "button";
         fullSync.title = "Synchronize selected cameras and remove stale CamAdmiral resources";
@@ -2526,26 +2764,6 @@
       ];
     }
 
-    function frigateSyncKey(targetId, cameraUuid) {
-      return `${targetId}:${cameraUuid}`;
-    }
-
-    function currentFrigateCameraStatus(targetId, cameraUuid) {
-      const device = devices.find(candidate => candidate.adoption?.camera_uuid === cameraUuid);
-      return device?.adoption?.frigate?.find(target => target.target_id === targetId) || null;
-    }
-
-    async function waitForFrigateCameraSync(targetId, cameraUuid, timeout = 35000) {
-      const deadline = Date.now() + timeout;
-      while (Date.now() < deadline) {
-        await refresh();
-        const status = currentFrigateCameraStatus(targetId, cameraUuid);
-        if (status?.status === "applied" || status?.status === "error") return status;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-      throw new Error("Frigate synchronization did not finish within 35 seconds. Background retries will continue.");
-    }
-
     function addFrigateStatus(parent, adoption) {
       const statuses = Array.isArray(adoption?.frigate)
         ? adoption.frigate
@@ -2555,14 +2773,14 @@
         const row = addText(list, "div", "integration-row", "");
         addText(row, "div", "integration-name", status.target || "Frigate");
         if (adoption.enabled === false) {
-          addText(row, "div", "integration-state", "Paused");
-          addText(row, "div", "integration-help", "This camera is disabled in CamAdmiral.");
+          addText(row, "div", "integration-state", "Disabled (legacy)");
+          addText(row, "div", "integration-help", "Enable this camera before syncing it.");
           return;
         }
         const state = status.status || "pending";
         if (state === "not_synced") {
           addText(row, "div", "integration-state", "Not synced");
-          addText(row, "div", "integration-help", "Use the Sync action to add this camera.");
+          addText(row, "div", "integration-help", "Choose cameras in Frigate integration settings to add this camera.");
           return;
         }
         if (state === "applied") {
@@ -2579,141 +2797,6 @@
         addText(row, "div", "integration-state error", label);
         addText(row, "div", "integration-help", help);
       });
-    }
-
-    async function showFrigateConfig(device, target, addressMode, trigger) {
-      const cameraUuid = device.adoption.camera_uuid;
-      const loading = addText(document.createElement("div"), "div", "settings-copy", "Preparing configuration...");
-      openAppModal("frigate-config", `${target.target} configuration`, loading, trigger, "wide");
-      try {
-        const response = await fetch(
-          `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(cameraUuid)}/config?address_mode=${encodeURIComponent(addressMode)}`,
-          {cache: "no-store"}
-        );
-        const result = await response.json();
-        if (!response.ok) throw new Error(frigateFailureDetail(result, "Configuration could not be prepared."));
-        const content = document.createElement("div");
-        const preview = addText(content, "pre", "config-preview", result.display_configuration);
-        preview.tabIndex = 0;
-        addText(content, "p", "config-preview-note", "The password is hidden here. Copy includes the working plaintext credential.");
-        const actions = addText(content, "div", "config-preview-actions", "");
-        const copy = addText(actions, "button", "row-action", "Copy configuration");
-        copy.type = "button";
-        copy.addEventListener("click", () => copyText(result.configuration, copy));
-        appModalBody.replaceChildren(content);
-      } catch (error) {
-        appModalBody.replaceChildren(addText(document.createElement("div"), "div", "errorbox", error.message));
-      }
-    }
-
-    function frigateSyncDetails(device, addressMode) {
-      const wrapper = document.createElement("div");
-      wrapper.className = "frigate-camera-list";
-      const integrations = device.adoption?.frigate || [];
-      if (!integrations.length) {
-        const empty = addText(wrapper, "div", "settings-empty", "No Frigate integrations configured. ");
-        const link = addText(empty, "a", "", "Open integration settings");
-        link.href = "/settings/integrations";
-        return wrapper;
-      }
-      integrations.forEach(target => {
-        const item = addText(wrapper, "article", "frigate-camera-item", "");
-        const summary = addText(item, "div", "", "");
-        addText(summary, "div", "frigate-target-name", target.target);
-        const syncKey = frigateSyncKey(target.target_id, device.adoption.camera_uuid);
-        const syncing = frigateSyncProgress.has(syncKey);
-        const uiError = frigateSyncUiErrors.get(syncKey) || "";
-        let stateLabel = target.selected
-          ? target.status === "applied" ? "Synced" : target.status === "error" ? "Sync issue" : "Syncing"
-          : "Not synced";
-        let statusHelp = "";
-        if (syncing) {
-          stateLabel = "Syncing";
-          statusHelp = "Applying the camera and verifying Frigate's saved and running configuration.";
-        } else if (uiError) {
-          stateLabel = "Sync issue";
-          statusHelp = uiError;
-        } else if (target.selected && target.status === "error") {
-          [stateLabel, statusHelp] = frigateSyncError(target.error_code);
-        }
-        const meta = addText(summary, "div", "frigate-target-meta", stateLabel);
-        if (target.error_code) meta.title = target.error_code;
-        if (statusHelp) {
-          const help = addText(summary, "div", "integration-help frigate-camera-help", statusHelp);
-          if (target.error_code) help.title = target.error_code;
-        }
-        const actions = addText(item, "div", "frigate-camera-actions", "");
-        const sync = addText(actions, "button", "row-action", "");
-        sync.type = "button";
-        sync.disabled = syncing;
-        if (syncing) {
-          sync.classList.add("syncing-action");
-          const spinner = addText(sync, "span", "inline-spinner", "");
-          spinner.setAttribute("aria-hidden", "true");
-          addText(sync, "span", "", "Syncing...");
-        } else {
-          setText(sync, target.selected ? "Sync now" : "Sync");
-        }
-        sync.addEventListener("click", async () => {
-          frigateSyncUiErrors.delete(syncKey);
-          frigateSyncProgress.set(syncKey, true);
-          renderActiveCameraModal();
-          try {
-            const response = await fetch(
-              `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-CamAdmiral-Action": "sync-frigate-camera"
-                },
-                body: JSON.stringify({address_mode: addressMode})
-              }
-            );
-            const result = await response.json();
-            if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera sync failed."));
-            await waitForFrigateCameraSync(target.target_id, device.adoption.camera_uuid);
-          } catch (error) {
-            frigateSyncUiErrors.set(
-              syncKey,
-              error instanceof Error ? error.message : "Camera sync failed."
-            );
-          } finally {
-            frigateSyncProgress.delete(syncKey);
-            await refresh();
-            renderActiveCameraModal();
-          }
-        });
-        const showConfig = addText(actions, "button", "row-action", "Show config");
-        showConfig.type = "button";
-        showConfig.addEventListener("click", () => showFrigateConfig(device, target, addressMode, showConfig));
-        if (target.selected) {
-          const remove = addText(actions, "button", "danger-action", "Remove");
-          remove.type = "button";
-          remove.addEventListener("click", () => showConfirmation({
-            title: `Remove ${device.display_name || "camera"} from ${target.target}?`,
-            message: "CamAdmiral will remove this managed camera and its stream aliases. Other Frigate cameras and streams will not be changed.",
-            actionLabel: "Remove",
-            trigger: remove,
-            onConfirm: async () => {
-              try {
-                const response = await fetch(
-                  `/internal/frigate-targets/${encodeURIComponent(target.target_id)}/cameras/${encodeURIComponent(device.adoption.camera_uuid)}`,
-                  {method: "DELETE", headers: {"X-CamAdmiral-Action": "remove-frigate-camera"}}
-                );
-                const result = await response.json();
-                if (!response.ok) throw new Error(frigateFailureDetail(result, "Camera removal failed."));
-                closeAppModal(false);
-                await refresh();
-              } catch (error) {
-                setText(meta, error.message);
-                meta.className = "frigate-target-error";
-              }
-            }
-          }));
-        }
-      });
-      return wrapper;
     }
 
     async function updateCameraName(device, input) {
@@ -3064,14 +3147,6 @@
           addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
-      const integrations = adoption.frigate || [];
-      const integrationCount = integrations.length;
-      const frigate = addDetailSection(
-        wrapper,
-        "Frigate destinations",
-        `${integrationCount} target${integrationCount === 1 ? "" : "s"}`
-      );
-      frigate.append(frigateSyncDetails(device, addressMode));
       return wrapper;
     }
 
