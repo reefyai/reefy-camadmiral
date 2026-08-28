@@ -1010,7 +1010,7 @@
     let mediaAccess = null;
     let mediaAccessPromise = null;
     let mediaAccessFailed = false;
-    let mediaHost = window.location.hostname;
+    let mediaHost = null;
     let activeFrigateChooserState = null;
     let pendingManualRtsp = null;
     let notificationSettings = null;
@@ -2588,8 +2588,10 @@
         method: "POST",
         headers: {"X-CamAdmiral-Action": "reveal-media-access"}
       }).then(response => response.json()).then(result => {
-        if (result.status === "ok") mediaAccess = result;
-        else mediaAccessFailed = true;
+        if (result.status === "ok") {
+          mediaAccess = result;
+          if (result.lan_host) mediaHost = result.lan_host;
+        } else mediaAccessFailed = true;
         return mediaAccess;
       }).catch(() => {
         mediaAccessFailed = true;
@@ -2607,6 +2609,7 @@
     function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan") {
       if (!mediaAccess) return null;
       const selectedHost = addressMode === "localhost" ? "localhost" : mediaHost;
+      if (!selectedHost) return null;
       const host = selectedHost.includes(":") ? `[${selectedHost}]` : selectedHost;
       const username = encodeURIComponent(mediaAccess.username);
       const password = maskPassword ? downstreamPasswordMask : encodeURIComponent(mediaAccess.password);

@@ -286,8 +286,12 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_downstream_urls_are_selectable_single_line_scrollers(self) -> None:
         self.assertIn('const downstreamPasswordMask = "********"', self.html)
+        self.assertIn("let mediaHost = null", self.html)
+        self.assertIn("if (result.lan_host) mediaHost = result.lan_host", self.html)
         self.assertIn('function downstreamUrl(streamKey, maskPassword = false, addressMode = "lan")', self.html)
         self.assertIn('addressMode === "localhost" ? "localhost" : mediaHost', self.html)
+        self.assertIn("if (!selectedHost) return null", self.html)
+        self.assertNotIn("let mediaHost = window.location.hostname", self.html)
         self.assertIn("downstreamUrl(managed.stream_key, true, addressMode)", self.html)
         self.assertIn(': displayUrl || (managed ?', self.html)
         self.assertIn('const urlText = addText(row, "div", "downstream-url", value)', self.html)

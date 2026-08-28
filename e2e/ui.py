@@ -546,7 +546,24 @@ def assert_mobile_settings(page: Page) -> None:
     expect(modal.get_by_text("Detect", exact=True).first).to_be_visible()
     expect(modal.get_by_role("radio", name="LAN")).to_be_checked()
     lan_url = modal.locator(".frigate-camera-stream-url").first.inner_text()
-    if "@localhost:" in lan_url or not lan_url.startswith("rtsp://"):
+    access = page.evaluate(
+        """
+        async () => {
+          const response = await fetch("/internal/media/access", {
+            method: "POST",
+            headers: {"X-CamAdmiral-Action": "reveal-media-access"}
+          });
+          return response.json();
+        }
+        """
+    )
+    expected_lan_host = access.get("lan_host")
+    if (
+        not expected_lan_host
+        or f"@{expected_lan_host}:" not in lan_url
+        or "@localhost:" in lan_url
+        or not lan_url.startswith("rtsp://")
+    ):
         raise UiScenarioFailure(f"LAN stream preview is invalid: {lan_url}")
     modal.get_by_role("radio", name="Localhost").check()
     expect(modal.locator(".frigate-camera-stream-url").first).to_contain_text("@localhost:")

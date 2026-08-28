@@ -1758,12 +1758,17 @@ def media_access(
             status_code=503,
         )
     assert repository is not None
+    try:
+        lan_host = media_host_for_mode(INVENTORY, "lan")
+    except FrigateApiError:
+        lan_host = None
     return _secured_json(
         {
             "status": "ok",
             "username": "camadmiral",
             "password": repository.rtsp_access_password(),
             "port": 18554,
+            "lan_host": lan_host,
         }
     )
 

@@ -65,6 +65,42 @@ class FakeRepository:
 
 
 class DiscoveryDecorationTests(unittest.TestCase):
+    def test_media_access_reports_current_lan_host_for_url_previews(self) -> None:
+        repository = Mock()
+        repository.rtsp_access_password.return_value = "synthetic-secret"
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "media_host_for_mode",
+                return_value="192.168.50.12",
+            ) as resolve_host,
+        ):
+            response = app_module.media_access("reveal-media-access")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["lan_host"], "192.168.50.12")
+        resolve_host.assert_called_once_with(app_module.INVENTORY, "lan")
+
+    def test_media_access_remains_available_when_lan_host_is_unknown(self) -> None:
+        repository = Mock()
+        repository.rtsp_access_password.return_value = "synthetic-secret"
+
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module,
+                "media_host_for_mode",
+                side_effect=app_module.FrigateApiError("media_host_unavailable"),
+            ),
+        ):
+            response = app_module.media_access("reveal-media-access")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "ok")
+        self.assertIsNone(payload["lan_host"])
+
     def test_app_icon_is_served_for_header_and_browser_tab(self) -> None:
         response = app_module.app_icon()
         self.assertEqual(response.media_type, "image/png")
