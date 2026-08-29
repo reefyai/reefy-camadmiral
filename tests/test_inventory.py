@@ -85,6 +85,50 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(devices[0]["last_seen"], "t1")
         self.assertEqual(devices[0]["missed_scans"], 1)
 
+    def test_selected_subnet_scan_preserves_devices_outside_its_evidence(self) -> None:
+        previous = inventory.reconcile_inventory(
+            [],
+            [
+                camera("192.168.10.20", "02:00:00:00:10:20", "uuid:camera-10"),
+                camera("192.168.40.20", "02:00:00:00:40:20", "uuid:camera-40"),
+            ],
+            "t1",
+        )
+
+        devices = inventory.reconcile_scanned_subnets(
+            previous,
+            [],
+            "t2",
+            ["192.168.10.0/24"],
+        )
+
+        by_ip = {device["ip"]: device for device in devices}
+        self.assertEqual(by_ip["192.168.10.20"]["status"], "offline")
+        self.assertEqual(by_ip["192.168.10.20"]["missed_scans"], 1)
+        self.assertEqual(by_ip["192.168.40.20"]["status"], "online")
+        self.assertEqual(by_ip["192.168.40.20"]["last_seen"], "t1")
+        self.assertEqual(by_ip["192.168.40.20"]["missed_scans"], 0)
+
+    def test_selected_subnet_scan_tracks_stable_identity_moving_into_scope(self) -> None:
+        previous = inventory.reconcile_inventory(
+            [],
+            [camera("192.168.40.20", "02:00:00:00:40:20", "uuid:moving-camera")],
+            "t1",
+        )
+        candidate_uuid = previous[0]["candidate_uuid"]
+
+        devices = inventory.reconcile_scanned_subnets(
+            previous,
+            [camera("192.168.10.25", "02:00:00:00:40:20", "uuid:moving-camera")],
+            "t2",
+            ["192.168.10.0/24"],
+        )
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["candidate_uuid"], candidate_uuid)
+        self.assertEqual(devices[0]["ip"], "192.168.10.25")
+        self.assertEqual(devices[0]["status"], "online")
+
     def test_camera_reappears_online(self) -> None:
         previous = inventory.reconcile_inventory([], [camera("192.168.1.20", "aa:bb:cc:dd:ee:ff")], "t1")
         previous = inventory.reconcile_inventory(previous, [], "t2")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import settings
 from .discovery import LanInterface, scan_explicit_address, scan_lan, scan_targeted_lan
-from .inventory import inventory_summary, reconcile_inventory
+from .inventory import inventory_summary, reconcile_inventory, reconcile_scanned_subnets
 
 HEARTBEAT = Path("/run/camadmiral/scanner-heartbeat.json")
 REQUEST = Path("/run/camadmiral/scan-request.json")
@@ -208,12 +208,21 @@ def handle_scan(request: dict[str, object]) -> None:
                 known_devices=previous_devices,
                 subnets=requested_subnets if "subnets" in request else None,
             )
-            result["devices"] = reconcile_inventory(
-                previous_devices,
-                result["devices"],
-                str(result["completed_at"]),
-                reachable_ips=result.get("reachable_known", []),
-            )
+            if "subnets" in request:
+                result["devices"] = reconcile_scanned_subnets(
+                    previous_devices,
+                    result["devices"],
+                    str(result["completed_at"]),
+                    requested_subnets,
+                    reachable_ips=result.get("reachable_known", []),
+                )
+            else:
+                result["devices"] = reconcile_inventory(
+                    previous_devices,
+                    result["devices"],
+                    str(result["completed_at"]),
+                    reachable_ips=result.get("reachable_known", []),
+                )
         result["summary"] = inventory_summary(result["devices"])
         result.update(
             {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from collections import Counter, defaultdict
 from typing import Any, Iterable
@@ -156,6 +157,49 @@ def reconcile_inventory(
 
     return sorted(
         annotate_identity_conflicts(reconciled),
+        key=lambda device: (
+            device.get("status") != "online",
+            str(device.get("display_name") or device.get("ip") or "").lower(),
+        ),
+    )
+
+
+def reconcile_scanned_subnets(
+    previous_devices: Iterable[dict[str, Any]],
+    current_devices: Iterable[dict[str, Any]],
+    seen_at: str,
+    subnets: Iterable[str],
+    reachable_ips: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Reconcile only devices for which the selected subnets provide evidence."""
+    previous = list(previous_devices)
+    current = list(current_devices)
+    networks = [ipaddress.IPv4Network(str(subnet), strict=False) for subnet in subnets]
+    observed_keys = {
+        key
+        for device in current
+        for key in _stable_keys(device)
+    }
+
+    targeted: list[dict[str, Any]] = []
+    untouched: list[dict[str, Any]] = []
+    for device in previous:
+        try:
+            address = ipaddress.IPv4Address(str(device.get("ip") or ""))
+        except ipaddress.AddressValueError:
+            address = None
+        in_scope = address is not None and any(address in network for network in networks)
+        identity_observed = bool(observed_keys.intersection(_stable_keys(device)))
+        (targeted if in_scope or identity_observed else untouched).append(device)
+
+    reconciled = reconcile_inventory(
+        targeted,
+        current,
+        seen_at,
+        reachable_ips=reachable_ips,
+    )
+    return sorted(
+        annotate_identity_conflicts([*untouched, *reconciled]),
         key=lambda device: (
             device.get("status") != "online",
             str(device.get("display_name") or device.get("ip") or "").lower(),
