@@ -206,7 +206,9 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        manifest = (ROOT / "reefy" / "app.json").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()
+        faults = (ROOT / "e2e" / "faults.py").read_text()
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
         multi_subnet_scenario = scenarios.split("def multi_subnet_discovery()", 1)[1].split(
             "def load_state()", 1
@@ -214,7 +216,15 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         self.assertIn("172.31.0.87", compose)
         self.assertIn("gw_priority: 1", compose)
+        self.assertIn('"pids_limit": 192', manifest)
+        self.assertIn("pids_limit: 192", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
+        self.assertIn('scenario("partial-subnet-preservation")', runner)
+        self.assertIn('"seed-scan-pid-pressure"', runner)
+        self.assertIn('"clear-scan-pid-pressure"', runner)
+        self.assertIn('PID_PRESSURE_PREFIX = "synthetic-pid-pressure-"', faults)
+        self.assertIn('(\"172.30.0\", \"172.31.0\")', faults)
+        self.assertIn("for host in range(100, 132)", faults)
         self.assertIn('scenario("configured-routed-subnet-discovery")', runner)
         multi_subnet_position = runner.index('scenario("multi-subnet-discovery")')
         reset_position = runner.index(
@@ -228,7 +238,18 @@ class ReleaseMetadataTests(unittest.TestCase):
             "manual discovery on a non-default connected subnet",
             multi_subnet_scenario,
         )
-        self.assertIn("full discovery across every connected subnet", multi_subnet_scenario)
+        self.assertIn(
+            "full discovery completion across every connected subnet",
+            multi_subnet_scenario,
+        )
+        self.assertIn(
+            "Full multi-subnet RTSP discovery failed under the production PID limit",
+            multi_subnet_scenario,
+        )
+        self.assertIn(
+            "Partial discovery marked the camera on the unscanned subnet offline",
+            scenarios,
+        )
         self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != full_scan_id', multi_subnet_scenario)
