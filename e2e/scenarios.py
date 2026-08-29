@@ -843,6 +843,78 @@ def multi_subnet_discovery() -> None:
     print("multi-subnet-discovery: manual and full RTSP discovery passed on a non-default LAN")
 
 
+def partial_subnet_preservation() -> None:
+    wait_for_health()
+    configuration = request_json("/internal/discovery/networks")
+    selected_before = [
+        str(network["cidr"])
+        for network in configuration.get("networks", [])
+        if network.get("selected")
+    ]
+    scanned_subnet = "172.30.0.0/24"
+    preserved_address = "172.31.0.87"
+    if scanned_subnet not in selected_before or "172.31.0.0/24" not in selected_before:
+        raise ScenarioFailure("Both connected test subnets must be selected before the partial scan")
+
+    request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={"selected_subnets": [scanned_subnet]},
+    )
+    try:
+        scan_request = request_json(
+            "/internal/discovery/scan",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "scan"},
+            expected=202,
+        )
+        scan_id = scan_request.get("scan_id")
+        if not scan_id:
+            raise ScenarioFailure("Partial discovery did not return a scan identity")
+
+        def partial_scan_completed() -> dict[str, object] | None:
+            state = discovery()
+            if (
+                state.get("scan_id") != scan_id
+                or state.get("status") in {"queued", "running"}
+            ):
+                return None
+            return state
+
+        scanned = wait_for(
+            "single-subnet discovery completion",
+            partial_scan_completed,
+            timeout=90,
+        )
+    finally:
+        request_json(
+            "/internal/discovery/networks",
+            method="PUT",
+            headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+            payload={"selected_subnets": selected_before},
+        )
+
+    networks = scanned.get("networks", [])
+    if [str(network.get("subnet")) for network in networks] != [scanned_subnet]:
+        raise ScenarioFailure(f"Partial discovery scanned unexpected networks: {networks}")
+    preserved = next(
+        (
+            device
+            for device in scanned.get("devices", [])
+            if device.get("ip") == preserved_address
+        ),
+        None,
+    )
+    if preserved is None:
+        raise ScenarioFailure("Partial discovery removed the camera on the unscanned subnet")
+    if preserved.get("status") != "online":
+        raise ScenarioFailure(
+            "Partial discovery marked the camera on the unscanned subnet offline"
+        )
+    print("partial-subnet-preservation: unscanned camera state remained online")
+
+
 def large_subnet_multicast_discovery() -> None:
     wait_for_health()
 
@@ -2029,6 +2101,7 @@ def frigate_ambiguous_delete_verify() -> None:
 SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
+    "partial-subnet-preservation": partial_subnet_preservation,
     "large-subnet-multicast-discovery": large_subnet_multicast_discovery,
     "configured-routed-subnet-discovery": configured_routed_subnet_discovery,
     "runtime-drift": runtime_drift,

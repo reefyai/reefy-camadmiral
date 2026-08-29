@@ -80,6 +80,7 @@ def main() -> int:
             "exec", "-T", "camadmiral", "python", "/e2e/faults.py",
             "clear-scan-pid-pressure",
         )
+        scenario("partial-subnet-preservation")
         run(
             "exec", "-T", "camadmiral", "python", "-c",
             "import socket; socket.create_connection(('172.29.0.88', 554), 2).close()",

@@ -219,6 +219,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('"pids_limit": 192', manifest)
         self.assertIn("pids_limit: 192", compose)
         self.assertIn('scenario("multi-subnet-discovery")', runner)
+        self.assertIn('scenario("partial-subnet-preservation")', runner)
         self.assertIn('"seed-scan-pid-pressure"', runner)
         self.assertIn('"clear-scan-pid-pressure"', runner)
         self.assertIn('PID_PRESSURE_PREFIX = "synthetic-pid-pressure-"', faults)
@@ -244,6 +245,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn(
             "Full multi-subnet RTSP discovery failed under the production PID limit",
             multi_subnet_scenario,
+        )
+        self.assertIn(
+            "Partial discovery marked the camera on the unscanned subnet offline",
+            scenarios,
         )
         self.assertIn("explicit_request = request_json(", multi_subnet_scenario)
         self.assertIn('state.get("scan_id") != explicit_scan_id', multi_subnet_scenario)
