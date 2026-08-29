@@ -22,6 +22,7 @@ services:
       - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
     ports:
       - "127.0.0.1::18080"
+    pids_limit: 192
     networks:
       lab:
         ipv4_address: 172.30.0.20

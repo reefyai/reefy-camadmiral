@@ -806,28 +806,35 @@ def multi_subnet_discovery() -> None:
     if not full_scan_id:
         raise ScenarioFailure("Full discovery did not return a scan identity")
 
-    def secondary_found_by_full_scan() -> dict[str, object] | None:
+    def full_scan_completed() -> dict[str, object] | None:
         state = discovery()
         if (
             state.get("scan_id") != full_scan_id
             or state.get("status") in {"queued", "running"}
         ):
             return None
-        camera = next(
-            (
-                device
-                for device in state.get("devices", [])
-                if device.get("ip") == "172.31.0.87" and device.get("rtsp")
-            ),
-            None,
-        )
-        return state if camera else None
+        return state
 
     scanned = wait_for(
-        "full discovery across every connected subnet",
-        secondary_found_by_full_scan,
+        "full discovery completion across every connected subnet",
+        full_scan_completed,
         timeout=90,
     )
+    if scanned.get("scanners", {}).get("rtsp") != "complete":
+        raise ScenarioFailure(
+            "Full multi-subnet RTSP discovery failed under the production PID limit: "
+            f"{scanned.get('scanner_errors')}"
+        )
+    camera = next(
+        (
+            device
+            for device in scanned.get("devices", [])
+            if device.get("ip") == "172.31.0.87" and device.get("rtsp")
+        ),
+        None,
+    )
+    if camera is None:
+        raise ScenarioFailure("Full multi-subnet discovery missed the RTSP-only camera")
     if scanned.get("network", {}).get("subnet") != "172.30.0.0/24":
         raise ScenarioFailure("Full discovery did not preserve the default LAN as primary")
     raw_log = "\n".join(str(line) for line in scanned.get("raw_log", []))

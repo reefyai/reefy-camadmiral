@@ -71,7 +71,15 @@ def main() -> int:
             "camera-onvif", "camera-secondary", "camera-onvif-large",
             "camera-rtsp-large",
         )
+        run(
+            "exec", "-T", "camadmiral", "python", "/e2e/faults.py",
+            "seed-scan-pid-pressure",
+        )
         scenario("multi-subnet-discovery")
+        run(
+            "exec", "-T", "camadmiral", "python", "/e2e/faults.py",
+            "clear-scan-pid-pressure",
+        )
         run(
             "exec", "-T", "camadmiral", "python", "-c",
             "import socket; socket.create_connection(('172.29.0.88', 554), 2).close()",
