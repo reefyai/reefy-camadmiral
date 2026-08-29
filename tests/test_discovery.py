@@ -345,7 +345,7 @@ class ResultTests(unittest.TestCase):
             network=ipaddress.IPv4Network("192.168.10.0/24"),
         )
 
-        def rtsp(interface, _log=None):
+        def rtsp(interface, _log=None, _executor=None):
             camera_address = (
                 "192.168.40.20"
                 if interface == primary
@@ -485,6 +485,7 @@ class ResultTests(unittest.TestCase):
             interface,
             ["10.0.3.20"],
             unittest.mock.ANY,
+            unittest.mock.ANY,
         )
         self.assertEqual(result["scanners"]["rtsp"], "complete")
         self.assertEqual([device["ip"] for device in result["devices"]], ["10.0.3.20"])
@@ -521,7 +522,7 @@ class ResultTests(unittest.TestCase):
             barrier.wait(timeout=1)
             return [{"ip": "192.168.10.20", "endpoint_reference": "uuid:test", "service_urls": [], "scopes": [], "types": [], "name": "Camera", "model": None}]
 
-        def rtsp(_interface, _log=None):
+        def rtsp(_interface, _log=None, _executor=None):
             barrier.wait(timeout=1)
             return [{"ip": "192.168.10.20", "endpoints": []}]
 
@@ -545,6 +546,50 @@ class ResultTests(unittest.TestCase):
         self.assertIn(("rtsp", "complete"), progress)
         self.assertTrue(any("SCAN: start" in line for line in result["raw_log"]))
         self.assertTrue(any("SCAN: complete" in line for line in result["raw_log"]))
+
+    def test_full_scan_shares_bounded_worker_pools_across_subnets(self) -> None:
+        interfaces = [
+            discovery.LanInterface(
+                name="eth0",
+                address=ipaddress.IPv4Address("192.168.10.2"),
+                network=ipaddress.IPv4Network("192.168.10.0/24"),
+            ),
+            discovery.LanInterface(
+                name="eth1",
+                address=ipaddress.IPv4Address("192.168.20.2"),
+                network=ipaddress.IPv4Network("192.168.20.0/24"),
+            ),
+        ]
+        rtsp_executors = []
+        reachability_executors = []
+
+        def rtsp(_interface, _log=None, executor=None):
+            rtsp_executors.append(executor)
+            return []
+
+        def reachability(_interface, _known, _log=None, executor=None):
+            reachability_executors.append(executor)
+            return []
+
+        with (
+            patch.object(discovery, "private_lan_interfaces", return_value=interfaces),
+            patch.object(discovery, "discover_onvif", return_value=[]),
+            patch.object(discovery, "discover_rtsp", side_effect=rtsp),
+            patch.object(
+                discovery,
+                "discover_reachable_known",
+                side_effect=reachability,
+            ),
+            patch.object(discovery, "read_arp_table", return_value={}),
+        ):
+            result = discovery.scan_lan()
+
+        self.assertEqual(result["scanners"]["rtsp"], "complete")
+        self.assertEqual(len(rtsp_executors), 2)
+        self.assertIs(rtsp_executors[0], rtsp_executors[1])
+        self.assertEqual(len(reachability_executors), 2)
+        self.assertIs(reachability_executors[0], reachability_executors[1])
+        self.assertIsNot(rtsp_executors[0], reachability_executors[0])
 
     def test_known_camera_reachability_is_bounded_to_private_lan_and_mac_devices(self) -> None:
         interface = discovery.LanInterface(

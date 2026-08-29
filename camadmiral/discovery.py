@@ -26,6 +26,7 @@ RTSP_PORTS = (554, 8554)
 MAX_SCAN_HOSTS = int(os.environ.get("CAMADMIRAL_MAX_SCAN_HOSTS", "1024"))
 RTSP_WORKERS = int(os.environ.get("CAMADMIRAL_RTSP_WORKERS", "64"))
 REACHABILITY_WORKERS = int(os.environ.get("CAMADMIRAL_REACHABILITY_WORKERS", "32"))
+SCAN_COORDINATOR_WORKERS = 6
 RTSP_CONNECT_TIMEOUT = float(os.environ.get("CAMADMIRAL_RTSP_TIMEOUT", "0.4"))
 ONVIF_TIMEOUT = float(os.environ.get("CAMADMIRAL_ONVIF_TIMEOUT", "2.5"))
 MAX_SCAN_LOG_LINES = 5000
@@ -636,6 +637,7 @@ def _probe_rtsp(address: str, port: int) -> dict[str, Any] | None:
 def discover_rtsp(
     interface: LanInterface,
     log: Callable[[str], None] | None = None,
+    executor: concurrent.futures.Executor | None = None,
 ) -> list[dict[str, Any]]:
     emit = log or (lambda _message: None)
     if not sweep_allowed(interface.network):
@@ -645,13 +647,14 @@ def discover_rtsp(
         )
         return []
     targets = [str(host) for host in interface.network.hosts() if host != interface.address]
-    return _discover_rtsp_targets(targets, emit)
+    return _discover_rtsp_targets(targets, emit, executor)
 
 
 def discover_rtsp_neighbors(
     interface: LanInterface,
     addresses: Iterable[str],
     log: Callable[[str], None] | None = None,
+    executor: concurrent.futures.Executor | None = None,
 ) -> list[dict[str, Any]]:
     emit = log or (lambda _message: None)
     targets = _bounded_interface_addresses(interface, addresses)
@@ -659,12 +662,13 @@ def discover_rtsp_neighbors(
         f"RTSP: subnet {interface.network} exceeds the {MAX_SCAN_HOSTS}-host "
         f"sweep limit; probing {len(targets)} learned neighbor(s) only"
     )
-    return _discover_rtsp_targets(targets, emit)
+    return _discover_rtsp_targets(targets, emit, executor)
 
 
 def _discover_rtsp_targets(
     targets: list[str],
     emit: Callable[[str], None],
+    executor: concurrent.futures.Executor | None = None,
 ) -> list[dict[str, Any]]:
     emit(
         f"RTSP: probing {len(targets)} host(s), ports "
@@ -672,7 +676,8 @@ def _discover_rtsp_targets(
         f"timeout {RTSP_CONNECT_TIMEOUT:.1f}s"
     )
     discovered: dict[str, list[dict[str, Any]]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=RTSP_WORKERS) as pool:
+    pool = executor or concurrent.futures.ThreadPoolExecutor(max_workers=RTSP_WORKERS)
+    try:
         futures = {
             pool.submit(_probe_rtsp, address, port): (address, port)
             for address in targets
@@ -692,6 +697,9 @@ def _discover_rtsp_targets(
                 f"{endpoint.get('response') or 'TCP open without RTSP status'}"
             )
             discovered.setdefault(address, []).append(endpoint)
+    finally:
+        if executor is None:
+            pool.shutdown()
     result = [
         {"ip": address, "endpoints": sorted(endpoints, key=lambda item: item["port"])}
         for address, endpoints in sorted(
@@ -804,6 +812,7 @@ def discover_reachable_known(
     interface: LanInterface,
     known_devices: Iterable[dict[str, Any]],
     log: Callable[[str], None] | None = None,
+    executor: concurrent.futures.Executor | None = None,
 ) -> list[str]:
     emit = log or (lambda _message: None)
     targets: list[str] = []
@@ -820,7 +829,10 @@ def discover_reachable_known(
     targets = sorted(set(targets), key=ipaddress.ip_address)
     emit(f"REACHABILITY: checking {len(targets)} known camera address(es) with two ICMP probes")
     reachable: list[str] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=REACHABILITY_WORKERS) as pool:
+    pool = executor or concurrent.futures.ThreadPoolExecutor(
+        max_workers=REACHABILITY_WORKERS
+    )
+    try:
         futures = {pool.submit(_ping_host, address): address for address in targets}
         for future in concurrent.futures.as_completed(futures):
             address = futures[future]
@@ -829,6 +841,9 @@ def discover_reachable_known(
                 emit(f"REACHABILITY: {address} answered ICMP")
             else:
                 emit(f"REACHABILITY: {address} did not answer ICMP")
+    finally:
+        if executor is None:
+            pool.shutdown()
     return sorted(reachable, key=ipaddress.ip_address)
 
 
@@ -1109,7 +1124,18 @@ def scan_lan(
     results: dict[str, Any] = {"onvif": [], "rtsp": [], "reachability": []}
     scanner_failures: dict[str, list[str]] = defaultdict(list)
     scanner_successes: Counter[str] = Counter()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(interfaces) * 3) as pool:
+    coordinator_workers = min(SCAN_COORDINATOR_WORKERS, len(interfaces) * 3)
+    with (
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=coordinator_workers
+        ) as pool,
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=RTSP_WORKERS
+        ) as rtsp_pool,
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=REACHABILITY_WORKERS
+        ) as reachability_pool,
+    ):
         futures: dict[concurrent.futures.Future[Any], tuple[str, LanInterface]] = {}
         for interface in interfaces:
             neighbor_addresses = learned_neighbors.get(interface, [])
@@ -1117,7 +1143,9 @@ def scan_lan(
                 pool.submit(discover_onvif, interface, log, neighbor_addresses)
             ] = ("onvif", interface)
             if interface in sweepable:
-                futures[pool.submit(discover_rtsp, interface, log)] = ("rtsp", interface)
+                futures[
+                    pool.submit(discover_rtsp, interface, log, rtsp_pool)
+                ] = ("rtsp", interface)
             elif neighbor_addresses:
                 futures[
                     pool.submit(
@@ -1125,10 +1153,17 @@ def scan_lan(
                         interface,
                         neighbor_addresses,
                         log,
+                        rtsp_pool,
                     )
                 ] = ("rtsp", interface)
             futures[
-                pool.submit(discover_reachable_known, interface, known_devices, log)
+                pool.submit(
+                    discover_reachable_known,
+                    interface,
+                    known_devices,
+                    log,
+                    reachability_pool,
+                )
             ] = ("reachability", interface)
         for future in concurrent.futures.as_completed(futures):
             scanner, interface = futures[future]
