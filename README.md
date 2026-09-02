@@ -83,25 +83,18 @@ the screenshot are intentionally masked.
 
 ![CamAdmiral validated downstream streams](docs/images/camadmiral-downstream-streams.png)
 
-### Camera identity and address changes
+### Camera IP address changes
 
-CamAdmiral treats an IP address as a camera location, not its identity. It matches an adopted
-camera at a new address by its ONVIF EndpointReference first, with a unique MAC address as the
-fallback for RTSP-only cameras. An ambiguous match is never applied automatically. If all stable
-identities change, the old camera stays offline and the discovered device appears as a separate
-camera that can be adopted.
+CamAdmiral lets Frigate and other apps continue using the same stable RTSP URLs when a camera's
+IP address changes. It automatically recognizes the camera at its new address, reconnects its
+streams, and records the change in the camera's identity history. Cameras are tracked by their
+ONVIF identity or, when needed, a unique MAC address.
 
-Before accepting a move, CamAdmiral rediscovers the camera profiles and validates every selected
-source. It keeps the existing stable stream names and URLs, records the new IP, MAC, and ONVIF
-identity period, then restarts the bundled unmodified go2rtc relay. All downstream relay sessions
-briefly disconnect and reconnect through the same URLs. This also handles compatible codec and
-resolution changes without trying to modify go2rtc internals. Multiple camera moves found in one
-recovery pass are applied with one relay restart.
+![CamAdmiral camera identity history after address changes](docs/images/camadmiral-identity-history.png)
 
-The camera details view retains the dated identity history. Recovery opens an address-change
-incident and resolves it only after the new streams are healthy. Any open offline or authentication
-incident is also resolved after healthy media returns. Failed validation or relay recovery keeps
-the last-known-good sources and leaves the address-change incident open for investigation.
+In the example above, the camera moved through three IP addresses. CamAdmiral restored its streams
+after each change, while Frigate and other consumers kept the same RTSP URLs and reconnected
+automatically after a brief interruption.
 
 ## Latency
 
@@ -210,13 +203,23 @@ the bot is configured and paired.
   <img src="docs/images/camadmiral-telegram-alerts.png" alt="CamAdmiral Telegram offline and recovery alerts" width="420">
 </p>
 
+Address recovery alerts show the previous and current IP addresses, relay restart, and confirmed
+recovery time:
+
+<p align="center">
+  <img src="docs/images/camadmiral-address-recovery-alerts.png" alt="CamAdmiral Telegram camera address change and recovery alerts" width="420">
+</p>
+
 Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already connected
 to another application and never changes their webhook configuration. The bot token and
 temporary pairing secret are encrypted with CamAdmiral's master key and are never returned
-by the settings API. Alert messages contain only the camera name, incident state, and
-observation time. CamAdmiral also notifies the configured channel whenever its media relay
-restarts, including a restart used to recover changed camera addresses. Messages do not contain
-camera credentials, media URLs, IP addresses, or MAC addresses.
+by the settings API. Alert messages contain the camera name, incident state, and a readable UTC
+observation time. Address-change messages also contain the previous and current IP addresses and
+the recovery duration. CamAdmiral notifies the configured channel whenever its media relay
+restarts, including a restart used to recover changed camera addresses. Messages never contain
+camera credentials, media URLs, MAC addresses, or ONVIF identities.
+
+Documentation screenshots use synthetic device identities and TEST-NET addresses.
 
 **Need another notification service?** Please open a PR with the provider.
 
