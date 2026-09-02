@@ -665,13 +665,30 @@ class CameraRepository:
         ).fetchone()
         if camera is None:
             return
+        payload_data = {
+            "camera_id": camera_uuid,
+            "camera_name": str(camera["display_name"]),
+            "kind": kind,
+            "observed_at": timestamp,
+        }
+        if kind == "camera_address_changed":
+            incident = connection.execute(
+                "SELECT opened_at, details_json FROM camera_incidents "
+                "WHERE incident_uuid = ?",
+                (incident_uuid,),
+            ).fetchone()
+            if incident is not None:
+                try:
+                    details = json.loads(str(incident["details_json"] or "{}"))
+                except (TypeError, ValueError):
+                    details = {}
+                payload_data["opened_at"] = str(incident["opened_at"])
+                for field in ("previous_address", "current_address"):
+                    value = details.get(field) if isinstance(details, dict) else None
+                    if value:
+                        payload_data[field] = str(value)
         payload = json.dumps(
-            {
-                "camera_id": camera_uuid,
-                "camera_name": str(camera["display_name"]),
-                "kind": kind,
-                "observed_at": timestamp,
-            },
+            payload_data,
             sort_keys=True,
             separators=(",", ":"),
         )

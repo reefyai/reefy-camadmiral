@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
+from typing import TextIO
 
 from .config import SecretConfigurationError, database_path, settings
 from .crypto import load_master_key
@@ -17,15 +20,50 @@ class Child:
     name: str
     command: list[str]
     restartable: bool = False
-    process: subprocess.Popen[bytes] | None = None
+    redact_logs: bool = False
+    process: subprocess.Popen[str] | None = None
     restarts: int = 0
 
     def start(self) -> None:
         print(f"supervisor: starting {self.name}", flush=True)
-        self.process = subprocess.Popen(self.command)
+        if not self.redact_logs:
+            self.process = subprocess.Popen(self.command)
+            return
+        self.process = subprocess.Popen(
+            self.command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        if self.process.stdout is not None:
+            threading.Thread(
+                target=_forward_redacted_output,
+                args=(self.process.stdout,),
+                daemon=True,
+                name=f"{self.name}-log-redactor",
+            ).start()
 
 
 STOP = False
+
+_URL_USERINFO = re.compile(r"(?P<scheme>\b[a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]+@")
+_URL_QUERY_CREDENTIAL = re.compile(
+    r"(?P<prefix>[?&](?:user(?:name)?|pass(?:word)?)=)[^&\s\"']+",
+    re.IGNORECASE,
+)
+
+
+def redact_log_credentials(line: str) -> str:
+    redacted = _URL_USERINFO.sub(r"\g<scheme>***@", line)
+    return _URL_QUERY_CREDENTIAL.sub(r"\g<prefix>***", redacted)
+
+
+def _forward_redacted_output(output: TextIO) -> None:
+    for line in output:
+        print(redact_log_credentials(line.rstrip("\r\n")), flush=True)
 
 
 def render_go2rtc_config(template: str, rtsp_password: str | None) -> str:
@@ -104,6 +142,7 @@ def main() -> int:
             "go2rtc",
             ["/usr/local/bin/go2rtc", "-config", runtime_go2rtc_config],
             restartable=True,
+            redact_logs=True,
         ),
         Child("scanner", [sys.executable, "-m", "camadmiral.scanner_worker"]),
         Child(

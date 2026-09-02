@@ -632,6 +632,52 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn("rtsp://", str(due))
         self.assertNotIn("synthetic-bot-token-value", str(due))
 
+    def test_address_notifications_include_only_the_address_transition(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-address-alert", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.10/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token="synthetic-pairing-token",
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+        self.repository.complete_telegram_pairing(
+            chat_id="100200300",
+            chat_label="Synthetic operator",
+            update_offset=7,
+        )
+
+        incident_uuid = self.repository.open_camera_address_incident(
+            adoption["camera_uuid"],
+            "192.0.2.10",
+            "192.0.2.20",
+            "onvif-endpoint",
+        )
+        self.repository.resolve_camera_address_incident(incident_uuid)
+
+        due = self.repository.due_notifications()
+        self.assertEqual(
+            [item["event_type"] for item in due],
+            ["incident_opened", "incident_resolved"],
+        )
+        for item in due:
+            self.assertEqual(item["payload"]["previous_address"], "192.0.2.10")
+            self.assertEqual(item["payload"]["current_address"], "192.0.2.20")
+            self.assertIn("opened_at", item["payload"])
+            self.assertNotIn("synthetic-secret", str(item))
+            self.assertNotIn("rtsp://", str(item))
+
     def test_telegram_token_and_pairing_secret_are_encrypted_and_never_exposed(self) -> None:
         bot_token = "123456:synthetic-bot-token-value"
         pairing_token = "synthetic-pairing-token"
