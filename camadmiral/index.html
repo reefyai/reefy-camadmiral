@@ -467,6 +467,24 @@
     .availability-key.healthy::before { background: #22c55e; }
     .availability-key.degraded::before { background: #fbbf24; }
     .availability-key.offline::before { background: #fb7185; }
+    .identity-history-list { display: grid; gap: 8px; }
+    .identity-period {
+      display: grid; gap: 9px; padding: 10px; border: 1px solid rgba(148, 163, 184, .1);
+      border-radius: 9px; background: rgba(5, 15, 27, .38);
+    }
+    .identity-period-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .identity-period-range { color: #91a5b5; font-size: 11px; }
+    .identity-current {
+      flex: none; border-radius: 999px; padding: 2px 7px; background: rgba(34, 197, 94, .1);
+      color: #86efac; font-size: 10px; font-weight: 800;
+    }
+    .identity-period-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; }
+    .identity-field { min-width: 0; }
+    .identity-field-label { display: block; margin-bottom: 3px; color: #60798e; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+    .identity-field-value {
+      display: block; color: #dce8ee; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow-wrap: anywhere;
+    }
     .camera-management {
       display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; align-items: end; gap: 8px;
       margin-top: 1px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, .09);
@@ -1026,6 +1044,7 @@
     const adoptionProgress = new Map();
     const lifecycleErrors = new Map();
     const availabilityResults = new Map();
+    const identityHistoryResults = new Map();
     const streamAddressModes = new Map();
     const streamAddressSaveChains = new Map();
     const streamAddressSaveErrors = new Map();
@@ -1033,6 +1052,7 @@
     const ROW_AVAILABILITY_BLOCKS = 8;
     const ROW_AVAILABILITY_REFRESH_MS = 30000;
     const CAMERA_AVAILABILITY_REFRESH_MS = 30000;
+    const CAMERA_IDENTITY_REFRESH_MS = 30000;
     let pinnedAvailabilityBlock = null;
     let liveSocket = null;
     let liveReconnectTimer = null;
@@ -1476,7 +1496,9 @@
     }
 
     function incidentLabel(kind) {
-      return kind === "authentication_failed" ? "Authentication failed" : "Camera offline";
+      if (kind === "authentication_failed") return "Authentication failed";
+      if (kind === "camera_address_changed") return "Camera address changed";
+      return "Camera offline";
     }
 
     async function loadIncidentCount() {
@@ -2535,6 +2557,76 @@
       }
     }
 
+    function addIdentityHistory(parent, adoption) {
+      const current = identityHistoryResults.get(adoption.camera_uuid);
+      const periods = current?.status === "ready" ? current.data.periods : [];
+      const note = periods.length > 1
+        ? `${periods.length - 1} identity change${periods.length === 2 ? "" : "s"}`
+        : periods.length === 1 ? "Current identity" : "";
+      const section = addDetailSection(parent, "Identity history", note);
+      if (!current || current.status === "loading") {
+        addText(section, "div", "detail-message", "Loading identity history...");
+        return;
+      }
+      if (current.status === "error") {
+        addText(section, "div", "detail-message", "CamAdmiral could not load identity history.");
+        return;
+      }
+      if (!periods.length) {
+        addText(section, "div", "detail-message", "No identity observations yet.");
+        return;
+      }
+      const list = addText(section, "div", "identity-history-list", "");
+      periods.forEach(period => {
+        const item = addText(list, "article", "identity-period", "");
+        const heading = addText(item, "div", "identity-period-heading", "");
+        const range = period.current
+          ? `From ${formatTime(period.started_at)} · Until current`
+          : `From ${formatTime(period.started_at)} · Until ${formatTime(period.ended_at)}`;
+        addText(heading, "div", "identity-period-range", range);
+        if (period.current) addText(heading, "span", "identity-current", "Current");
+        const values = addText(item, "div", "identity-period-values", "");
+        [
+          ["IP address", period.ip || "Unavailable"],
+          ["MAC address", period.mac || "Unavailable"],
+          ["ONVIF identity", period.onvif_identity || "Unavailable"]
+        ].forEach(([label, value]) => {
+          const field = addText(values, "div", "identity-field", "");
+          addText(field, "span", "identity-field-label", label);
+          addText(field, "span", "identity-field-value", value);
+        });
+      });
+    }
+
+    async function loadCameraIdentityHistory(device, force = false) {
+      const cameraUuid = device.adoption?.camera_uuid;
+      if (!cameraUuid) return;
+      const current = identityHistoryResults.get(cameraUuid);
+      const now = Date.now();
+      if (current?.requestId) return;
+      if (!force && current?.status === "ready" && current.loadedAt
+          && now - current.loadedAt < CAMERA_IDENTITY_REFRESH_MS) return;
+      const requestId = Symbol("identity-history");
+      const refreshing = current?.status === "ready";
+      identityHistoryResults.set(cameraUuid, refreshing
+        ? {...current, requestId}
+        : {status: "loading", requestId});
+      if (!refreshing) renderActiveCameraModal();
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/identity-history`, {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "Identity history could not be loaded.");
+        if (identityHistoryResults.get(cameraUuid)?.requestId !== requestId) return;
+        identityHistoryResults.set(cameraUuid, {status: "ready", data, loadedAt: Date.now()});
+      } catch (error) {
+        if (identityHistoryResults.get(cameraUuid)?.requestId !== requestId) return;
+        identityHistoryResults.set(cameraUuid, refreshing
+          ? {...current, requestId: null}
+          : {status: "error", loadedAt: Date.now()});
+      }
+      renderActiveCameraModal();
+    }
+
     async function loadCameraAvailability(device, window = "24h", force = false) {
       const cameraUuid = device.adoption?.camera_uuid;
       if (!cameraUuid) return;
@@ -2570,6 +2662,7 @@
       if (!device?.adoption?.camera_uuid) return;
       const current = availabilityResults.get(device.adoption.camera_uuid);
       void loadCameraAvailability(device, current?.window || "24h", true);
+      void loadCameraIdentityHistory(device, true);
     }
 
     function matchesSearch(device, query) {
@@ -3163,6 +3256,7 @@
           addCredentialRepair(credentials, device, adoption);
         }
         addAvailability(wrapper, device, adoption);
+        addIdentityHistory(wrapper, adoption);
         if (adoption.frigate?.length) {
           const count = adoption.frigate.length;
           const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
@@ -3672,7 +3766,10 @@
       const title = device.display_name || device.ip;
       const content = device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device);
       openAppModal("camera", title, content, trigger, "wide");
-      if (device.adoption?.camera_uuid) loadCameraAvailability(device);
+      if (device.adoption?.camera_uuid) {
+        loadCameraAvailability(device);
+        loadCameraIdentityHistory(device);
+      }
     }
 
     function openCameraStreams(device, trigger = null) {
@@ -3758,7 +3855,7 @@
           closeCameraActionMenu(false);
           showConfirmation({
             title: `Unadopt ${device.display_name || "camera"}?`,
-            message: "CamAdmiral will stop monitoring this camera and remove its saved credentials, streams, availability history, incidents, and managed Frigate configuration. The camera will remain in the discovered device list.",
+            message: "CamAdmiral will stop monitoring this camera and remove its saved credentials, streams, availability and identity history, incidents, and managed Frigate configuration. The camera will remain in the discovered device list.",
             actionLabel: "Unadopt",
             trigger,
             onConfirm: async () => {

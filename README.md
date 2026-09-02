@@ -8,7 +8,7 @@ downstream streams for consumers such as Frigate.
 ## Why CamAdmiral?
 
 - **Stable camera URLs.** Cameras on a local network can receive new IP addresses.
-  CamAdmiral tracks adopted cameras by MAC and ONVIF identity and keeps their downstream
+  CamAdmiral tracks adopted cameras by ONVIF identity or a unique MAC and keeps their downstream
   URLs stable, so consumers do not need reconfiguration after an IP change.
 - **Shared camera connections.** CamAdmiral shares one upstream connection per camera
   stream across all consumers, reducing load on slow links such as Wi-Fi and on cameras
@@ -82,6 +82,26 @@ paths remain hidden unless an operator explicitly reveals them. Downstream crede
 the screenshot are intentionally masked.
 
 ![CamAdmiral validated downstream streams](docs/images/camadmiral-downstream-streams.png)
+
+### Camera identity and address changes
+
+CamAdmiral treats an IP address as a camera location, not its identity. It matches an adopted
+camera at a new address by its ONVIF EndpointReference first, with a unique MAC address as the
+fallback for RTSP-only cameras. An ambiguous match is never applied automatically. If all stable
+identities change, the old camera stays offline and the discovered device appears as a separate
+camera that can be adopted.
+
+Before accepting a move, CamAdmiral rediscovers the camera profiles and validates every selected
+source. It keeps the existing stable stream names and URLs, records the new IP, MAC, and ONVIF
+identity period, then restarts the bundled unmodified go2rtc relay. All downstream relay sessions
+briefly disconnect and reconnect through the same URLs. This also handles compatible codec and
+resolution changes without trying to modify go2rtc internals. Multiple camera moves found in one
+recovery pass are applied with one relay restart.
+
+The camera details view retains the dated identity history. Recovery opens an address-change
+incident and resolves it only after the new streams are healthy. Any open offline or authentication
+incident is also resolved after healthy media returns. Failed validation or relay recovery keeps
+the last-known-good sources and leaves the address-change incident open for investigation.
 
 ## Latency
 
@@ -194,8 +214,9 @@ Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already
 to another application and never changes their webhook configuration. The bot token and
 temporary pairing secret are encrypted with CamAdmiral's master key and are never returned
 by the settings API. Alert messages contain only the camera name, incident state, and
-observation time. They do not contain camera credentials, media URLs, IP addresses, or MAC
-addresses.
+observation time. CamAdmiral also notifies the configured channel whenever its media relay
+restarts, including a restart used to recover changed camera addresses. Messages do not contain
+camera credentials, media URLs, IP addresses, or MAC addresses.
 
 **Need another notification service?** Please open a PR with the provider.
 
