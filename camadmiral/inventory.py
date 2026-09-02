@@ -18,6 +18,17 @@ def _stable_keys(device: dict[str, Any]) -> list[str]:
     return keys
 
 
+def _onvif_key(device: dict[str, Any]) -> str | None:
+    onvif = device.get("onvif") or {}
+    endpoint_reference = str(onvif.get("endpoint_reference") or "").strip().lower()
+    return f"onvif:{endpoint_reference}" if endpoint_reference else None
+
+
+def _mac_key(device: dict[str, Any]) -> str | None:
+    mac = str(device.get("mac") or "").strip().lower()
+    return f"mac:{mac}" if mac else None
+
+
 def annotate_identity_conflicts(devices: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     items = [dict(device) for device in devices]
     owners: dict[str, list[int]] = defaultdict(list)
@@ -105,14 +116,17 @@ def reconcile_inventory(
     reconciled: list[dict[str, Any]] = []
     for observation in current:
         current_keys = _stable_keys(observation)
-        previous_index = next(
-            (
-                stable_index[key]
-                for key in current_keys
-                if key in stable_index and stable_index[key] not in matched
-            ),
-            None,
-        )
+        previous_index = None
+        # An ONVIF endpoint reference identifies the device rather than its
+        # current network adapter. Prefer it when both it and a recycled MAC
+        # point at different existing candidates.
+        for key in (_onvif_key(observation), _mac_key(observation)):
+            if key is None:
+                continue
+            candidate = stable_index.get(key)
+            if candidate is not None and candidate not in matched:
+                previous_index = candidate
+                break
         if previous_index is None and not current_keys:
             candidate = ip_index.get(str(observation.get("ip") or ""))
             if candidate is not None and candidate not in matched:

@@ -158,6 +158,89 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(devices[0]["ip"], "192.168.1.99")
         self.assertEqual(devices[0]["first_seen"], "t1")
 
+    def test_onvif_identity_tracks_camera_when_ip_and_mac_change(self) -> None:
+        previous = inventory.reconcile_inventory(
+            [],
+            [camera("192.168.1.20", "02:00:00:00:00:20", "urn:uuid:camera-1")],
+            "t1",
+        )
+        candidate_uuid = previous[0]["candidate_uuid"]
+
+        devices = inventory.reconcile_inventory(
+            previous,
+            [camera("192.168.1.99", "02:00:00:00:00:99", "urn:uuid:camera-1")],
+            "t2",
+        )
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["candidate_uuid"], candidate_uuid)
+        self.assertEqual(devices[0]["ip"], "192.168.1.99")
+        self.assertEqual(devices[0]["mac"], "02:00:00:00:00:99")
+        self.assertEqual(devices[0]["status"], "online")
+
+    def test_onvif_identity_wins_when_new_mac_belongs_to_another_camera(self) -> None:
+        previous = inventory.reconcile_inventory(
+            [],
+            [
+                camera("172.21.10.20", "02:00:00:00:10:20", "urn:uuid:camera-a"),
+                camera("172.21.10.21", "02:00:00:00:10:21", "urn:uuid:camera-b"),
+            ],
+            "t1",
+        )
+        camera_a_uuid = next(
+            device["candidate_uuid"]
+            for device in previous
+            if device["onvif"]["endpoint_reference"] == "urn:uuid:camera-a"
+        )
+        camera_b_uuid = next(
+            device["candidate_uuid"]
+            for device in previous
+            if device["onvif"]["endpoint_reference"] == "urn:uuid:camera-b"
+        )
+
+        devices = inventory.reconcile_inventory(
+            previous,
+            [camera("172.21.10.99", "02:00:00:00:10:21", "urn:uuid:camera-a")],
+            "t2",
+        )
+
+        camera_a = next(
+            device for device in devices if device["candidate_uuid"] == camera_a_uuid
+        )
+        camera_b = next(
+            device for device in devices if device["candidate_uuid"] == camera_b_uuid
+        )
+        self.assertEqual(camera_a["ip"], "172.21.10.99")
+        self.assertEqual(camera_a["status"], "online")
+        self.assertEqual(camera_b["ip"], "172.21.10.21")
+        self.assertEqual(camera_b["status"], "offline")
+        self.assertTrue(camera_a["identity_conflict"])
+        self.assertTrue(camera_b["identity_conflict"])
+        self.assertIn("MAC", camera_a["identity_conflict_reason"])
+        self.assertIn("MAC", camera_b["identity_conflict_reason"])
+
+    def test_all_changed_identities_leave_old_offline_and_create_new_camera(self) -> None:
+        previous = inventory.reconcile_inventory(
+            [],
+            [camera("192.168.1.20", "02:00:00:00:00:20", "urn:uuid:camera-1")],
+            "t1",
+        )
+        original_uuid = previous[0]["candidate_uuid"]
+
+        devices = inventory.reconcile_inventory(
+            previous,
+            [camera("192.168.1.99", "02:00:00:00:00:99", "urn:uuid:camera-2")],
+            "t2",
+        )
+
+        self.assertEqual(len(devices), 2)
+        old = next(device for device in devices if device["candidate_uuid"] == original_uuid)
+        new = next(device for device in devices if device["candidate_uuid"] != original_uuid)
+        self.assertEqual(old["ip"], "192.168.1.20")
+        self.assertEqual(old["status"], "offline")
+        self.assertEqual(new["ip"], "192.168.1.99")
+        self.assertEqual(new["status"], "online")
+
     def test_different_mac_on_same_ip_is_a_new_camera(self) -> None:
         previous = inventory.reconcile_inventory([], [camera("192.168.1.20", "aa:bb:cc:dd:ee:ff")], "t1")
 
@@ -290,22 +373,105 @@ class InventoryTests(unittest.TestCase):
                 patch.object(scanner_worker, "STATE", state_path),
                 patch.object(scanner_worker, "REQUEST", request_path),
                 patch.object(scanner_worker, "HEARTBEAT", heartbeat_path),
+                patch.object(
+                    scanner_worker,
+                    "scan_targeted_lan",
+                    return_value=result,
+                ) as targeted_scan,
+            ):
+                targets = [{"candidate_uuid": "candidate-1"}]
+                scanner_worker.handle_scan(
+                    {
+                        "scan_id": "scan-recovery",
+                        "mode": "targeted",
+                        "targets": targets,
+                        "subnets": ["192.168.1.0/24"],
+                    }
+                )
+                stored = json.loads(inventory_path.read_text(encoding="utf-8"))
+
+        targeted_scan.assert_called_once_with(
+            targets,
+            progress=scanner_worker.scan_progress,
+            subnets=["192.168.1.0/24"],
+        )
+        by_id = {device["candidate_uuid"]: device for device in stored["devices"]}
+        self.assertEqual(by_id["candidate-1"]["ip"], "192.168.1.99")
+        self.assertEqual(by_id["candidate-1"]["status"], "online")
+        self.assertEqual(by_id["candidate-2"]["ip"], "192.168.1.30")
+        self.assertEqual(by_id["candidate-2"]["status"], "online")
+
+    def test_targeted_scan_reannotates_conflicts_with_untouched_cameras(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory_path = root / "inventory.json"
+            state_path = root / "state.json"
+            request_path = root / "request.json"
+            heartbeat_path = root / "heartbeat.json"
+            previous = {
+                "scan_id": "scan-before",
+                "devices": [
+                    {
+                        **camera(
+                            "172.21.30.20",
+                            "02:00:00:00:30:20",
+                            "urn:uuid:camera-a",
+                        ),
+                        "candidate_uuid": "candidate-a",
+                        "status": "offline",
+                    },
+                    {
+                        **camera(
+                            "172.21.30.21",
+                            "02:00:00:00:30:21",
+                            "urn:uuid:camera-b",
+                        ),
+                        "candidate_uuid": "candidate-b",
+                        "status": "offline",
+                    },
+                ],
+            }
+            inventory_path.write_text(json.dumps(previous), encoding="utf-8")
+            request_path.write_text("{}", encoding="utf-8")
+            result = {
+                "completed_at": "t2",
+                "duration_ms": 10,
+                "network": {"interface": "eth0", "subnet": "172.21.30.0/24"},
+                "scanners": {"recovery": "complete"},
+                "scanner_errors": {},
+                "raw_log": ["targeted"],
+                "devices": [
+                    camera(
+                        "172.21.30.99",
+                        "02:00:00:00:30:21",
+                        "urn:uuid:camera-a",
+                    )
+                ],
+            }
+            with (
+                patch.object(scanner_worker, "INVENTORY", inventory_path),
+                patch.object(scanner_worker, "STATE", state_path),
+                patch.object(scanner_worker, "REQUEST", request_path),
+                patch.object(scanner_worker, "HEARTBEAT", heartbeat_path),
                 patch.object(scanner_worker, "scan_targeted_lan", return_value=result),
             ):
                 scanner_worker.handle_scan(
                     {
                         "scan_id": "scan-recovery",
                         "mode": "targeted",
-                        "targets": [{"candidate_uuid": "candidate-1"}],
+                        "targets": [{"candidate_uuid": "candidate-a"}],
+                        "subnets": ["172.21.30.0/24"],
                     }
                 )
                 stored = json.loads(inventory_path.read_text(encoding="utf-8"))
 
         by_id = {device["candidate_uuid"]: device for device in stored["devices"]}
-        self.assertEqual(by_id["candidate-1"]["ip"], "192.168.1.99")
-        self.assertEqual(by_id["candidate-1"]["status"], "online")
-        self.assertEqual(by_id["candidate-2"]["ip"], "192.168.1.30")
-        self.assertEqual(by_id["candidate-2"]["status"], "online")
+        self.assertEqual(by_id["candidate-a"]["ip"], "172.21.30.99")
+        self.assertEqual(by_id["candidate-a"]["status"], "online")
+        self.assertEqual(by_id["candidate-b"]["status"], "offline")
+        for candidate_uuid in ("candidate-a", "candidate-b"):
+            self.assertTrue(by_id[candidate_uuid]["identity_conflict"])
+            self.assertIn("MAC", by_id[candidate_uuid]["identity_conflict_reason"])
 
     def test_explicit_address_scan_preserves_unrelated_cameras(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

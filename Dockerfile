@@ -35,6 +35,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check \
     --root-user-action=ignore -r requirements.txt
 
 COPY --from=go2rtc /go2rtc /usr/local/bin/go2rtc
+COPY third_party/go2rtc/LICENSE /usr/share/licenses/go2rtc/LICENSE
 COPY go2rtc.yaml /etc/camadmiral/go2rtc.yaml
 COPY VERSION ./VERSION
 COPY camadmiral ./camadmiral

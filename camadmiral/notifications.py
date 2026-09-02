@@ -104,11 +104,28 @@ def pairing_message(update: dict[str, Any], pairing_token: str) -> tuple[str, st
 def notification_text(event_type: str, payload: dict[str, Any]) -> str:
     if event_type == "test":
         return "CamAdmiral test notification\n\nTelegram notifications are connected."
+    if event_type == "relay_restarted":
+        reason = str(payload.get("reason") or "unknown").replace("_", " ")
+        camera_count = max(0, int(payload.get("camera_count") or 0))
+        affected = (
+            f"\nRecovered cameras: {camera_count}"
+            if camera_count
+            else ""
+        )
+        observed_at = str(payload.get("observed_at") or "")
+        return (
+            "CamAdmiral media relay restarted\n\n"
+            f"Reason: {reason}{affected}\n"
+            "Camera streams are reconnecting.\n"
+            f"Observed: {observed_at}"
+        )
     camera_name = str(payload.get("camera_name") or "Camera")
     kind = str(payload.get("kind") or "media_offline")
     observed_at = str(payload.get("observed_at") or "")
     if event_type == "incident_resolved":
         state = "recovered"
+    elif kind == "camera_address_changed":
+        state = "address changed"
     elif kind == "authentication_failed":
         state = "authentication failed"
     else:

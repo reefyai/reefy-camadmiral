@@ -41,6 +41,27 @@ def request_stop(_signum: int, _frame: object) -> None:
     STOP = True
 
 
+def notify_relay_restart(
+    repository: CameraRepository | None,
+    *,
+    reason: str,
+    camera_count: int,
+) -> None:
+    if repository is None:
+        return
+    try:
+        repository.enqueue_relay_restart_notification(
+            reason=reason,
+            camera_count=camera_count,
+        )
+    except Exception as exc:
+        print(
+            "supervisor: could not queue go2rtc restart notification: "
+            f"{type(exc).__name__}",
+            flush=True,
+        )
+
+
 def stop_children(children: list[Child]) -> None:
     for child in reversed(children):
         if child.process is not None and child.process.poll() is None:
@@ -67,6 +88,7 @@ def main() -> int:
     port = str(configuration.server.port)
     runtime_go2rtc_config = "/run/camadmiral/go2rtc.yaml"
     template = open("/etc/camadmiral/go2rtc.yaml", encoding="utf-8").read()
+    repository: CameraRepository | None = None
     try:
         repository = CameraRepository(database_path(), load_master_key())
         repository.migrate()
@@ -120,6 +142,12 @@ def main() -> int:
                     )
                     time.sleep(delay)
                     child.start()
+                    if child.name == "go2rtc" and repository is not None:
+                        notify_relay_restart(
+                            repository,
+                            reason="unexpected_process_exit",
+                            camera_count=0,
+                        )
                     continue
                 print(
                     f"supervisor: required child {child.name} exited "

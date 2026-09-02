@@ -2,7 +2,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from camadmiral.supervisor import render_go2rtc_config
+from unittest.mock import Mock
+
+from camadmiral.supervisor import notify_relay_restart, render_go2rtc_config
 
 
 class SupervisorTests(unittest.TestCase):
@@ -27,6 +29,32 @@ class SupervisorTests(unittest.TestCase):
             os.chmod(target, 0o600)
 
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def test_unexpected_relay_restart_queues_channel_neutral_event(self) -> None:
+        repository = Mock()
+
+        notify_relay_restart(
+            repository,
+            reason="unexpected_process_exit",
+            camera_count=0,
+        )
+
+        repository.enqueue_relay_restart_notification.assert_called_once_with(
+            reason="unexpected_process_exit",
+            camera_count=0,
+        )
+
+    def test_notification_failure_does_not_stop_relay_supervision(self) -> None:
+        repository = Mock()
+        repository.enqueue_relay_restart_notification.side_effect = RuntimeError(
+            "synthetic notification failure"
+        )
+
+        notify_relay_restart(
+            repository,
+            reason="unexpected_process_exit",
+            camera_count=0,
+        )
 
 
 if __name__ == "__main__":

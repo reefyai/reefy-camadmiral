@@ -84,6 +84,30 @@ class TelegramNotificationTests(unittest.TestCase):
         self.assertNotIn("rtsp://", message)
         self.assertNotIn("MAC", message)
 
+    def test_address_and_relay_restart_messages_are_explicit_and_secret_free(self) -> None:
+        address_message = notification_text(
+            "incident_opened",
+            {
+                "camera_name": "Synthetic entrance",
+                "kind": "camera_address_changed",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        restart_message = notification_text(
+            "relay_restarted",
+            {
+                "reason": "camera_address_recovery",
+                "camera_count": 2,
+                "observed_at": "2026-01-01T00:00:01+00:00",
+            },
+        )
+
+        self.assertIn("Synthetic entrance: address changed", address_message)
+        self.assertIn("media relay restarted", restart_message)
+        self.assertIn("Recovered cameras: 2", restart_message)
+        self.assertIn("Camera streams are reconnecting", restart_message)
+        self.assertNotIn("rtsp://", restart_message)
+
 
 if __name__ == "__main__":
     unittest.main()

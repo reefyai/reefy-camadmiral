@@ -312,6 +312,96 @@ MIGRATIONS: tuple[str, ...] = (
         WHERE selections.target_id = frigate_targets.target_id
     );
     """,
+    """
+    CREATE TABLE camera_identity_periods (
+        period_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        ip_address TEXT,
+        mac_address TEXT,
+        onvif_identity TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        CHECK(ip_address IS NOT NULL OR mac_address IS NOT NULL OR onvif_identity IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX camera_identity_periods_one_current
+        ON camera_identity_periods(camera_uuid) WHERE ended_at IS NULL;
+    CREATE INDEX camera_identity_periods_camera_time
+        ON camera_identity_periods(camera_uuid, started_at DESC);
+    """,
+    """
+    PRAGMA foreign_keys = OFF;
+
+    DROP INDEX IF EXISTS notification_outbox_due;
+    DROP INDEX IF EXISTS camera_incidents_one_open_per_camera;
+    DROP INDEX IF EXISTS camera_incidents_status_time;
+    ALTER TABLE notification_outbox RENAME TO notification_outbox_v22;
+    ALTER TABLE camera_incidents RENAME TO camera_incidents_v22;
+
+    CREATE TABLE camera_incidents (
+        incident_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN (
+            'media_offline', 'authentication_failed', 'camera_address_changed'
+        )),
+        severity TEXT NOT NULL DEFAULT 'critical'
+            CHECK(severity IN ('critical', 'warning')),
+        opened_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolution_reason TEXT,
+        details_json TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE UNIQUE INDEX camera_incidents_one_open_health_per_camera
+        ON camera_incidents(camera_uuid)
+        WHERE resolved_at IS NULL
+          AND kind IN ('media_offline', 'authentication_failed');
+    CREATE UNIQUE INDEX camera_incidents_one_open_address_per_camera
+        ON camera_incidents(camera_uuid)
+        WHERE resolved_at IS NULL AND kind = 'camera_address_changed';
+    CREATE INDEX camera_incidents_status_time
+        ON camera_incidents(resolved_at, opened_at DESC);
+
+    INSERT INTO camera_incidents(
+        incident_uuid, camera_uuid, kind, severity, opened_at,
+        last_observed_at, resolved_at, resolution_reason, details_json
+    )
+    SELECT incident_uuid, camera_uuid, kind, severity, opened_at,
+           last_observed_at, resolved_at, resolution_reason, '{}'
+    FROM camera_incidents_v22;
+
+    CREATE TABLE notification_outbox (
+        outbox_uuid TEXT PRIMARY KEY,
+        incident_uuid TEXT REFERENCES camera_incidents(incident_uuid) ON DELETE SET NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+            'incident_opened', 'incident_resolved', 'relay_restarted', 'test'
+        )),
+        payload_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'retry', 'sent', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        provider_message_id TEXT,
+        last_error_code TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT
+    );
+    CREATE INDEX notification_outbox_due
+        ON notification_outbox(status, next_attempt_at);
+
+    INSERT INTO notification_outbox(
+        outbox_uuid, incident_uuid, event_type, payload_json, idempotency_key,
+        status, attempt_count, next_attempt_at, provider_message_id,
+        last_error_code, created_at, sent_at
+    )
+    SELECT outbox_uuid, incident_uuid, event_type, payload_json, idempotency_key,
+           status, attempt_count, next_attempt_at, provider_message_id,
+           last_error_code, created_at, sent_at
+    FROM notification_outbox_v22;
+
+    DROP TABLE notification_outbox_v22;
+    DROP TABLE camera_incidents_v22;
+    PRAGMA foreign_keys = ON;
+    """,
 )
 
 
@@ -486,7 +576,8 @@ class CameraRepository:
         }.get(state)
         opened = connection.execute(
             "SELECT incident_uuid, kind FROM camera_incidents "
-            "WHERE camera_uuid = ? AND resolved_at IS NULL",
+            "WHERE camera_uuid = ? AND resolved_at IS NULL "
+            "AND kind IN ('media_offline', 'authentication_failed')",
             (camera_uuid,),
         ).fetchone()
         if desired_kind is not None:
@@ -598,6 +689,113 @@ class CameraRepository:
                 timestamp,
             ),
         )
+
+    def open_camera_address_incident(
+        self,
+        camera_uuid: str,
+        previous_address: str,
+        current_address: str,
+        evidence: str,
+    ) -> str:
+        timestamp = _now()
+        details = json.dumps(
+            {
+                "previous_address": previous_address,
+                "current_address": current_address,
+                "evidence": evidence,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            opened = connection.execute(
+                "SELECT incident_uuid FROM camera_incidents WHERE camera_uuid = ? "
+                "AND kind = 'camera_address_changed' AND resolved_at IS NULL",
+                (camera_uuid,),
+            ).fetchone()
+            if opened is not None:
+                incident_uuid = str(opened["incident_uuid"])
+                connection.execute(
+                    "UPDATE camera_incidents SET last_observed_at = ?, details_json = ? "
+                    "WHERE incident_uuid = ?",
+                    (timestamp, details, incident_uuid),
+                )
+            else:
+                incident_uuid = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, severity, "
+                    "opened_at, last_observed_at, details_json) "
+                    "VALUES (?, ?, 'camera_address_changed', 'warning', ?, ?, ?)",
+                    (incident_uuid, camera_uuid, timestamp, timestamp, details),
+                )
+                self._enqueue_incident_notification(
+                    connection,
+                    incident_uuid,
+                    camera_uuid,
+                    "camera_address_changed",
+                    "incident_opened",
+                    timestamp,
+                )
+            connection.commit()
+        return incident_uuid
+
+    def resolve_camera_address_incident(self, incident_uuid: str) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            incident = connection.execute(
+                "SELECT kind, resolved_at FROM camera_incidents WHERE incident_uuid = ?",
+                (incident_uuid,),
+            ).fetchone()
+            if (
+                incident is None
+                or incident["kind"] != "camera_address_changed"
+                or incident["resolved_at"] is not None
+            ):
+                return
+            self._resolve_incident(connection, incident_uuid, timestamp, "stream_recovered")
+            connection.commit()
+
+    def enqueue_relay_restart_notification(
+        self,
+        *,
+        reason: str,
+        camera_count: int,
+    ) -> str | None:
+        timestamp = _now()
+        outbox_uuid = str(uuid.uuid4())
+        payload = json.dumps(
+            {
+                "reason": reason,
+                "camera_count": max(0, int(camera_count)),
+                "observed_at": timestamp,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            settings_row = connection.execute(
+                "SELECT enabled, chat_id FROM notification_settings WHERE singleton_id = 1"
+            ).fetchone()
+            if (
+                settings_row is None
+                or not bool(settings_row["enabled"])
+                or not settings_row["chat_id"]
+            ):
+                return None
+            connection.execute(
+                "INSERT INTO notification_outbox(outbox_uuid, event_type, payload_json, "
+                "idempotency_key, status, next_attempt_at, created_at) "
+                "VALUES (?, 'relay_restarted', ?, ?, 'pending', ?, ?)",
+                (
+                    outbox_uuid,
+                    payload,
+                    f"relay-restarted:{outbox_uuid}",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        return outbox_uuid
 
     def camera_availability(
         self,
@@ -1063,6 +1261,177 @@ class CameraRepository:
         onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower() or None
         mac = str(candidate.get("mac") or "").strip().lower() or None
         return onvif_identity, mac
+
+    @classmethod
+    def _candidate_identity(
+        cls,
+        candidate: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        onvif_identity, mac = cls._candidate_stable_identity(candidate)
+        ip_address = str(candidate.get("ip") or "").strip() or None
+        return ip_address, mac, onvif_identity
+
+    @classmethod
+    def _observe_camera_identity(
+        cls,
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        observed_at: str,
+    ) -> bool:
+        observed_identity = cls._candidate_identity(candidate)
+        current = connection.execute(
+            "SELECT period_uuid, ip_address, mac_address, onvif_identity "
+            "FROM camera_identity_periods WHERE camera_uuid = ? AND ended_at IS NULL",
+            (camera_uuid,),
+        ).fetchone()
+        identity = observed_identity
+        if not any(identity):
+            return False
+        if current is not None:
+            current_identity = (
+                current["ip_address"],
+                current["mac_address"],
+                current["onvif_identity"],
+            )
+            # Missing fields are unknown, not evidence that a value disappeared.
+            # Fill newly learned values into the current period. Start a new
+            # period only when two known values conflict, and keep any fields
+            # that are unknown in that new observation null.
+            changed = any(
+                observed is not None
+                and previous is not None
+                and observed != previous
+                for observed, previous in zip(identity, current_identity, strict=True)
+            )
+            if not changed:
+                enriched = tuple(
+                    observed if previous is None else previous
+                    for observed, previous in zip(identity, current_identity, strict=True)
+                )
+                if enriched == current_identity:
+                    return False
+                connection.execute(
+                    "UPDATE camera_identity_periods SET ip_address = ?, mac_address = ?, "
+                    "onvif_identity = ? WHERE period_uuid = ?",
+                    (*enriched, current["period_uuid"]),
+                )
+                return True
+        if current is not None:
+            connection.execute(
+                "UPDATE camera_identity_periods SET ended_at = ? WHERE period_uuid = ?",
+                (observed_at, current["period_uuid"]),
+            )
+        connection.execute(
+            "INSERT INTO camera_identity_periods(period_uuid, camera_uuid, ip_address, "
+            "mac_address, onvif_identity, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (str(uuid.uuid4()), camera_uuid, *identity, observed_at),
+        )
+        return True
+
+    def observe_camera_identity(
+        self,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        *,
+        observed_at: str | None = None,
+    ) -> bool:
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                connection.rollback()
+                return False
+            changed = self._observe_camera_identity(
+                connection,
+                camera_uuid,
+                candidate,
+                timestamp,
+            )
+            connection.commit()
+        return changed
+
+    def initialize_camera_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        observed_at: str | None = None,
+    ) -> int:
+        return self.observe_inventory_identities(
+            observations,
+            observed_at=observed_at,
+        )
+
+    def observe_inventory_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        advance_existing_camera_uuids: set[str] | frozenset[str] = frozenset(),
+        observed_at: str | None = None,
+    ) -> int:
+        if not observations:
+            return 0
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            known = {
+                str(row["camera_uuid"])
+                for row in connection.execute("SELECT camera_uuid FROM cameras")
+            }
+            initialized = {
+                str(row["camera_uuid"])
+                for row in connection.execute(
+                    "SELECT camera_uuid FROM camera_identity_periods WHERE ended_at IS NULL"
+                )
+            }
+            changes = 0
+            for camera_uuid, candidate in observations:
+                if camera_uuid not in known or (
+                    camera_uuid in initialized
+                    and camera_uuid not in advance_existing_camera_uuids
+                ):
+                    continue
+                if self._observe_camera_identity(
+                    connection,
+                    camera_uuid,
+                    candidate,
+                    timestamp,
+                ):
+                    changes += 1
+                    initialized.add(camera_uuid)
+            connection.commit()
+        return changes
+
+    def camera_identity_history(self, camera_uuid: str) -> list[dict[str, Any]] | None:
+        with self.connect() as connection:
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                return None
+            rows = connection.execute(
+                "SELECT ip_address, mac_address, onvif_identity, started_at, ended_at "
+                "FROM camera_identity_periods WHERE camera_uuid = ? "
+                "ORDER BY started_at DESC, period_uuid DESC",
+                (camera_uuid,),
+            ).fetchall()
+        return [
+            {
+                "ip": row["ip_address"],
+                "mac": row["mac_address"],
+                "onvif_identity": row["onvif_identity"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "current": row["ended_at"] is None,
+            }
+            for row in rows
+        ]
 
     def blocked_devices(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -1708,6 +2077,12 @@ class CameraRepository:
                     timestamp,
                 ),
             )
+            self._observe_camera_identity(
+                connection,
+                camera_uuid,
+                candidate,
+                timestamp,
+            )
             current_tokens = {str(profile["token"]) for profile in profiles}
             connection.execute("DELETE FROM consumer_bindings WHERE camera_uuid = ?", (camera_uuid,))
             if current_tokens:
@@ -1843,6 +2218,28 @@ class CameraRepository:
                 }
             )
         return sources
+
+    def managed_stream_runtime_sources(self) -> list[dict[str, str]]:
+        """Return role-bound stream identities without loading camera credentials."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid "
+                "FROM managed_streams s "
+                "JOIN onvif_profiles p USING (profile_uuid) "
+                "JOIN cameras a USING (camera_uuid) "
+                "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
+                "WHERE p.uri IS NOT NULL AND a.enabled = 1 "
+                "AND s.health_status != 'auth_failed' "
+                "ORDER BY s.camera_uuid, s.stream_key"
+            ).fetchall()
+        return [
+            {
+                "stream_uuid": str(row["stream_uuid"]),
+                "stream_key": str(row["stream_key"]),
+                "camera_uuid": str(row["camera_uuid"]),
+            }
+            for row in rows
+        ]
 
     def record_desired_media_revision(
         self,
