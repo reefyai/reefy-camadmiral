@@ -10,6 +10,7 @@ services:
     entrypoint: ["/bin/sh", "/e2e/start-camadmiral.sh"]
     environment:
       CAMADMIRAL_HEALTH_INTERVAL: "10"
+      CAMADMIRAL_RECOVERY_SCAN_INTERVAL: "60"
       CAMADMIRAL_RECOVERY_RETRY_INTERVAL: "60"
       CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
     volumes:
@@ -76,6 +77,7 @@ services:
   camera-open:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]
+    mac_address: "02:00:00:00:00:10"
     volumes:
       - ./fixtures/camera-open.yaml:/e2e/camera-open.yaml:ro
     networks:
@@ -106,6 +108,7 @@ services:
   camera-open-moved:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]
+    mac_address: "02:00:00:00:00:10"
     volumes:
       - ./fixtures/camera-open.yaml:/e2e/camera-open.yaml:ro
     networks:
@@ -119,9 +122,27 @@ services:
       disable: true
     profiles: [moved]
 
+  camera-open-moved-again:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-open.yaml"]
+    mac_address: "02:00:00:00:00:10"
+    volumes:
+      - ./fixtures/camera-open.yaml:/e2e/camera-open.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.17
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [identity]
+
   camera-auth:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth.yaml"]
+    mac_address: "02:00:00:00:00:11"
     volumes:
       - ./fixtures/camera-auth.yaml:/e2e/camera-auth.yaml:ro
     networks:
@@ -137,6 +158,7 @@ services:
   camera-onvif:
     image: camadmiral-e2e:local
     entrypoint: ["python", "/e2e/fake_onvif.py"]
+    mac_address: "02:00:00:00:00:13"
     volumes:
       - ./fake_onvif.py:/e2e/fake_onvif.py:ro
       - ./fixtures/camera-onvif.yaml:/e2e/camera-onvif.yaml:ro
@@ -149,6 +171,103 @@ services:
     tmpfs: [/tmp]
     healthcheck:
       disable: true
+
+  camera-onvif-moved:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/fake_onvif.py"]
+    environment:
+      ONVIF_ADDRESS: 172.30.0.15
+      ONVIF_UUID: synthetic-onvif-camera
+      ONVIF_NAME: Synthetic ONVIF
+      ONVIF_MEDIA_CONFIG: /e2e/camera-onvif-moved.yaml
+      ONVIF_MAIN_WIDTH: "960"
+      ONVIF_MAIN_HEIGHT: "540"
+      ONVIF_MAIN_FPS: "12"
+      ONVIF_SUB_WIDTH: "480"
+      ONVIF_SUB_HEIGHT: "270"
+      ONVIF_SUB_FPS: "6"
+    mac_address: "02:00:00:00:00:15"
+    volumes:
+      - ./fake_onvif.py:/e2e/fake_onvif.py:ro
+      - ./fixtures/camera-onvif-moved.yaml:/e2e/camera-onvif-moved.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.15
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [identity]
+
+  camera-onvif-reidentified:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/fake_onvif.py"]
+    environment:
+      ONVIF_ADDRESS: 172.30.0.16
+      ONVIF_UUID: synthetic-onvif-replacement
+      ONVIF_NAME: Synthetic replacement ONVIF
+      ONVIF_MEDIA_CONFIG: /e2e/camera-onvif-moved.yaml
+      ONVIF_MAIN_WIDTH: "960"
+      ONVIF_MAIN_HEIGHT: "540"
+      ONVIF_MAIN_FPS: "12"
+      ONVIF_SUB_WIDTH: "480"
+      ONVIF_SUB_HEIGHT: "270"
+      ONVIF_SUB_FPS: "6"
+    mac_address: "02:00:00:00:00:16"
+    volumes:
+      - ./fake_onvif.py:/e2e/fake_onvif.py:ro
+      - ./fixtures/camera-onvif-moved.yaml:/e2e/camera-onvif-moved.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.16
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [identity]
+
+  identity-consumer:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/identity_consumer.py"]
+    user: "0:0"
+    volumes:
+      - ./identity_consumer.py:/e2e/identity_consumer.py:ro
+      - ./frame_fingerprint.py:/e2e/frame_fingerprint.py:ro
+      - e2e-state:/state
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [identity]
+
+  identity-control-consumer:
+    image: camadmiral-e2e:local
+    entrypoint: ["python", "/e2e/identity_consumer.py"]
+    user: "0:0"
+    environment:
+      IDENTITY_CONFIG_PATH: /state/identity-control.json
+      IDENTITY_STATUS_PATH: /state/identity-control-status.json
+      IDENTITY_TELEMETRY_PATH: /state/identity-control-frames.jsonl
+      IDENTITY_USER_AGENT_PREFIX: CamAdmiral-E2E-Control
+    volumes:
+      - ./identity_consumer.py:/e2e/identity_consumer.py:ro
+      - ./frame_fingerprint.py:/e2e/frame_fingerprint.py:ro
+      - e2e-state:/state
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [identity]
 
   camera-onvif-large:
     image: camadmiral-e2e:local
@@ -203,6 +322,7 @@ services:
   camera-auth-rotated:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-auth-rotated.yaml"]
+    mac_address: "02:00:00:00:00:11"
     volumes:
       - ./fixtures/camera-auth-rotated.yaml:/e2e/camera-auth-rotated.yaml:ro
     networks:

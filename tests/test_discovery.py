@@ -721,6 +721,7 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(result["response"], "RTSP/1.0 401 Unauthorized")
 
     def test_targeted_recovery_follows_one_unique_local_mac(self) -> None:
+        logs: list[str] = []
         interface = discovery.LanInterface(
             name="eth0",
             address=ipaddress.IPv4Address("192.168.10.1"),
@@ -751,16 +752,130 @@ class ResultTests(unittest.TestCase):
                         "endpoint_reference": None,
                     }
                 ],
+                logs.append,
             )
 
         self.assertEqual(len(devices), 1)
         self.assertEqual(devices[0]["ip"], "192.168.10.77")
+        self.assertIn("RECOVERY: target candidate candidate-1", logs)
+
+    def test_targeted_recovery_follows_onvif_identity_when_mac_changes(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.21.10.1"),
+            network=ipaddress.IPv4Network("172.21.10.0/24"),
+        )
+        onvif = {
+            "ip": "172.21.10.77",
+            "endpoint_reference": "urn:uuid:synthetic-camera",
+            "service_urls": ["http://172.21.10.77/onvif/device_service"],
+            "scopes": [],
+            "types": [],
+            "name": "Synthetic camera",
+            "model": None,
+        }
+        endpoint = {
+            "port": 554,
+            "url": "rtsp://172.21.10.77:554",
+            "verified": True,
+            "response": "RTSP/1.0 401 Unauthorized",
+            "latency_ms": 1,
+        }
+        with (
+            patch.object(discovery, "discover_onvif", return_value=[onvif]),
+            patch.object(
+                discovery,
+                "read_arp_table",
+                return_value={"172.21.10.77": "02:00:00:00:00:77"},
+            ),
+            patch.object(
+                discovery,
+                "_probe_rtsp",
+                side_effect=lambda _address, port: endpoint if port == 554 else None,
+            ),
+        ):
+            devices = discovery.discover_targeted(
+                interface,
+                [
+                    {
+                        "candidate_uuid": "candidate-1",
+                        "mac": "02:00:00:00:00:20",
+                        "endpoint_reference": "urn:uuid:synthetic-camera",
+                    }
+                ],
+            )
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["ip"], "172.21.10.77")
+        self.assertEqual(devices[0]["mac"], "02:00:00:00:00:77")
+        self.assertEqual(
+            devices[0]["onvif"]["endpoint_reference"],
+            "urn:uuid:synthetic-camera",
+        )
+
+    def test_targeted_recovery_reserves_onvif_match_before_recycled_mac(self) -> None:
+        interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.21.10.1"),
+            network=ipaddress.IPv4Network("172.21.10.0/24"),
+        )
+        onvif = {
+            "ip": "172.21.10.77",
+            "endpoint_reference": "urn:uuid:camera-a",
+            "service_urls": ["http://172.21.10.77/onvif/device_service"],
+            "scopes": [],
+            "types": [],
+            "name": "Synthetic camera A",
+            "model": None,
+        }
+        endpoint = {
+            "port": 554,
+            "url": "rtsp://172.21.10.77:554",
+            "verified": True,
+            "response": "RTSP/1.0 401 Unauthorized",
+            "latency_ms": 1,
+        }
+        with (
+            patch.object(discovery, "discover_onvif", return_value=[onvif]),
+            patch.object(
+                discovery,
+                "read_arp_table",
+                return_value={"172.21.10.77": "02:00:00:00:00:22"},
+            ),
+            patch.object(
+                discovery,
+                "_probe_rtsp",
+                side_effect=lambda _address, port: endpoint if port == 554 else None,
+            ),
+        ):
+            devices = discovery.discover_targeted(
+                interface,
+                [
+                    {
+                        "candidate_uuid": "candidate-a",
+                        "mac": "02:00:00:00:00:11",
+                        "endpoint_reference": "urn:uuid:camera-a",
+                    },
+                    {
+                        "candidate_uuid": "candidate-b",
+                        "mac": "02:00:00:00:00:22",
+                        "endpoint_reference": "urn:uuid:camera-b",
+                    },
+                ],
+            )
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["ip"], "172.21.10.77")
+        self.assertEqual(
+            devices[0]["onvif"]["endpoint_reference"],
+            "urn:uuid:camera-a",
+        )
 
     def test_targeted_recovery_rejects_duplicate_mac_observations(self) -> None:
         interface = discovery.LanInterface(
             name="eth0",
-            address=ipaddress.IPv4Address("192.168.10.1"),
-            network=ipaddress.IPv4Network("192.168.10.0/24"),
+            address=ipaddress.IPv4Address("172.21.10.1"),
+            network=ipaddress.IPv4Network("172.21.10.0/24"),
         )
         with (
             patch.object(discovery, "discover_onvif", return_value=[]),
@@ -768,8 +883,8 @@ class ResultTests(unittest.TestCase):
                 discovery,
                 "read_arp_table",
                 return_value={
-                    "192.168.10.77": "02:00:00:00:00:20",
-                    "192.168.10.78": "02:00:00:00:00:20",
+                    "172.21.10.77": "02:00:00:00:00:20",
+                    "172.21.10.78": "02:00:00:00:00:20",
                 },
             ),
             patch.object(discovery, "_probe_rtsp") as probe_rtsp,
@@ -787,6 +902,193 @@ class ResultTests(unittest.TestCase):
 
         self.assertEqual(devices, [])
         probe_rtsp.assert_not_called()
+
+    def test_targeted_recovery_uses_selected_routed_subnet(self) -> None:
+        routed = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.20.0.2"),
+            network=ipaddress.IPv4Network("172.20.37.0/30"),
+            directly_connected=False,
+        )
+        target = {
+            "candidate_uuid": "candidate-1",
+            "mac": None,
+            "endpoint_reference": "urn:uuid:synthetic-camera",
+        }
+        with (
+            patch.object(
+                discovery,
+                "selected_scan_interfaces",
+                return_value=([routed], {}),
+            ) as selected,
+            patch.object(discovery, "private_lan_interfaces") as connected,
+            patch.object(discovery, "discover_targeted", return_value=[]) as recover,
+        ):
+            result = discovery.scan_targeted_lan(
+                [target],
+                subnets=["172.20.37.0/30"],
+            )
+
+        selected.assert_called_once_with(["172.20.37.0/30"])
+        connected.assert_not_called()
+        recover.assert_called_once_with(routed, [target], unittest.mock.ANY)
+        self.assertEqual(result["network"]["subnet"], "172.20.37.0/30")
+
+    def test_targeted_recovery_deduplicates_overlapping_subnet_observations(self) -> None:
+        connected = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.20.0.2"),
+            network=ipaddress.IPv4Network("172.20.0.0/16"),
+        )
+        routed = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.20.0.2"),
+            network=ipaddress.IPv4Network("172.20.37.0/24"),
+            directly_connected=False,
+        )
+        observed = {
+            "ip": "172.20.37.20",
+            "mac": "02:00:00:00:00:20",
+            "display_name": "Synthetic camera",
+            "onvif": {
+                "endpoint_reference": "urn:uuid:synthetic-camera",
+                "service_urls": ["http://172.20.37.20/onvif/device_service"],
+            },
+            "rtsp": [],
+        }
+        with (
+            patch.object(
+                discovery,
+                "selected_scan_interfaces",
+                return_value=([connected, routed], {}),
+            ),
+            patch.object(discovery, "discover_targeted", return_value=[observed]),
+        ):
+            result = discovery.scan_targeted_lan(
+                [{"candidate_uuid": "candidate-1"}],
+                subnets=["172.20.0.0/16", "172.20.37.0/24"],
+            )
+
+        self.assertEqual(result["devices"], [observed])
+
+    def test_targeted_recovery_deduplicates_partial_overlap_observations(self) -> None:
+        connected = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.20.0.2"),
+            network=ipaddress.IPv4Network("172.20.0.0/16"),
+        )
+        routed = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.20.0.2"),
+            network=ipaddress.IPv4Network("172.20.37.0/24"),
+            directly_connected=False,
+        )
+
+        def observation(interface, _targets, _log):
+            return [{
+                "ip": "172.20.37.20",
+                "mac": (
+                    "02:00:00:00:00:20"
+                    if interface is connected
+                    else None
+                ),
+                "display_name": "Synthetic camera",
+                "onvif": {
+                    "endpoint_reference": "urn:uuid:synthetic-camera",
+                    "service_urls": [
+                        "http://172.20.37.20/onvif/device_service"
+                    ],
+                },
+                "rtsp": [],
+            }]
+
+        with (
+            patch.object(
+                discovery,
+                "selected_scan_interfaces",
+                return_value=([connected, routed], {}),
+            ),
+            patch.object(discovery, "discover_targeted", side_effect=observation),
+        ):
+            result = discovery.scan_targeted_lan(
+                [{"candidate_uuid": "candidate-1"}],
+                subnets=["172.20.0.0/16", "172.20.37.0/24"],
+            )
+
+        self.assertEqual(len(result["devices"]), 1)
+        self.assertEqual(result["devices"][0]["mac"], "02:00:00:00:00:20")
+
+    def test_targeted_recovery_keeps_conflicting_stable_observations(self) -> None:
+        first = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.21.10.2"),
+            network=ipaddress.IPv4Network("172.21.10.0/24"),
+        )
+        second = discovery.LanInterface(
+            name="eth1",
+            address=ipaddress.IPv4Address("172.21.20.2"),
+            network=ipaddress.IPv4Network("172.21.20.0/24"),
+        )
+
+        def observation(interface, _targets, _log):
+            suffix = "10" if interface is first else "20"
+            return [{
+                "ip": "172.21.10.20",
+                "mac": f"02:00:00:00:00:{suffix}",
+                "display_name": "Synthetic camera",
+                "onvif": {"endpoint_reference": f"urn:uuid:camera-{suffix}"},
+                "rtsp": [],
+            }]
+
+        with (
+            patch.object(
+                discovery,
+                "selected_scan_interfaces",
+                return_value=([first, second], {}),
+            ),
+            patch.object(discovery, "discover_targeted", side_effect=observation),
+        ):
+            result = discovery.scan_targeted_lan(
+                [{"candidate_uuid": "candidate-1"}],
+                subnets=["172.21.10.0/24", "172.21.20.0/24"],
+            )
+
+        self.assertEqual(len(result["devices"]), 2)
+
+    def test_targeted_recovery_keeps_same_identity_at_different_addresses(self) -> None:
+        observations = [
+            {
+                "ip": address,
+                "mac": "02:00:00:00:00:20",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+                "rtsp": [],
+            }
+            for address in ("172.21.10.20", "172.21.10.21")
+        ]
+
+        result = discovery._deduplicate_targeted_devices(observations)
+
+        self.assertEqual(result, observations)
+
+    def test_targeted_recovery_without_subnets_uses_connected_interfaces(self) -> None:
+        connected_interface = discovery.LanInterface(
+            name="eth0",
+            address=ipaddress.IPv4Address("172.21.10.2"),
+            network=ipaddress.IPv4Network("172.21.10.0/24"),
+        )
+        with (
+            patch.object(
+                discovery,
+                "private_lan_interfaces",
+                return_value=[connected_interface],
+            ) as connected,
+            patch.object(discovery, "selected_scan_interfaces") as selected,
+            patch.object(discovery, "discover_targeted", return_value=[]),
+        ):
+            discovery.scan_targeted_lan([])
+
+        connected.assert_called_once_with()
+        selected.assert_not_called()
 
 
 if __name__ == "__main__":

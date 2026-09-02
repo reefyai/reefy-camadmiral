@@ -177,6 +177,12 @@ class BackupRestoreTests(unittest.TestCase):
                     (adoption["camera_uuid"],),
                 ).fetchone()[0]
             self.assertEqual(address_events, 1)
+            identity_history = restored_repository.camera_identity_history(
+                adoption["camera_uuid"]
+            )
+            self.assertEqual(len(identity_history), 1)
+            self.assertEqual(identity_history[0]["ip"], "192.0.2.10")
+            self.assertTrue(identity_history[0]["current"])
             self.assertEqual(
                 json.loads((restored_root / "inventory.json").read_text(encoding="utf-8")),
                 inventory,

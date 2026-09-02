@@ -894,6 +894,9 @@ def discover_targeted(
     if not targets:
         return []
     emit(f"RECOVERY: looking for {len(targets)} known camera identity(s)")
+    for target in targets:
+        if candidate_uuid := str(target.get("candidate_uuid") or ""):
+            emit(f"RECOVERY: target candidate {candidate_uuid}")
     onvif_devices = discover_onvif(interface, emit)
     arp_entries = read_arp_table()
     onvif_by_endpoint: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -910,28 +913,54 @@ def discover_targeted(
         if parsed_address in interface.network:
             addresses_by_mac[str(mac).lower()].append(address)
 
-    matches: dict[str, str] = {}
+    target_matches: list[tuple[str, list[dict[str, Any]], list[str]]] = []
+    endpoint_claims: dict[str, list[str]] = defaultdict(list)
     for target in targets:
         candidate_uuid = str(target.get("candidate_uuid") or "")
-        endpoint = str(target.get("endpoint_reference") or "").lower()
-        mac = str(target.get("mac") or "").lower()
+        endpoint = str(target.get("endpoint_reference") or "").strip().lower()
+        mac = str(target.get("mac") or "").strip().lower()
         endpoint_matches = onvif_by_endpoint.get(endpoint, []) if endpoint else []
         mac_matches = addresses_by_mac.get(mac, []) if mac else []
+        target_matches.append((candidate_uuid, endpoint_matches, mac_matches))
         if len(endpoint_matches) == 1:
-            matches[candidate_uuid] = str(endpoint_matches[0]["ip"])
-            emit(f"RECOVERY: matched {candidate_uuid} by ONVIF endpoint identity")
-        elif len(mac_matches) == 1:
-            matches[candidate_uuid] = str(mac_matches[0])
-            emit(f"RECOVERY: matched {candidate_uuid} by unique local MAC")
-        elif len(endpoint_matches) > 1 or len(mac_matches) > 1:
-            emit(f"RECOVERY: ignored ambiguous identity for {candidate_uuid}")
+            endpoint_claims[str(endpoint_matches[0]["ip"])].append(candidate_uuid)
 
-    address_counts = Counter(matches.values())
-    matched_addresses = {
-        address
-        for address in matches.values()
-        if address_counts[address] == 1
-    }
+    matches: dict[str, str] = {}
+    claimed_addresses: set[str] = set()
+    mac_fallbacks: list[tuple[str, list[str]]] = []
+    for candidate_uuid, endpoint_matches, mac_matches in target_matches:
+        if len(endpoint_matches) > 1:
+            emit(f"RECOVERY: ignored ambiguous ONVIF identity for {candidate_uuid}")
+            continue
+        if len(endpoint_matches) == 1:
+            address = str(endpoint_matches[0]["ip"])
+            if len(endpoint_claims[address]) != 1:
+                emit(f"RECOVERY: ignored ambiguous ONVIF identity for {candidate_uuid}")
+                continue
+            matches[candidate_uuid] = address
+            claimed_addresses.add(address)
+            emit(f"RECOVERY: matched {candidate_uuid} by ONVIF endpoint identity")
+            continue
+        mac_fallbacks.append((candidate_uuid, mac_matches))
+
+    mac_claims: dict[str, list[str]] = defaultdict(list)
+    for candidate_uuid, mac_matches in mac_fallbacks:
+        available = [address for address in mac_matches if address not in claimed_addresses]
+        if len(available) == 1:
+            mac_claims[available[0]].append(candidate_uuid)
+        elif len(available) > 1:
+            emit(f"RECOVERY: ignored ambiguous MAC identity for {candidate_uuid}")
+    for address, candidate_uuids in mac_claims.items():
+        if len(candidate_uuids) != 1:
+            for candidate_uuid in candidate_uuids:
+                emit(f"RECOVERY: ignored ambiguous MAC identity for {candidate_uuid}")
+            continue
+        candidate_uuid = candidate_uuids[0]
+        matches[candidate_uuid] = address
+        claimed_addresses.add(address)
+        emit(f"RECOVERY: matched {candidate_uuid} by unique local MAC")
+
+    matched_addresses = set(matches.values())
     matched_onvif = [
         device for device in onvif_devices if str(device.get("ip")) in matched_addresses
     ]
@@ -949,9 +978,87 @@ def discover_targeted(
     return devices
 
 
+def _deduplicate_targeted_devices(
+    devices: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    for device in devices:
+        onvif = device.get("onvif") or {}
+        identity = (
+            str(device.get("ip") or ""),
+            str(device.get("mac") or "").strip().lower(),
+            str(onvif.get("endpoint_reference") or "").strip().lower(),
+        )
+        existing = next(
+            (
+                candidate
+                for candidate in deduplicated
+                if _compatible_targeted_identity(candidate, identity)
+            ),
+            None,
+        )
+        if existing is not None:
+            existing_onvif = existing.get("onvif") or {}
+            if existing_onvif and onvif:
+                merged_onvif = {**existing_onvif}
+                for field in ("service_urls", "scopes", "types"):
+                    merged_onvif[field] = sorted(
+                        {
+                            *(existing_onvif.get(field) or []),
+                            *(onvif.get(field) or []),
+                        }
+                    )
+                for field in ("name", "model"):
+                    if not merged_onvif.get(field) and onvif.get(field):
+                        merged_onvif[field] = onvif[field]
+                existing["onvif"] = merged_onvif
+            elif onvif:
+                existing["onvif"] = dict(onvif)
+            if not existing.get("mac") and device.get("mac"):
+                existing["mac"] = device["mac"]
+            known_rtsp = {
+                (endpoint.get("url"), endpoint.get("port"))
+                for endpoint in existing.get("rtsp", [])
+                if isinstance(endpoint, dict)
+            }
+            existing.setdefault("rtsp", []).extend(
+                endpoint
+                for endpoint in device.get("rtsp", [])
+                if isinstance(endpoint, dict)
+                and (endpoint.get("url"), endpoint.get("port")) not in known_rtsp
+            )
+            continue
+        deduplicated.append(device)
+    return deduplicated
+
+
+def _compatible_targeted_identity(
+    candidate: dict[str, Any],
+    identity: tuple[str, str, str],
+) -> bool:
+    onvif = candidate.get("onvif") or {}
+    existing = (
+        str(candidate.get("ip") or ""),
+        str(candidate.get("mac") or "").strip().lower(),
+        str(onvif.get("endpoint_reference") or "").strip().lower(),
+    )
+    if existing[0] != identity[0]:
+        return False
+    if any(
+        left and right and left != right
+        for left, right in zip(existing[1:], identity[1:], strict=True)
+    ):
+        return False
+    return any(
+        left and left == right
+        for left, right in zip(existing[1:], identity[1:], strict=True)
+    )
+
+
 def scan_targeted_lan(
     targets: Iterable[dict[str, Any]],
     progress: Callable[[str, str, LanInterface], None] | None = None,
+    subnets: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
@@ -963,8 +1070,22 @@ def scan_targeted_lan(
         if len(raw_log) < MAX_SCAN_LOG_LINES:
             raw_log.append(f"{timestamp} {clean}")
 
-    log("RECOVERY: selecting connected private LAN interfaces")
-    interfaces = private_lan_interfaces()
+    if subnets is None:
+        log("RECOVERY: selecting connected private LAN interfaces")
+        interfaces = private_lan_interfaces()
+        route_errors: dict[str, str] = {}
+    else:
+        requested_subnets: list[str] = []
+        for value in subnets:
+            normalized = str(normalize_private_scan_subnet(value))
+            if normalized not in requested_subnets:
+                requested_subnets.append(normalized)
+        if not requested_subnets:
+            raise DiscoveryScanError("Select at least one IPv4 subnet", raw_log)
+        log("RECOVERY: selecting configured private IPv4 subnets")
+        interfaces, route_errors = selected_scan_interfaces(requested_subnets)
+        if not interfaces:
+            raise DiscoveryScanError("No selected IPv4 subnet is routable", raw_log)
     primary_interface = interfaces[0]
     log(
         "RECOVERY: selected "
@@ -977,7 +1098,7 @@ def scan_targeted_lan(
     if progress:
         progress("recovery", "running", primary_interface)
     devices: list[dict[str, Any]] = []
-    errors: list[str] = []
+    scan_errors: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(interfaces)) as pool:
         futures = {
             pool.submit(discover_targeted, interface, targets, log): interface
@@ -988,18 +1109,23 @@ def scan_targeted_lan(
             try:
                 devices.extend(future.result())
             except Exception as exc:
-                errors.append(f"{interface.network}: {str(exc)[:160]}")
+                scan_errors.append(f"{interface.network}: {str(exc)[:160]}")
                 log(
                     f"RECOVERY: {interface.network} failed; "
                     f"{type(exc).__name__}: {str(exc)[:200]}"
                 )
-    if errors and len(errors) == len(interfaces):
+    devices = _deduplicate_targeted_devices(devices)
+    if scan_errors and len(scan_errors) == len(interfaces):
         raise DiscoveryScanError("Recovery failed on every connected LAN", raw_log)
     if progress:
         progress("recovery", "complete", primary_interface)
     completed_at = datetime.now(timezone.utc).isoformat()
     duration_ms = round((time.monotonic() - started) * 1000)
     log(f"RECOVERY: complete in {duration_ms}ms")
+    errors = [
+        *(f"{subnet}: {error}" for subnet, error in route_errors.items()),
+        *scan_errors,
+    ]
     return {
         "started_at": started_at,
         "completed_at": completed_at,

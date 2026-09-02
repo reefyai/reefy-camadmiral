@@ -9,7 +9,12 @@ from pathlib import Path
 
 from .config import settings
 from .discovery import LanInterface, scan_explicit_address, scan_lan, scan_targeted_lan
-from .inventory import inventory_summary, reconcile_inventory, reconcile_scanned_subnets
+from .inventory import (
+    annotate_identity_conflicts,
+    inventory_summary,
+    reconcile_inventory,
+    reconcile_scanned_subnets,
+)
 
 HEARTBEAT = Path("/run/camadmiral/scanner-heartbeat.json")
 REQUEST = Path("/run/camadmiral/scan-request.json")
@@ -189,14 +194,19 @@ def handle_scan(request: dict[str, object]) -> None:
                 for device in previous_devices
                 if str(device.get("candidate_uuid")) not in target_ids
             ]
-            result = scan_targeted_lan(request.get("targets", []), progress=scan_progress)
+            result = scan_targeted_lan(
+                request.get("targets", []),
+                progress=scan_progress,
+                subnets=requested_subnets if "subnets" in request else None,
+            )
             recovered = reconcile_inventory(
                 target_previous,
                 result["devices"],
                 str(result["completed_at"]),
             )
+            combined = annotate_identity_conflicts([*untouched, *recovered])
             result["devices"] = sorted(
-                [*untouched, *recovered],
+                combined,
                 key=lambda device: (
                     device.get("status") != "online",
                     str(device.get("display_name") or device.get("ip") or "").lower(),

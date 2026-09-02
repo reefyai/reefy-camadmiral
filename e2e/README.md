@@ -34,6 +34,14 @@ The isolated Docker Compose lab covers:
 - invalid recovered-address rejection with last-known-good media preservation
 - camera IP change with validated upstream replacement and stable downstream
   identities
+- automatic two-camera address recovery across targeted retry scans, including stable ONVIF and
+  unique-MAC matching, an initial recovery scan that misses rebooting cameras, bounded retries,
+  stock go2rtc restarts, downstream client reconnection through unchanged URLs, distinguishable
+  moved media within 45 seconds, resolution-change recovery, resolved offline and address-change
+  incidents, persisted sources across a supervised child restart, and Frigate frame recovery with
+  only the expected detection-dimension metadata update
+- changed IP, MAC, and ONVIF identity producing a separate adoptable camera while
+  retaining the old adopted camera offline
 - camera credential rotation, failed repair preservation, and successful repair
 - WebKit phone-viewport rendering with a stable dashboard action bar, 44px scan
   and add-camera targets, every camera action fully visible inside its card,
@@ -76,7 +84,7 @@ it afterward with:
 
 ```console
 docker compose --project-name camadmiral-e2e --file e2e/compose.yaml \
-  --profile moved --profile rotated down --volumes --remove-orphans
+  --profile moved --profile rotated --profile identity down --volumes --remove-orphans
 ```
 
 Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay

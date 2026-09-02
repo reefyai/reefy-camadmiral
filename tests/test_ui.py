@@ -248,6 +248,16 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('result = savedAdoptionInspection(adoption)', self.html)
         self.assertIn("device.adoption ? inspectionDetails(device) : discoveredCameraDetails(device)", self.html)
 
+    def test_camera_details_show_persistent_identity_periods(self) -> None:
+        self.assertIn('addDetailSection(parent, "Identity history", note)', self.html)
+        self.assertIn("addIdentityHistory(wrapper, adoption)", self.html)
+        self.assertIn("loadCameraIdentityHistory(device)", self.html)
+        self.assertIn("IP address", self.html)
+        self.assertIn("MAC address", self.html)
+        self.assertIn("ONVIF identity", self.html)
+        self.assertIn("Until current", self.html)
+        self.assertIn("identity-current", self.html)
+
     def test_detail_popups_share_modal_shell_and_disable_uses_custom_confirmation(self) -> None:
         self.assertGreaterEqual(self.html.count('class="modal-backdrop'), 3)
         self.assertIn('openAppModal("camera"', self.html)

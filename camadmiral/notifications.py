@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -101,16 +102,82 @@ def pairing_message(update: dict[str, Any], pairing_token: str) -> tuple[str, st
     return str(chat["id"]), str(label)[:160]
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _human_timestamp(value: object) -> str:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return str(value or "")
+    hour = parsed.strftime("%I").lstrip("0") or "0"
+    return (
+        f"{parsed.strftime('%b')} {parsed.day}, {parsed.year} at "
+        f"{hour}:{parsed.strftime('%M:%S %p')} UTC"
+    )
+
+
+def _recovery_duration(payload: dict[str, Any]) -> str | None:
+    opened_at = _parse_timestamp(payload.get("opened_at"))
+    observed_at = _parse_timestamp(payload.get("observed_at"))
+    if opened_at is None or observed_at is None:
+        return None
+    seconds = max(0, round((observed_at - opened_at).total_seconds()))
+    return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
+
+
 def notification_text(event_type: str, payload: dict[str, Any]) -> str:
     if event_type == "test":
         return "CamAdmiral test notification\n\nTelegram notifications are connected."
+    if event_type == "relay_restarted":
+        reason = str(payload.get("reason") or "unknown").replace("_", " ")
+        camera_count = max(0, int(payload.get("camera_count") or 0))
+        affected = (
+            f"\nRecovered cameras: {camera_count}"
+            if camera_count
+            else ""
+        )
+        observed_at = _human_timestamp(payload.get("observed_at"))
+        return (
+            "CamAdmiral media relay restarted\n\n"
+            f"Reason: {reason}{affected}\n"
+            "Camera streams are reconnecting.\n"
+            f"Observed: {observed_at}"
+        )
     camera_name = str(payload.get("camera_name") or "Camera")
     kind = str(payload.get("kind") or "media_offline")
-    observed_at = str(payload.get("observed_at") or "")
+    observed_at = _human_timestamp(payload.get("observed_at"))
+    previous_address = str(payload.get("previous_address") or "").strip()
+    current_address = str(payload.get("current_address") or "").strip()
     if event_type == "incident_resolved":
         state = "recovered"
+    elif kind == "camera_address_changed":
+        state = "address changed"
     elif kind == "authentication_failed":
         state = "authentication failed"
     else:
         state = "offline"
-    return f"CamAdmiral alert\n\n{camera_name}: {state}\nObserved: {observed_at}"
+    lines = ["CamAdmiral alert", "", f"{camera_name}: {state}"]
+    if kind == "camera_address_changed":
+        if event_type == "incident_resolved" and current_address:
+            duration = _recovery_duration(payload)
+            suffix = f" after {duration}" if duration else ""
+            lines.append(f"Streaming resumed at {current_address}{suffix}.")
+        elif previous_address and current_address:
+            lines.extend(
+                [
+                    f"{previous_address} → {current_address}",
+                    "Recovery in progress.",
+                ]
+            )
+    lines.append(f"Observed: {observed_at}")
+    return "\n".join(lines)

@@ -8,7 +8,7 @@ downstream streams for consumers such as Frigate.
 ## Why CamAdmiral?
 
 - **Stable camera URLs.** Cameras on a local network can receive new IP addresses.
-  CamAdmiral tracks adopted cameras by MAC and ONVIF identity and keeps their downstream
+  CamAdmiral tracks adopted cameras by ONVIF identity or a unique MAC and keeps their downstream
   URLs stable, so consumers do not need reconfiguration after an IP change.
 - **Shared camera connections.** CamAdmiral shares one upstream connection per camera
   stream across all consumers, reducing load on slow links such as Wi-Fi and on cameras
@@ -82,6 +82,19 @@ paths remain hidden unless an operator explicitly reveals them. Downstream crede
 the screenshot are intentionally masked.
 
 ![CamAdmiral validated downstream streams](docs/images/camadmiral-downstream-streams.png)
+
+### Camera IP address changes
+
+CamAdmiral lets Frigate and other apps continue using the same stable RTSP URLs when a camera's
+IP address changes. It automatically recognizes the camera at its new address, reconnects its
+streams, and records the change in the camera's identity history. Cameras are tracked by their
+ONVIF identity or, when needed, a unique MAC address.
+
+![CamAdmiral camera identity history after address changes](docs/images/camadmiral-identity-history.png)
+
+In the example above, the camera moved through three IP addresses. CamAdmiral restored its streams
+after each change, while Frigate and other consumers kept the same RTSP URLs and reconnected
+automatically after a brief interruption.
 
 ## Latency
 
@@ -190,12 +203,23 @@ the bot is configured and paired.
   <img src="docs/images/camadmiral-telegram-alerts.png" alt="CamAdmiral Telegram offline and recovery alerts" width="420">
 </p>
 
+Address recovery alerts show the previous and current IP addresses, relay restart, and confirmed
+recovery time:
+
+<p align="center">
+  <img src="docs/images/camadmiral-address-recovery-alerts.png" alt="CamAdmiral Telegram camera address change and recovery alerts" width="420">
+</p>
+
 Use a dedicated bot without an existing webhook. CamAdmiral rejects bots already connected
 to another application and never changes their webhook configuration. The bot token and
 temporary pairing secret are encrypted with CamAdmiral's master key and are never returned
-by the settings API. Alert messages contain only the camera name, incident state, and
-observation time. They do not contain camera credentials, media URLs, IP addresses, or MAC
-addresses.
+by the settings API. Alert messages contain the camera name, incident state, and a readable UTC
+observation time. Address-change messages also contain the previous and current IP addresses and
+the recovery duration. CamAdmiral notifies the configured channel whenever its media relay
+restarts, including a restart used to recover changed camera addresses. Messages never contain
+camera credentials, media URLs, MAC addresses, or ONVIF identities.
+
+Documentation screenshots use synthetic device identities and TEST-NET addresses.
 
 **Need another notification service?** Please open a PR with the provider.
 
