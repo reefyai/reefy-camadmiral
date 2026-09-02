@@ -1,0 +1,1525 @@
+diff --git a/internal/streams/add_consumer.go b/internal/streams/add_consumer.go
+index 7400ce6..39a2e52 100644
+--- a/internal/streams/add_consumer.go
++++ b/internal/streams/add_consumer.go
+@@ -23,7 +23,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
+ 	producers:
+ 		for prodN, prod := range s.producers {
+ 			// check for loop request, ex. `camera1: ffmpeg:camera1`
+-			if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
++			if info, ok := cons.(core.Info); ok && prod.Source() == info.GetSource() {
+ 				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
+ 				continue
+ 			}
+diff --git a/internal/streams/play.go b/internal/streams/play.go
+index 1f8c4ad..123a27b 100644
+--- a/internal/streams/play.go
++++ b/internal/streams/play.go
+@@ -61,7 +61,7 @@ func (s *Stream) Play(urlOrProd any) error {
+ 
+ 	for _, producer := range s.producers {
+ 		// start new client
+-		dst, err := GetProducer(producer.url)
++		dst, err := GetProducer(producer.Source())
+ 		if err != nil {
+ 			continue
+ 		}
+diff --git a/internal/streams/producer.go b/internal/streams/producer.go
+index 09e2dcc..0822e6a 100644
+--- a/internal/streams/producer.go
++++ b/internal/streams/producer.go
+@@ -26,6 +26,7 @@ type Producer struct {
+ 
+ 	url      string
+ 	template string
++	connURL  string
+ 
+ 	conn      core.Producer
+ 	receivers []*core.Receiver
+@@ -46,12 +47,39 @@ func NewProducer(source string) *Producer {
+ 	return &Producer{url: source}
+ }
+ 
++func (p *Producer) Source() string {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return p.url
++}
++
+ func (p *Producer) SetSource(s string) {
++	p.mu.Lock()
++
++	var source string
+ 	if p.template == "" {
+-		p.url = s
++		source = s
+ 	} else {
+-		p.url = strings.Replace(p.template, SourceTemplate, s, 1)
++		source = strings.Replace(p.template, SourceTemplate, s, 1)
++	}
++	if p.url == source {
++		p.mu.Unlock()
++		return
++	}
++
++	p.url = source
++	if p.state != stateStart {
++		p.mu.Unlock()
++		return
+ 	}
++
++	p.workerID++
++	workerID := p.workerID
++	p.mu.Unlock()
++
++	// Keep the previous connection and graph alive until a complete candidate
++	// has been prepared. The worker ID invalidates its future reconnects.
++	go p.reconnect(workerID, 0)
+ }
+ 
+ func (p *Producer) Dial() error {
+@@ -65,6 +93,7 @@ func (p *Producer) Dial() error {
+ 		}
+ 
+ 		p.conn = conn
++		p.connURL = p.url
+ 		p.state = stateMedias
+ 	}
+ 
+@@ -132,6 +161,8 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
+ }
+ 
+ func (p *Producer) MarshalJSON() ([]byte, error) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
+ 	if conn := p.conn; conn != nil {
+ 		return json.Marshal(conn)
+ 	}
+@@ -139,6 +170,22 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
+ 	return json.Marshal(info)
+ }
+ 
++func (p *Producer) hasReaders() bool {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	for _, track := range p.receivers {
++		if len(track.Senders()) > 0 {
++			return true
++		}
++	}
++	for _, track := range p.senders {
++		if len(track.Senders()) > 0 {
++			return true
++		}
++	}
++	return false
++}
++
+ // internals
+ 
+ func (p *Producer) start() {
+@@ -154,92 +201,177 @@ func (p *Producer) start() {
+ 	p.state = stateStart
+ 	p.workerID++
+ 
+-	go p.worker(p.conn, p.workerID)
++	if p.connURL == p.url {
++		go p.worker(p.conn, p.workerID)
++	} else {
++		go p.reconnect(p.workerID, 0)
++	}
+ }
+ 
+ func (p *Producer) worker(conn core.Producer, workerID int) {
+ 	if err := conn.Start(); err != nil {
+ 		p.mu.Lock()
+ 		closed := p.workerID != workerID
++		source := p.url
+ 		p.mu.Unlock()
+ 
+ 		if closed {
+ 			return
+ 		}
+ 
+-		log.Warn().Err(err).Str("url", p.url).Caller().Send()
++		log.Warn().Err(err).Str("url", source).Caller().Send()
+ 	}
+ 
+ 	p.reconnect(workerID, 0)
+ }
+ 
++func reconnectDelay(retry int) time.Duration {
++	if retry < 5 {
++		return time.Second
++	}
++	if retry < 10 {
++		return time.Second * 5
++	}
++	if retry < 20 {
++		return time.Second * 10
++	}
++	return time.Minute
++}
++
++func (p *Producer) retry(workerID, retry int) {
++	time.AfterFunc(reconnectDelay(retry), func() {
++		p.reconnect(workerID, retry+1)
++	})
++}
++
++func sameReceivers(left, right []*core.Receiver) bool {
++	if len(left) != len(right) {
++		return false
++	}
++	for i := range left {
++		if left[i] != right[i] {
++			return false
++		}
++	}
++	return true
++}
++
++func prepareReplacement(
++	conn core.Producer,
++	receivers, senders []*core.Receiver,
++) ([]*core.Receiver, error) {
++	medias := conn.GetMedias()
++	replacements := make([]*core.Receiver, len(receivers))
++	for i, receiver := range receivers {
++		for _, media := range medias {
++			if media.Direction != core.DirectionRecvonly ||
++				receiver.Media == nil || media.Kind != receiver.Media.Kind {
++				continue
++			}
++			codec := media.MatchCodec(receiver.Codec)
++			if codec == nil {
++				continue
++			}
++			track, err := conn.GetTrack(media, codec)
++			if err != nil {
++				return nil, err
++			}
++			replacements[i] = track
++			break
++		}
++		if replacements[i] == nil {
++			return nil, errors.New("streams: replacement source is missing an active track")
++		}
++	}
++
++	if len(senders) == 0 {
++		return replacements, nil
++	}
++	consumer, ok := conn.(core.Consumer)
++	if !ok {
++		return nil, errors.New("streams: replacement source has no backchannel")
++	}
++	for _, sender := range senders {
++		matched := false
++		for _, media := range medias {
++			if media.Direction != core.DirectionSendonly ||
++				sender.Media == nil || media.Kind != sender.Media.Kind {
++				continue
++			}
++			codec := media.MatchCodec(sender.Codec)
++			if codec == nil {
++				continue
++			}
++			if err := consumer.AddTrack(media, codec, sender); err != nil {
++				return nil, err
++			}
++			matched = true
++			break
++		}
++		if !matched {
++			return nil, errors.New("streams: replacement source is missing an active backchannel")
++		}
++	}
++	return replacements, nil
++}
++
+ func (p *Producer) reconnect(workerID, retry int) {
+ 	p.mu.Lock()
+-	defer p.mu.Unlock()
+-
+-	if p.workerID != workerID {
++	if p.workerID != workerID || p.state != stateStart {
+ 		log.Trace().Msgf("[streams] stop reconnect url=%s", p.url)
++		p.mu.Unlock()
+ 		return
+ 	}
++	source := p.url
++	receivers := append([]*core.Receiver(nil), p.receivers...)
++	senders := append([]*core.Receiver(nil), p.senders...)
++	p.mu.Unlock()
+ 
+-	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, p.url)
++	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, source)
+ 
+-	conn, err := GetProducer(p.url)
++	conn, err := GetProducer(source)
+ 	if err != nil {
+ 		log.Debug().Msgf("[streams] producer=%s", err)
+-
+-		timeout := time.Minute
+-		if retry < 5 {
+-			timeout = time.Second
+-		} else if retry < 10 {
+-			timeout = time.Second * 5
+-		} else if retry < 20 {
+-			timeout = time.Second * 10
+-		}
+-
+-		time.AfterFunc(timeout, func() {
+-			p.reconnect(workerID, retry+1)
+-		})
++		p.retry(workerID, retry)
+ 		return
+ 	}
+ 
+-	for _, media := range conn.GetMedias() {
+-		switch media.Direction {
+-		case core.DirectionRecvonly:
+-			for i, receiver := range p.receivers {
+-				codec := media.MatchCodec(receiver.Codec)
+-				if codec == nil {
+-					continue
+-				}
+-
+-				track, err := conn.GetTrack(media, codec)
+-				if err != nil {
+-					continue
+-				}
+-
+-				receiver.Replace(track)
+-				p.receivers[i] = track
+-				break
+-			}
+-
+-		case core.DirectionSendonly:
+-			for _, sender := range p.senders {
+-				codec := media.MatchCodec(sender.Codec)
+-				if codec == nil {
+-					continue
+-				}
++	replacements, err := prepareReplacement(conn, receivers, senders)
++	if err != nil {
++		log.Debug().Msgf("[streams] replacement=%s", err)
++		_ = conn.Stop()
++		p.retry(workerID, retry)
++		return
++	}
+ 
+-				_ = conn.(core.Consumer).AddTrack(media, codec, sender)
+-			}
++	p.mu.Lock()
++	if p.workerID != workerID || p.state != stateStart || p.url != source ||
++		!sameReceivers(p.receivers, receivers) || !sameReceivers(p.senders, senders) {
++		active := p.workerID == workerID && p.state == stateStart && p.url == source
++		p.mu.Unlock()
++		_ = conn.Stop()
++		if active {
++			go p.reconnect(workerID, retry)
+ 		}
++		return
+ 	}
+ 
+-	// stop previous connection after moving tracks (fix ghost exec/ffmpeg)
+-	_ = p.conn.Stop()
+-	// swap connections
++	for i, receiver := range receivers {
++		receiver.Replace(replacements[i])
++	}
++	previous := p.conn
+ 	p.conn = conn
++	p.connURL = source
++	p.receivers = replacements
++	p.mu.Unlock()
+ 
+ 	go p.worker(conn, workerID)
++
++	// Stop the previous connection only after all attached consumers have
++	// moved to the replacement tracks.
++	if previous != nil {
++		_ = previous.Stop()
++	}
+ }
+ 
+ func (p *Producer) stop() {
+@@ -262,6 +394,7 @@ func (p *Producer) stop() {
+ 	if p.conn != nil {
+ 		_ = p.conn.Stop()
+ 		p.conn = nil
++		p.connURL = ""
+ 	}
+ 
+ 	p.state = stateNone
+diff --git a/internal/streams/producer_replace_test.go b/internal/streams/producer_replace_test.go
+new file mode 100644
+index 0000000..b571c6e
+--- /dev/null
++++ b/internal/streams/producer_replace_test.go
+@@ -0,0 +1,141 @@
++package streams
++
++import (
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/AlexxIT/go2rtc/pkg/core"
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/require"
++)
++
++type replacementTestProducer struct {
++	media     *core.Media
++	receiver  *core.Receiver
++	started   chan struct{}
++	stopped   chan struct{}
++	startOnce sync.Once
++	stopOnce  sync.Once
++}
++
++func newReplacementTestProducer() *replacementTestProducer {
++	codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000}
++	return &replacementTestProducer{
++		media: &core.Media{
++			Kind:      core.KindVideo,
++			Direction: core.DirectionRecvonly,
++			Codecs:    []*core.Codec{codec},
++		},
++		started: make(chan struct{}),
++		stopped: make(chan struct{}),
++	}
++}
++
++func (p *replacementTestProducer) GetMedias() []*core.Media {
++	return []*core.Media{p.media}
++}
++
++func (p *replacementTestProducer) GetTrack(
++	_ *core.Media, codec *core.Codec,
++) (*core.Receiver, error) {
++	if p.receiver == nil {
++		p.receiver = core.NewReceiver(p.media, codec)
++	}
++	return p.receiver, nil
++}
++
++func (p *replacementTestProducer) Start() error {
++	p.startOnce.Do(func() { close(p.started) })
++	<-p.stopped
++	return nil
++}
++
++func (p *replacementTestProducer) Stop() error {
++	p.stopOnce.Do(func() {
++		if p.receiver != nil {
++			p.receiver.Close()
++		}
++		close(p.stopped)
++	})
++	return nil
++}
++
++func receiveReplacementEvent(t *testing.T, events <-chan string) string {
++	t.Helper()
++	select {
++	case event := <-events:
++		return event
++	case <-time.After(time.Second):
++		t.Fatal("timed out waiting for replacement producer event")
++		return ""
++	}
++}
++
++func TestSetSourceMovesExistingSenderBeforeStoppingOldProducer(t *testing.T) {
++	oldProducer := newReplacementTestProducer()
++	newProducer := newReplacementTestProducer()
++	dialStarted := make(chan struct{})
++	allowDial := make(chan struct{})
++
++	HandleFunc("replacement-test", func(source string) (core.Producer, error) {
++		switch source {
++		case "replacement-test:old":
++			return oldProducer, nil
++		case "replacement-test:new":
++			close(dialStarted)
++			<-allowDial
++			return newProducer, nil
++		default:
++			return nil, errors.New("unexpected replacement test source")
++		}
++	})
++
++	producer := NewProducer("replacement-test:old")
++	require.NoError(t, producer.Dial())
++	oldTrack, err := producer.GetTrack(oldProducer.media, oldProducer.media.Codecs[0])
++	require.NoError(t, err)
++
++	events := make(chan string, 2)
++	sender := core.NewSender(oldProducer.media, oldProducer.media.Codecs[0])
++	sender.Handler = func(packet *core.Packet) { events <- string(packet.Payload) }
++	sender.HandleRTP(oldTrack)
++	producer.start()
++
++	select {
++	case <-oldProducer.started:
++	case <-time.After(time.Second):
++		t.Fatal("old producer did not start")
++	}
++	oldProducer.receiver.Input(&rtp.Packet{Payload: []byte("old")})
++	require.Equal(t, "old", receiveReplacementEvent(t, events))
++
++	producer.SetSource("replacement-test:new")
++	select {
++	case <-dialStarted:
++	case <-time.After(time.Second):
++		t.Fatal("replacement dial did not start")
++	}
++	select {
++	case <-oldProducer.stopped:
++		t.Fatal("old producer stopped before the replacement was prepared")
++	default:
++	}
++	close(allowDial)
++
++	select {
++	case <-newProducer.started:
++	case <-time.After(time.Second):
++		t.Fatal("new producer did not start")
++	}
++	select {
++	case <-oldProducer.stopped:
++	case <-time.After(time.Second):
++		t.Fatal("old producer did not stop after sender migration")
++	}
++
++	newProducer.receiver.Input(&rtp.Packet{Payload: []byte("new")})
++	require.Equal(t, "new", receiveReplacementEvent(t, events))
++	producer.stop()
++}
+diff --git a/internal/streams/stream.go b/internal/streams/stream.go
+index 984c73e..f503e2e 100644
+--- a/internal/streams/stream.go
++++ b/internal/streams/stream.go
+@@ -50,7 +50,7 @@ func NewStream(source any) *Stream {
+ func (s *Stream) Sources() []string {
+ 	sources := make([]string, 0, len(s.producers))
+ 	for _, prod := range s.producers {
+-		sources = append(sources, prod.url)
++		sources = append(sources, prod.Source())
+ 	}
+ 	return sources
+ }
+@@ -103,15 +103,8 @@ func (s *Stream) stopProducers() {
+ 	s.mu.Lock()
+ producers:
+ 	for _, producer := range s.producers {
+-		for _, track := range producer.receivers {
+-			if len(track.Senders()) > 0 {
+-				continue producers
+-			}
+-		}
+-		for _, track := range producer.senders {
+-			if len(track.Senders()) > 0 {
+-				continue producers
+-			}
++		if producer.hasReaders() {
++			continue producers
+ 		}
+ 		producer.stop()
+ 	}
+diff --git a/internal/streams/stream_test.go b/internal/streams/stream_test.go
+index 99fa922..4f3a021 100644
+--- a/internal/streams/stream_test.go
++++ b/internal/streams/stream_test.go
+@@ -9,14 +9,18 @@ import (
+ )
+ 
+ func TestRecursion(t *testing.T) {
++	streams = map[string]*Stream{}
++	HandleFunc("rtsp", func(url string) (core.Producer, error) { return nil, nil })
+ 	// create stream with some source
+-	stream1 := New("from_yaml", "does_not_matter")
++	stream1, err := New("from_yaml", "rtsp://example.com/source")
++	require.NoError(t, err)
+ 	require.Len(t, streams, 1)
+ 
+ 	// ask another unnamed stream that links go2rtc
+ 	query, err := url.ParseQuery("src=rtsp://localhost:8554/from_yaml?video")
+ 	require.Nil(t, err)
+-	stream2 := GetOrPatch(query)
++	stream2, err := GetOrPatch(query)
++	require.NoError(t, err)
+ 
+ 	// check stream is same
+ 	require.Equal(t, stream1, stream2)
+@@ -26,12 +30,16 @@ func TestRecursion(t *testing.T) {
+ }
+ 
+ func TestTempate(t *testing.T) {
++	streams = map[string]*Stream{}
+ 	HandleFunc("rtsp", func(url string) (core.Producer, error) { return nil, nil }) // bypass HasProducer
++	HandleFunc("ffmpeg", func(url string) (core.Producer, error) { return nil, nil })
+ 
+ 	// config from yaml
+-	stream1 := New("camera.from_hass", "ffmpeg:{input}#video=copy")
++	stream1, err := New("camera.from_hass", "ffmpeg:{input}#video=copy")
++	require.NoError(t, err)
+ 	// request from hass
+-	stream2 := Patch("camera.from_hass", "rtsp://example.com")
++	stream2, err := Patch("camera.from_hass", "rtsp://example.com")
++	require.NoError(t, err)
+ 
+ 	require.Equal(t, stream1, stream2)
+ 	require.Equal(t, "ffmpeg:rtsp://example.com#video=copy", stream1.producers[0].url)
+diff --git a/pkg/core/node.go b/pkg/core/node.go
+index a9959c3..e86b210 100644
+--- a/pkg/core/node.go
++++ b/pkg/core/node.go
+@@ -6,6 +6,11 @@ import (
+ 	"github.com/pion/rtp"
+ )
+ 
++// topologyMu protects relationships between nodes. Node.mu still protects
++// packet delivery and the child slice itself, but a parent/child relationship
++// must be changed as one transaction so Close can't observe half of a move.
++var topologyMu sync.Mutex
++
+ //type Packet struct {
+ //	Payload     []byte
+ //	Timestamp   uint32 // PTS if DTS == 0 else DTS
+@@ -27,11 +32,18 @@ type Node struct {
+ 	Input  HandlerFunc
+ 	Output HandlerFunc
+ 
+-	id     uint32
+-	childs []*Node
+-	parent *Node
++	id      uint32
++	childs  []*Node
++	parent  *Node
++	replace func()
++
++	mu sync.RWMutex
++}
+ 
+-	mu sync.Mutex
++func (n *Node) OnReplace(handler func()) {
++	topologyMu.Lock()
++	n.replace = handler
++	topologyMu.Unlock()
+ }
+ 
+ func (n *Node) WithParent(parent *Node) *Node {
+@@ -40,39 +52,67 @@ func (n *Node) WithParent(parent *Node) *Node {
+ }
+ 
+ func (n *Node) AppendChild(child *Node) {
++	topologyMu.Lock()
++	defer topologyMu.Unlock()
++
+ 	n.mu.Lock()
+ 	n.childs = append(n.childs, child)
+ 	n.mu.Unlock()
+-
+ 	child.parent = n
+ }
+ 
+ func (n *Node) RemoveChild(child *Node) {
++	topologyMu.Lock()
++	n.removeChild(child)
++	topologyMu.Unlock()
++}
++
++// removeChild must be called with topologyMu held.
++func (n *Node) removeChild(child *Node) bool {
+ 	n.mu.Lock()
++	defer n.mu.Unlock()
++
+ 	for i, ch := range n.childs {
+ 		if ch == child {
+ 			n.childs = append(n.childs[:i], n.childs[i+1:]...)
+-			break
++			if child.parent == n {
++				child.parent = nil
++			}
++			return len(n.childs) == 0
+ 		}
+ 	}
+-	n.mu.Unlock()
++	return len(n.childs) == 0
+ }
+ 
+ func (n *Node) Close() {
+-	if parent := n.parent; parent != nil {
+-		parent.RemoveChild(n)
++	topologyMu.Lock()
++	n.close()
++	topologyMu.Unlock()
++}
+ 
+-		if len(parent.childs) == 0 {
+-			parent.Close()
+-		}
+-	} else {
+-		for _, childs := range n.childs {
+-			childs.Close()
++// close must be called with topologyMu held.
++func (n *Node) close() {
++	if parent := n.parent; parent != nil {
++		if parent.removeChild(n) {
++			parent.close()
+ 		}
++		return
++	}
++
++	n.mu.Lock()
++	childs := n.childs
++	n.childs = nil
++	n.mu.Unlock()
++
++	for _, child := range childs {
++		child.parent = nil
++		child.close()
+ 	}
+ }
+ 
+ func MoveNode(dst, src *Node) {
++	topologyMu.Lock()
++
+ 	src.mu.Lock()
+ 	childs := src.childs
+ 	src.childs = nil
+@@ -82,7 +122,16 @@ func MoveNode(dst, src *Node) {
+ 	dst.childs = childs
+ 	dst.mu.Unlock()
+ 
++	replaces := make([]func(), 0, len(childs))
+ 	for _, child := range childs {
+ 		child.parent = dst
++		if child.replace != nil {
++			replaces = append(replaces, child.replace)
++		}
++	}
++	topologyMu.Unlock()
++
++	for _, replace := range replaces {
++		replace()
+ 	}
+ }
+diff --git a/pkg/core/track.go b/pkg/core/track.go
+index f363a9f..be6d43e 100644
+--- a/pkg/core/track.go
++++ b/pkg/core/track.go
+@@ -3,6 +3,7 @@ package core
+ import (
+ 	"encoding/json"
+ 	"errors"
++	"sync/atomic"
+ 
+ 	"github.com/pion/rtp"
+ )
+@@ -27,6 +28,8 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
+ 		Media: media,
+ 	}
+ 	r.Input = func(packet *Packet) {
++		r.mu.Lock()
++		defer r.mu.Unlock()
+ 		r.Bytes += len(packet.Payload)
+ 		r.Packets++
+ 		for _, child := range r.childs {
+@@ -43,6 +46,8 @@ func (r *Receiver) WriteRTP(packet *rtp.Packet) {
+ 
+ // Deprecated: should be removed
+ func (r *Receiver) Senders() []*Sender {
++	r.mu.RLock()
++	defer r.mu.RUnlock()
+ 	if len(r.childs) > 0 {
+ 		return []*Sender{{}}
+ 	} else {
+@@ -71,8 +76,15 @@ type Sender struct {
+ 	Packets int `json:"packets,omitempty"`
+ 	Drops   int `json:"drops,omitempty"`
+ 
+-	buf  chan *Packet
+-	done chan struct{}
++	buf        chan senderPacket
++	done       chan struct{}
++	onReplace  func()
++	generation atomic.Uint64
++}
++
++type senderPacket struct {
++	packet     *Packet
++	generation uint64
+ }
+ 
+ func NewSender(media *Media, codec *Codec) *Sender {
+@@ -90,7 +102,7 @@ func NewSender(media *Media, codec *Codec) *Sender {
+ 		bufSize = 128
+ 	}
+ 
+-	buf := make(chan *Packet, bufSize)
++	buf := make(chan senderPacket, bufSize)
+ 	s := &Sender{
+ 		Node:  Node{id: NewID(), Codec: codec},
+ 		Media: media,
+@@ -100,7 +112,7 @@ func NewSender(media *Media, codec *Codec) *Sender {
+ 		s.mu.Lock()
+ 		// unblock write to nil chan - OK, write to closed chan - panic
+ 		select {
+-		case s.buf <- packet:
++		case s.buf <- senderPacket{packet: packet, generation: s.generation.Load()}:
+ 			s.Bytes += len(packet.Payload)
+ 			s.Packets++
+ 		default:
+@@ -111,9 +123,16 @@ func NewSender(media *Media, codec *Codec) *Sender {
+ 	s.Output = func(packet *Packet) {
+ 		s.Handler(packet)
+ 	}
++	s.Node.OnReplace(func() {
++		s.generation.Add(1)
++	})
+ 	return s
+ }
+ 
++func (s *Sender) OnReplace(handler func()) {
++	s.onReplace = handler
++}
++
+ // Deprecated: should be removed
+ func (s *Sender) HandleRTP(parent *Receiver) {
+ 	s.WithParent(parent)
+@@ -140,9 +159,16 @@ func (s *Sender) Start() {
+ 	s.done = make(chan struct{})
+ 
+ 	// pass buf directly so that it's impossible for buf to be nil
+-	go func(buf chan *Packet) {
+-		for packet := range buf {
+-			s.Output(packet)
++	go func(buf chan senderPacket) {
++		var generation uint64
++		initialized := false
++		for item := range buf {
++			if initialized && item.generation != generation && s.onReplace != nil {
++				s.onReplace()
++			}
++			generation = item.generation
++			initialized = true
++			s.Output(item.packet)
+ 		}
+ 		close(s.done)
+ 	}(s.buf)
+@@ -177,6 +203,8 @@ func (s *Sender) Close() {
+ }
+ 
+ func (r *Receiver) MarshalJSON() ([]byte, error) {
++	r.mu.RLock()
++	defer r.mu.RUnlock()
+ 	v := struct {
+ 		ID      uint32   `json:"id"`
+ 		Codec   *Codec   `json:"codec"`
+@@ -196,6 +224,12 @@ func (r *Receiver) MarshalJSON() ([]byte, error) {
+ }
+ 
+ func (s *Sender) MarshalJSON() ([]byte, error) {
++	topologyMu.Lock()
++	parent := s.parent
++	topologyMu.Unlock()
++
++	s.mu.RLock()
++	defer s.mu.RUnlock()
+ 	v := struct {
+ 		ID      uint32 `json:"id"`
+ 		Codec   *Codec `json:"codec"`
+@@ -210,8 +244,8 @@ func (s *Sender) MarshalJSON() ([]byte, error) {
+ 		Packets: s.Packets,
+ 		Drops:   s.Drops,
+ 	}
+-	if s.parent != nil {
+-		v.Parent = s.parent.id
++	if parent != nil {
++		v.Parent = parent.id
+ 	}
+ 	return json.Marshal(v)
+ }
+diff --git a/pkg/core/track_replace_test.go b/pkg/core/track_replace_test.go
+new file mode 100644
+index 0000000..70a1435
+--- /dev/null
++++ b/pkg/core/track_replace_test.go
+@@ -0,0 +1,185 @@
++package core
++
++import (
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/require"
++)
++
++func TestSenderReplacementBoundaryStaysBetweenSources(t *testing.T) {
++	codec := &Codec{Name: CodecH264, ClockRate: 90000}
++	media := &Media{
++		Kind:      KindVideo,
++		Direction: DirectionRecvonly,
++		Codecs:    []*Codec{codec},
++	}
++	oldReceiver := NewReceiver(media, codec)
++	newReceiver := NewReceiver(media, codec)
++	sender := NewSender(media, codec).WithParent(oldReceiver)
++
++	events := make(chan string, 3)
++	sender.Handler = func(packet *Packet) {
++		events <- string(packet.Payload)
++	}
++	sender.OnReplace(func() {
++		events <- "replace"
++	})
++
++	oldReceiver.Input(&rtp.Packet{Payload: []byte("old")})
++	oldReceiver.Replace(newReceiver)
++	newReceiver.Input(&rtp.Packet{Payload: []byte("new")})
++	sender.Start()
++	defer sender.Close()
++
++	for _, expected := range []string{"old", "replace", "new"} {
++		select {
++		case event := <-events:
++			require.Equal(t, expected, event)
++		case <-time.After(time.Second):
++			t.Fatal("timed out waiting for sender replacement event")
++		}
++	}
++}
++
++func TestReceiverReplacementWaitsForOldPacketDelivery(t *testing.T) {
++	codec := &Codec{Name: CodecH264, ClockRate: 90000}
++	media := &Media{
++		Kind:      KindVideo,
++		Direction: DirectionRecvonly,
++		Codecs:    []*Codec{codec},
++	}
++	oldReceiver := NewReceiver(media, codec)
++	newReceiver := NewReceiver(media, codec)
++	child := &Node{Codec: codec}
++	entered := make(chan struct{})
++	release := make(chan struct{})
++	events := make(chan string, 3)
++	var enteredOnce sync.Once
++	child.Input = func(packet *Packet) {
++		if string(packet.Payload) == "old" {
++			enteredOnce.Do(func() { close(entered) })
++			<-release
++		}
++		events <- string(packet.Payload)
++	}
++	child.OnReplace(func() { events <- "replace" })
++	child.WithParent(&oldReceiver.Node)
++
++	go oldReceiver.Input(&rtp.Packet{Payload: []byte("old")})
++	select {
++	case <-entered:
++	case <-time.After(time.Second):
++		t.Fatal("old packet did not enter receiver fan-out")
++	}
++
++	replaced := make(chan struct{})
++	go func() {
++		oldReceiver.Replace(newReceiver)
++		close(replaced)
++	}()
++	select {
++	case <-replaced:
++		t.Fatal("receiver replacement overtook an in-flight old packet")
++	case <-time.After(25 * time.Millisecond):
++	}
++
++	close(release)
++	require.Equal(t, "old", receiveCoreEvent(t, events))
++	require.Equal(t, "replace", receiveCoreEvent(t, events))
++	select {
++	case <-replaced:
++	case <-time.After(time.Second):
++		t.Fatal("receiver replacement did not complete")
++	}
++
++	newReceiver.Input(&rtp.Packet{Payload: []byte("new")})
++	require.Equal(t, "new", receiveCoreEvent(t, events))
++}
++
++func TestReceiverReplacementAndSenderCloseAreAtomic(t *testing.T) {
++	codec := &Codec{Name: CodecH264, ClockRate: 90000}
++	media := &Media{
++		Kind:      KindVideo,
++		Direction: DirectionRecvonly,
++		Codecs:    []*Codec{codec},
++	}
++	oldReceiver := NewReceiver(media, codec)
++	newReceiver := NewReceiver(media, codec)
++	sender := NewSender(media, codec).WithParent(oldReceiver)
++
++	// Hold the destination lock so replacement pauses after detaching the
++	// sender from the old receiver. Close must wait for the whole topology
++	// transaction rather than acting on the sender's stale parent.
++	newReceiver.mu.Lock()
++	destinationLocked := true
++	defer func() {
++		if destinationLocked {
++			newReceiver.mu.Unlock()
++		}
++	}()
++
++	replaced := make(chan struct{})
++	go func() {
++		oldReceiver.Replace(newReceiver)
++		close(replaced)
++	}()
++
++	require.Eventually(t, func() bool {
++		oldReceiver.mu.RLock()
++		defer oldReceiver.mu.RUnlock()
++		return len(oldReceiver.childs) == 0
++	}, time.Second, time.Millisecond)
++
++	closeStarted := make(chan struct{})
++	closed := make(chan struct{})
++	go func() {
++		close(closeStarted)
++		sender.Close()
++		close(closed)
++	}()
++	<-closeStarted
++	closedEarly := false
++	select {
++	case <-closed:
++		closedEarly = true
++	case <-time.After(25 * time.Millisecond):
++	}
++
++	newReceiver.mu.Unlock()
++	destinationLocked = false
++
++	select {
++	case <-replaced:
++	case <-time.After(time.Second):
++		t.Fatal("receiver replacement did not complete")
++	}
++	select {
++	case <-closed:
++	case <-time.After(time.Second):
++		t.Fatal("sender close did not complete")
++	}
++	require.False(t, closedEarly, "sender closed against a stale parent during replacement")
++
++	topologyMu.Lock()
++	parent := sender.parent
++	topologyMu.Unlock()
++	newReceiver.mu.RLock()
++	childCount := len(newReceiver.childs)
++	newReceiver.mu.RUnlock()
++	require.Nil(t, parent)
++	require.Zero(t, childCount)
++}
++
++func receiveCoreEvent(t *testing.T, events <-chan string) string {
++	t.Helper()
++	select {
++	case event := <-events:
++		return event
++	case <-time.After(time.Second):
++		t.Fatal("timed out waiting for receiver event")
++		return ""
++	}
++}
+diff --git a/pkg/rtsp/consumer.go b/pkg/rtsp/consumer.go
+index e6525d9..e2af717 100644
+--- a/pkg/rtsp/consumer.go
++++ b/pkg/rtsp/consumer.go
+@@ -52,7 +52,9 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
+ 	// save original codec to sender (can have Codec.Name = ANY)
+ 	sender := core.NewSender(media, codec)
+ 	// important to send original codec for valid IsRTP check
+-	sender.Handler = c.packetWriter(track.Codec, channel, codec.PayloadType)
++	handler, onReplace := c.packetWriter(track.Codec, channel, codec.PayloadType)
++	sender.Handler = handler
++	sender.OnReplace(onReplace)
+ 
+ 	if c.mode == core.ModeActiveProducer && track.Codec.Name == core.CodecPCMA {
+ 		// Fix Reolink Doorbell https://github.com/AlexxIT/go2rtc/issues/331
+@@ -73,11 +75,85 @@ const (
+ 	intHdr        = 4           // interleaved header size
+ )
+ 
+-func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.HandlerFunc {
++type rtpContinuity struct {
++	clockRate uint32
++	video     bool
++
++	initialized         bool
++	replace             bool
++	sequenceOffset      uint16
++	timestampOffset     uint32
++	lastSourceTimestamp uint32
++	lastOutputSequence  uint16
++	lastOutputTimestamp uint32
++	lastTimestampStep   uint32
++	ssrc                uint32
++}
++
++func newRTPContinuity(codec *core.Codec) *rtpContinuity {
++	return &rtpContinuity{clockRate: codec.ClockRate, video: codec.IsVideo()}
++}
++
++func (r *rtpContinuity) markReplace() {
++	r.replace = true
++}
++
++func (r *rtpContinuity) defaultTimestampStep() uint32 {
++	clockRate := r.clockRate
++	if clockRate == 0 {
++		clockRate = 90000
++	}
++	if r.video {
++		if step := clockRate / 30; step > 0 {
++			return step
++		}
++	} else if step := clockRate / 50; step > 0 {
++		return step
++	}
++	return 1
++}
++
++func (r *rtpContinuity) rewrite(packet *rtp.Packet) (uint16, uint32, uint32) {
++	if !r.initialized {
++		r.initialized = true
++		r.replace = false
++		r.lastSourceTimestamp = packet.Timestamp
++		r.lastOutputSequence = packet.SequenceNumber
++		r.lastOutputTimestamp = packet.Timestamp
++		r.ssrc = packet.SSRC
++		return packet.SequenceNumber, packet.Timestamp, packet.SSRC
++	}
++
++	if r.replace {
++		step := r.lastTimestampStep
++		if step == 0 {
++			step = r.defaultTimestampStep()
++		}
++		r.sequenceOffset = r.lastOutputSequence + 1 - packet.SequenceNumber
++		r.timestampOffset = r.lastOutputTimestamp + step - packet.Timestamp
++		r.replace = false
++	} else {
++		delta := packet.Timestamp - r.lastSourceTimestamp
++		if delta > 0 && delta < 1<<31 &&
++			(r.clockRate == 0 || uint64(delta) <= uint64(r.clockRate)*10) {
++			r.lastTimestampStep = delta
++		}
++	}
++
++	sequence := packet.SequenceNumber + r.sequenceOffset
++	timestamp := packet.Timestamp + r.timestampOffset
++	r.lastSourceTimestamp = packet.Timestamp
++	r.lastOutputSequence = sequence
++	r.lastOutputTimestamp = timestamp
++	return sequence, timestamp, r.ssrc
++}
++
++func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) (core.HandlerFunc, func()) {
+ 	var buf []byte
+ 	var n int
+ 
+ 	video := codec.IsVideo()
++	continuity := newRTPContinuity(codec)
+ 	if video {
+ 		buf = make([]byte, startVideoBuf)
+ 	} else {
+@@ -92,19 +168,20 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
+ 		n = 0
+ 	}
+ 
+-	handlerFunc := func(packet *rtp.Packet) {
++	baseHandler := func(packet *rtp.Packet) {
+ 		if c.state == StateNone {
+ 			return
+ 		}
+ 
++		sequence, timestamp, ssrc := continuity.rewrite(packet)
+ 		clone := rtp.Packet{
+ 			Header: rtp.Header{
+ 				Version:        2,
+ 				Marker:         packet.Marker,
+ 				PayloadType:    payloadType,
+-				SequenceNumber: packet.SequenceNumber,
+-				Timestamp:      packet.Timestamp,
+-				SSRC:           packet.SSRC,
++				SequenceNumber: sequence,
++				Timestamp:      timestamp,
++				SSRC:           ssrc,
+ 			},
+ 			Payload: packet.Payload,
+ 		}
+@@ -148,31 +225,45 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
+ 		flushBuf()
+ 	}
+ 
+-	if !codec.IsRTP() {
+-		switch codec.Name {
+-		case core.CodecH264:
+-			handlerFunc = h264.RTPPay(c.PacketSize, handlerFunc)
+-		case core.CodecH265:
+-			handlerFunc = h265.RTPPay(c.PacketSize, handlerFunc)
+-		case core.CodecAAC:
+-			handlerFunc = aac.RTPPay(handlerFunc)
+-		case core.CodecJPEG:
+-			handlerFunc = mjpeg.RTPPay(handlerFunc)
+-		}
+-	} else if codec.Name == core.CodecPCML {
+-		handlerFunc = pcm.LittleToBig(handlerFunc)
+-	} else if c.PacketSize != 0 {
+-		switch codec.Name {
+-		case core.CodecH264:
+-			handlerFunc = h264.RTPPay(c.PacketSize, handlerFunc)
+-			handlerFunc = h264.RTPDepay(codec, handlerFunc)
+-		case core.CodecH265:
+-			handlerFunc = h265.RTPPay(c.PacketSize, handlerFunc)
+-			handlerFunc = h265.RTPDepay(codec, handlerFunc)
++	buildHandler := func() core.HandlerFunc {
++		handler := core.HandlerFunc(baseHandler)
++		if !codec.IsRTP() {
++			switch codec.Name {
++			case core.CodecH264:
++				handler = h264.RTPPay(c.PacketSize, handler)
++			case core.CodecH265:
++				handler = h265.RTPPay(c.PacketSize, handler)
++			case core.CodecAAC:
++				handler = aac.RTPPay(handler)
++			case core.CodecJPEG:
++				handler = mjpeg.RTPPay(handler)
++			}
++		} else if codec.Name == core.CodecPCML {
++			handler = pcm.LittleToBig(handler)
++		} else if c.PacketSize != 0 {
++			switch codec.Name {
++			case core.CodecH264:
++				handler = h264.RTPPay(c.PacketSize, handler)
++				handler = h264.RTPDepay(codec, handler)
++			case core.CodecH265:
++				handler = h265.RTPPay(c.PacketSize, handler)
++				handler = h265.RTPDepay(codec, handler)
++			}
+ 		}
++		return handler
+ 	}
+ 
+-	return handlerFunc
++	handler := buildHandler()
++	handlerFunc := func(packet *rtp.Packet) {
++		handler(packet)
++	}
++
++	onReplace := func() {
++		n = 0
++		continuity.markReplace()
++		handler = buildHandler()
++	}
++	return handlerFunc, onReplace
+ }
+ 
+ func (c *Conn) writeInterleavedData(data []byte) error {
+diff --git a/pkg/rtsp/consumer_continuity_test.go b/pkg/rtsp/consumer_continuity_test.go
+new file mode 100644
+index 0000000..fde508b
+--- /dev/null
++++ b/pkg/rtsp/consumer_continuity_test.go
+@@ -0,0 +1,283 @@
++package rtsp
++
++import (
++	"bytes"
++	"io"
++	"net"
++	"testing"
++	"time"
++
++	"github.com/AlexxIT/go2rtc/pkg/core"
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/require"
++)
++
++type continuityTestConn struct {
++	bytes.Buffer
++}
++
++func (c *continuityTestConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
++func (c *continuityTestConn) Close() error                       { return nil }
++func (c *continuityTestConn) LocalAddr() net.Addr                { return continuityTestAddr("local") }
++func (c *continuityTestConn) RemoteAddr() net.Addr               { return continuityTestAddr("remote") }
++func (c *continuityTestConn) SetDeadline(_ time.Time) error      { return nil }
++func (c *continuityTestConn) SetReadDeadline(_ time.Time) error  { return nil }
++func (c *continuityTestConn) SetWriteDeadline(_ time.Time) error { return nil }
++
++type continuityTestAddr string
++
++func (a continuityTestAddr) Network() string { return string(a) }
++func (a continuityTestAddr) String() string  { return string(a) }
++
++func requireSingleInterleavedPacket(t *testing.T, wire *continuityTestConn) *rtp.Packet {
++	t.Helper()
++	data := wire.Bytes()
++	require.GreaterOrEqual(t, len(data), 4)
++	require.Equal(t, byte('$'), data[0])
++	require.Equal(t, int(data[2])<<8|int(data[3]), len(data)-4)
++
++	packet := new(rtp.Packet)
++	require.NoError(t, packet.Unmarshal(data[4:]))
++	return packet
++}
++
++func TestRTPContinuityAcrossProducerReplacement(t *testing.T) {
++	continuity := newRTPContinuity(&core.Codec{
++		Name:      core.CodecH264,
++		ClockRate: 90000,
++	})
++
++	sequence, timestamp, ssrc := continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 100, Timestamp: 9000, SSRC: 111},
++	})
++	require.Equal(t, uint16(100), sequence)
++	require.Equal(t, uint32(9000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++
++	sequence, timestamp, ssrc = continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 101, Timestamp: 12000, SSRC: 111},
++	})
++	require.Equal(t, uint16(101), sequence)
++	require.Equal(t, uint32(12000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++
++	continuity.markReplace()
++	sequence, timestamp, ssrc = continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 7, Timestamp: 0, SSRC: 222},
++	})
++	require.Equal(t, uint16(102), sequence)
++	require.Equal(t, uint32(15000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++
++	sequence, timestamp, ssrc = continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 8, Timestamp: 3000, SSRC: 222},
++	})
++	require.Equal(t, uint16(103), sequence)
++	require.Equal(t, uint32(18000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++}
++
++func TestRTPContinuityIgnoresReplacementBeforeFirstPacket(t *testing.T) {
++	continuity := newRTPContinuity(&core.Codec{
++		Name:      core.CodecH264,
++		ClockRate: 90000,
++	})
++
++	continuity.markReplace()
++	sequence, timestamp, ssrc := continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 40, Timestamp: 6000, SSRC: 333},
++	})
++	require.Equal(t, uint16(40), sequence)
++	require.Equal(t, uint32(6000), timestamp)
++	require.Equal(t, uint32(333), ssrc)
++
++	sequence, timestamp, ssrc = continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 41, Timestamp: 9000, SSRC: 333},
++	})
++	require.Equal(t, uint16(41), sequence)
++	require.Equal(t, uint32(9000), timestamp)
++	require.Equal(t, uint32(333), ssrc)
++}
++
++func TestRTPContinuityWrapsSequenceAcrossProducerReplacement(t *testing.T) {
++	continuity := newRTPContinuity(&core.Codec{
++		Name:      core.CodecH264,
++		ClockRate: 90000,
++	})
++
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 65535, Timestamp: 9000, SSRC: 111},
++	})
++	continuity.markReplace()
++	sequence, timestamp, ssrc := continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 500, Timestamp: 300, SSRC: 222},
++	})
++	require.Equal(t, uint16(0), sequence)
++	require.Equal(t, uint32(12000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++}
++
++func TestRTPContinuityHandlesRepeatedReplacements(t *testing.T) {
++	continuity := newRTPContinuity(&core.Codec{
++		Name:      core.CodecH264,
++		ClockRate: 90000,
++	})
++
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 100, Timestamp: 9000, SSRC: 111},
++	})
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 101, Timestamp: 12000, SSRC: 111},
++	})
++	continuity.markReplace()
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 7, Timestamp: 0, SSRC: 222},
++	})
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 8, Timestamp: 3000, SSRC: 222},
++	})
++
++	continuity.markReplace()
++	sequence, timestamp, ssrc := continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 500, Timestamp: 300, SSRC: 444},
++	})
++	require.Equal(t, uint16(104), sequence)
++	require.Equal(t, uint32(21000), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++}
++
++func TestRTPContinuityUsesAudioPacketDurationByDefault(t *testing.T) {
++	continuity := newRTPContinuity(&core.Codec{
++		Name:      core.CodecPCMU,
++		ClockRate: 8000,
++	})
++
++	continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 10, Timestamp: 4000, SSRC: 111},
++	})
++	continuity.markReplace()
++	sequence, timestamp, ssrc := continuity.rewrite(&rtp.Packet{
++		Header: rtp.Header{SequenceNumber: 70, Timestamp: 100, SSRC: 222},
++	})
++	require.Equal(t, uint16(11), sequence)
++	require.Equal(t, uint32(4160), timestamp)
++	require.Equal(t, uint32(111), ssrc)
++}
++
++func TestPacketWriterDropsBufferedOldFrameAtReplacement(t *testing.T) {
++	wire := new(continuityTestConn)
++	connection := &Conn{state: StatePlay, playOK: true, conn: wire}
++	codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000}
++	handler, onReplace := connection.packetWriter(codec, 0, 96)
++
++	handler(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, SequenceNumber: 10, Timestamp: 9000, SSRC: 111},
++		Payload: []byte("old-partial-frame"),
++	})
++	onReplace()
++	handler(&rtp.Packet{
++		Header: rtp.Header{
++			Version:        2,
++			Marker:         true,
++			SequenceNumber: 70,
++			Timestamp:      100,
++			SSRC:           222,
++		},
++		Payload: []byte("new-frame"),
++	})
++
++	data := wire.Bytes()
++	require.GreaterOrEqual(t, len(data), 4)
++	require.Equal(t, byte('$'), data[0])
++	require.Equal(t, int(data[2])<<8|int(data[3]), len(data)-4)
++	var packet rtp.Packet
++	require.NoError(t, packet.Unmarshal(data[4:]))
++	require.Equal(t, []byte("new-frame"), packet.Payload)
++	require.Equal(t, uint16(11), packet.SequenceNumber)
++	require.Equal(t, uint32(12000), packet.Timestamp)
++	require.Equal(t, uint32(111), packet.SSRC)
++}
++
++func TestPacketWriterResetsH264RepacketizerAtReplacement(t *testing.T) {
++	wire := new(continuityTestConn)
++	connection := &Conn{
++		state:      StatePlay,
++		playOK:     true,
++		conn:       wire,
++		PacketSize: 1200,
++	}
++	codec := &core.Codec{
++		Name:        core.CodecH264,
++		ClockRate:   90000,
++		PayloadType: 96,
++	}
++	handler, onReplace := connection.packetWriter(codec, 0, 96)
++
++	// Leave the old source halfway through a fragmented IDR NAL unit.
++	handler(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, SequenceNumber: 10, Timestamp: 9000, SSRC: 111},
++		Payload: []byte{0x7c, 0x85, 'o', 'l', 'd'},
++	})
++	require.Empty(t, wire.Bytes())
++
++	onReplace()
++	handler(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, SequenceNumber: 70, Timestamp: 100, SSRC: 222},
++		Payload: []byte{0x7c, 0x85, 'n', 'e', 'w', '-'},
++	})
++	handler(&rtp.Packet{
++		Header: rtp.Header{
++			Version:        2,
++			Marker:         true,
++			SequenceNumber: 71,
++			Timestamp:      100,
++			SSRC:           222,
++		},
++		Payload: []byte{0x7c, 0x45, 'i', 'd', 'r'},
++	})
++
++	packet := requireSingleInterleavedPacket(t, wire)
++	require.Equal(t, []byte{0x65, 'n', 'e', 'w', '-', 'i', 'd', 'r'}, packet.Payload)
++}
++
++func TestPacketWriterResetsH265RepacketizerAtReplacement(t *testing.T) {
++	wire := new(continuityTestConn)
++	connection := &Conn{
++		state:      StatePlay,
++		playOK:     true,
++		conn:       wire,
++		PacketSize: 1200,
++	}
++	codec := &core.Codec{
++		Name:        core.CodecH265,
++		ClockRate:   90000,
++		PayloadType: 96,
++	}
++	handler, onReplace := connection.packetWriter(codec, 0, 96)
++
++	// Leave the old source halfway through a fragmented IDR NAL unit.
++	handler(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, SequenceNumber: 10, Timestamp: 9000, SSRC: 111},
++		Payload: []byte{0x62, 0x01, 0x93, 'o', 'l', 'd'},
++	})
++	require.Empty(t, wire.Bytes())
++
++	onReplace()
++	handler(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, SequenceNumber: 70, Timestamp: 100, SSRC: 222},
++		Payload: []byte{0x62, 0x01, 0x93, 'n', 'e', 'w', '-'},
++	})
++	handler(&rtp.Packet{
++		Header: rtp.Header{
++			Version:        2,
++			Marker:         true,
++			SequenceNumber: 71,
++			Timestamp:      100,
++			SSRC:           222,
++		},
++		Payload: []byte{0x62, 0x01, 0x53, 'i', 'd', 'r'},
++	})
++
++	packet := requireSingleInterleavedPacket(t, wire)
++	require.Equal(t, []byte{0x26, 0x01, 'n', 'e', 'w', '-', 'i', 'd', 'r'}, packet.Payload)
++}
+

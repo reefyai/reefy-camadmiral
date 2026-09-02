@@ -50,6 +50,7 @@ from .frigate import (
 from .media import (
     ProbeResult,
     RelayHealthMonitor,
+    RelayRuntimeActivityMonitor,
     SnapshotError,
     go2rtc_websocket_url,
     probe_source,
@@ -87,7 +88,9 @@ FRIGATE_CAMERA_JOBS: set[tuple[str, str]] = set()
 LOGGER = logging.getLogger(__name__)
 SCAN_REQUEST_LOCK = threading.Lock()
 RELAY_HEALTH_MONITOR = RelayHealthMonitor()
-HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "30")))
+RELAY_RUNTIME_ACTIVITY_MONITOR = RelayRuntimeActivityMonitor()
+RELAY_RUNTIME_POLL_FAILURE_ACTIVE = False
+HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "10")))
 RUNTIME_RECONCILE_INTERVAL = max(
     2.0,
     float(os.environ.get("CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL", "5")),
@@ -97,6 +100,9 @@ RECOVERY_SCAN_INTERVAL = max(
     float(os.environ.get("CAMADMIRAL_RECOVERY_SCAN_INTERVAL", "300")),
 )
 RECOVERY_SCAN_ATTEMPTS: dict[str, float] = {}
+RECOVERY_SCAN_ATTEMPT_COUNTS: dict[str, int] = {}
+RECOVERY_SCAN_FAST_RETRY_INTERVAL = 10.0
+RECOVERY_SCAN_FAST_RETRIES = 4
 FRIGATE_RECONCILE_INTERVAL = 30.0
 NOTIFICATION_INTERVAL = 5.0
 
@@ -406,27 +412,68 @@ def _reconcile_media(*, wait: bool = True) -> bool:
         MEDIA_LOCK.release()
 
 
+def _media_health_cycle() -> bool:
+    repository = _repository()
+    if repository is None:
+        return False
+    MEDIA_LOCK.acquire()
+    try:
+        _queue_targeted_recovery_scan(repository)
+        RELAY_HEALTH_MONITOR.probe(repository)
+        _queue_targeted_recovery_scan(repository)
+        return True
+    except Exception as exc:
+        print(f"media: health probe failed ({type(exc).__name__})", flush=True)
+        return False
+    finally:
+        MEDIA_LOCK.release()
+
+
 def _media_health_loop() -> None:
+    delay = HEALTH_INTERVAL
     while True:
-        time.sleep(HEALTH_INTERVAL)
-        repository = _repository()
-        if repository is None or not MEDIA_LOCK.acquire(blocking=False):
-            continue
-        try:
-            recovery_results = recover_inventory_addresses(repository, INVENTORY)
-            for result in recovery_results:
-                print(
-                    "media: address recovery "
-                    f"camera={result.camera_uuid} status={result.status} "
-                    f"from={result.previous_address} to={result.current_address}",
-                    flush=True,
-                )
-            RELAY_HEALTH_MONITOR.probe(repository)
-            _queue_targeted_recovery_scan(repository)
-        except Exception as exc:
-            print(f"media: health probe failed ({type(exc).__name__})", flush=True)
-        finally:
-            MEDIA_LOCK.release()
+        time.sleep(delay)
+        started = time.monotonic()
+        _media_health_cycle()
+        delay = max(0.1, HEALTH_INTERVAL - (time.monotonic() - started))
+
+
+def _targeted_recovery_cycle() -> bool:
+    global RELAY_RUNTIME_POLL_FAILURE_ACTIVE
+    repository = _repository()
+    if repository is None:
+        return False
+    try:
+        runtime_stalled_camera_uuids = RELAY_RUNTIME_ACTIVITY_MONITOR.poll(repository)
+    except Exception as exc:
+        RELAY_RUNTIME_ACTIVITY_MONITOR.reset()
+        if not RELAY_RUNTIME_POLL_FAILURE_ACTIVE:
+            print(
+                f"media: runtime activity poll failed ({type(exc).__name__})",
+                flush=True,
+            )
+        RELAY_RUNTIME_POLL_FAILURE_ACTIVE = True
+        return False
+    RELAY_RUNTIME_POLL_FAILURE_ACTIVE = False
+    if not runtime_stalled_camera_uuids:
+        return False
+    try:
+        return _queue_targeted_recovery_scan(
+            repository,
+            runtime_stalled_camera_uuids=runtime_stalled_camera_uuids,
+        )
+    except Exception as exc:
+        print(
+            f"media: recovery scan scheduling failed ({type(exc).__name__})",
+            flush=True,
+        )
+        return False
+
+
+def _targeted_recovery_loop() -> None:
+    while True:
+        time.sleep(1)
+        _targeted_recovery_cycle()
 
 
 def _media_runtime_reconciliation_loop() -> None:
@@ -436,10 +483,25 @@ def _media_runtime_reconciliation_loop() -> None:
         if repository is None or not MEDIA_LOCK.acquire(blocking=False):
             continue
         try:
-            if reconcile_runtime_drift(repository):
-                print("media: restored managed streams after runtime drift", flush=True)
-        except Exception:
-            pass
+            try:
+                recovery_results = recover_inventory_addresses(repository, INVENTORY)
+                for result in recovery_results:
+                    print(
+                        "media: address recovery "
+                        f"camera={result.camera_uuid} status={result.status} "
+                        f"from={result.previous_address} to={result.current_address}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"media: address recovery failed ({type(exc).__name__})",
+                    flush=True,
+                )
+            try:
+                if reconcile_runtime_drift(repository):
+                    print("media: restored managed streams after runtime drift", flush=True)
+            except Exception:
+                pass
         finally:
             MEDIA_LOCK.release()
 
@@ -661,7 +723,11 @@ def _notification_loop() -> None:
             print(f"notifications: delivery deferred ({type(exc).__name__})", flush=True)
 
 
-def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
+def _queue_targeted_recovery_scan(
+    repository: CameraRepository,
+    *,
+    runtime_stalled_camera_uuids: set[str] | None = None,
+) -> bool:
     if SCAN_REQUEST.exists():
         return False
     state = _read_scan_state()
@@ -676,35 +742,80 @@ def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
         for candidate in inventory.get("devices", [])
         if candidate.get("candidate_uuid")
     }
+    adoptions = repository.adoption_map()
+    for candidate_uuid in set(RECOVERY_SCAN_ATTEMPTS) - set(adoptions):
+        RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+        RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
     now = time.monotonic()
-    targets: list[dict[str, object]] = []
-    for candidate_uuid, adoption in sorted(repository.adoption_map().items()):
+    if runtime_stalled_camera_uuids is None:
+        runtime_stalled_camera_uuids = (
+            RELAY_RUNTIME_ACTIVITY_MONITOR.stalled_camera_uuids
+        )
+    eligible_targets: list[tuple[bool, float, str, dict[str, object]]] = []
+    for candidate_uuid, adoption in sorted(adoptions.items()):
         if not adoption.get("enabled", True):
-            continue
-        streams = adoption.get("streams", [])
-        if not streams or not any(stream.get("health_status") == "offline" for stream in streams):
-            continue
-        if any(stream.get("health_status") == "auth_failed" for stream in streams):
-            continue
-        previous_attempt = RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid)
-        if previous_attempt is not None and now - previous_attempt < RECOVERY_SCAN_INTERVAL:
+            RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+            RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
             continue
         candidate = candidates.get(candidate_uuid) or {}
+        streams = adoption.get("streams", [])
+        candidate_offline = candidate.get("status") == "offline"
+        runtime_stalled = (
+            str(adoption.get("camera_uuid")) in runtime_stalled_camera_uuids
+        )
+        needs_recovery = bool(streams) and (
+            candidate_offline
+            or runtime_stalled
+            or any(
+                stream.get("health_status") in {"offline", "auth_failed"}
+                or stream.get("probe_status")
+                not in {None, "pending", "ready", "idle"}
+                for stream in streams
+            )
+        )
+        if not needs_recovery:
+            RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+            RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
+            continue
+        previous_attempt = RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid)
+        attempt_count = RECOVERY_SCAN_ATTEMPT_COUNTS.get(candidate_uuid, 0)
+        fast_retry = candidate_offline or runtime_stalled or any(
+            stream.get("health_status") == "offline"
+            or stream.get("probe_status") in {"unavailable", "timeout", "error"}
+            for stream in streams
+        )
+        retry_interval = (
+            RECOVERY_SCAN_FAST_RETRY_INTERVAL
+            if fast_retry and attempt_count <= RECOVERY_SCAN_FAST_RETRIES
+            else RECOVERY_SCAN_INTERVAL
+        )
+        if previous_attempt is not None and now - previous_attempt < retry_interval:
+            continue
+        if candidate.get("identity_conflict"):
+            continue
         onvif = candidate.get("onvif") or {}
         endpoint_reference = onvif.get("endpoint_reference")
         mac = candidate.get("mac")
         if not endpoint_reference and not mac:
             continue
-        targets.append(
-            {
-                "candidate_uuid": candidate_uuid,
-                "endpoint_reference": endpoint_reference,
-                "mac": mac,
-            }
+        eligible_targets.append(
+            (
+                previous_attempt is not None,
+                previous_attempt or 0.0,
+                candidate_uuid,
+                {
+                    "candidate_uuid": candidate_uuid,
+                    "endpoint_reference": endpoint_reference,
+                    "mac": mac,
+                },
+            )
         )
-        if len(targets) >= 16:
-            break
+    eligible_targets.sort(key=lambda item: item[:3])
+    targets = [item[3] for item in eligible_targets[:16]]
     if not targets:
+        return False
+    selected_subnets = _selected_discovery_subnets(repository)
+    if not selected_subnets:
         return False
     request = {
         "scan_id": str(uuid.uuid4()),
@@ -712,15 +823,24 @@ def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
         "unix_time": time.time(),
         "mode": "targeted",
         "targets": targets,
+        "subnets": selected_subnets,
     }
     with SCAN_REQUEST_LOCK:
-        if SCAN_REQUEST.exists():
+        state = _read_scan_state()
+        if (
+            state.get("status") in {"queued", "running"}
+            or SCAN_REQUEST.exists()
+        ):
             return False
         temporary = SCAN_REQUEST.with_suffix(".tmp")
         temporary.write_text(json.dumps(request), encoding="utf-8")
         temporary.replace(SCAN_REQUEST)
-    for target in targets:
-        RECOVERY_SCAN_ATTEMPTS[str(target["candidate_uuid"])] = now
+        for target in targets:
+            candidate_uuid = str(target["candidate_uuid"])
+            RECOVERY_SCAN_ATTEMPTS[candidate_uuid] = now
+            RECOVERY_SCAN_ATTEMPT_COUNTS[candidate_uuid] = (
+                RECOVERY_SCAN_ATTEMPT_COUNTS.get(candidate_uuid, 0) + 1
+            )
     return True
 
 
@@ -740,6 +860,11 @@ def start_media_reconciliation() -> None:
     threading.Thread(
         target=_media_health_loop,
         name="media-health",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_targeted_recovery_loop,
+        name="media-recovery-scheduler",
         daemon=True,
     ).start()
     threading.Thread(

@@ -4,11 +4,12 @@ import json
 import os
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .media import ProbeResult, probe_source, probe_streams, replace_streams
+from .media import ProbeResult, probe_source, replace_streams
 from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
 
 
@@ -17,6 +18,16 @@ RECOVERY_RETRY_INTERVAL = max(
     float(os.environ.get("CAMADMIRAL_RECOVERY_RETRY_INTERVAL", "300")),
 )
 ATTEMPTED_AT: dict[tuple[str, str], float] = {}
+ATTEMPT_COUNTS: dict[tuple[str, str], int] = {}
+RECOVERY_FAST_RETRY_INTERVAL = 10.0
+RECOVERY_FAST_RETRIES = 4
+
+
+def _clear_attempts(camera_uuid: str) -> None:
+    for attempt_key in list(ATTEMPTED_AT):
+        if attempt_key[0] == camera_uuid:
+            ATTEMPTED_AT.pop(attempt_key, None)
+            ATTEMPT_COUNTS.pop(attempt_key, None)
 
 
 @dataclass(frozen=True)
@@ -101,19 +112,39 @@ def _validated_updates(
     else:
         return {}, "mixed_sources"
 
-    for token in sorted(updates):
-        result = probe_source(updates[token], username, password)
-        if result.status != "ready":
-            return {}, result.status
+    with ThreadPoolExecutor(max_workers=max(1, min(4, len(updates)))) as executor:
+        pending = {
+            executor.submit(probe_source, uri, username, password): token
+            for token, uri in updates.items()
+        }
+        for future in as_completed(pending):
+            try:
+                result = future.result()
+            except Exception:
+                return {}, "error"
+            if result.status != "ready":
+                return {}, result.status
     return updates, "ready"
 
 
 def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[RecoveryResult]:
     inventory = _read_inventory(inventory_path)
     results: list[RecoveryResult] = []
-    for candidate_uuid, adoption in repository.adoption_map().items():
+    adoptions = repository.adoption_map()
+    active_camera_uuids = {
+        str(adoption["camera_uuid"]) for adoption in adoptions.values()
+    }
+    for attempt_key in list(ATTEMPTED_AT):
+        if attempt_key[0] not in active_camera_uuids:
+            ATTEMPTED_AT.pop(attempt_key, None)
+            ATTEMPT_COUNTS.pop(attempt_key, None)
+    for candidate_uuid, adoption in adoptions.items():
         candidate = inventory.get(candidate_uuid)
-        if not candidate or candidate.get("status") != "online":
+        if (
+            not candidate
+            or candidate.get("status") != "online"
+            or candidate.get("identity_conflict")
+        ):
             continue
         evidence = _evidence(candidate)
         if evidence is None:
@@ -126,20 +157,26 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             if stream.get("uri")
         }
         previous_hosts.discard("")
-        if not address or previous_hosts == {address} or len(previous_hosts) != 1:
+        if not address or len(previous_hosts) != 1:
+            continue
+        camera_uuid = str(adoption["camera_uuid"])
+        if previous_hosts == {address}:
+            _clear_attempts(camera_uuid)
             continue
         previous_address = next(iter(previous_hosts))
-        attempt_key = (str(adoption["camera_uuid"]), address)
+        attempt_key = (camera_uuid, address)
         now = time.monotonic()
         previous_attempt = ATTEMPTED_AT.get(attempt_key)
-        if previous_attempt is not None and now - previous_attempt < RECOVERY_RETRY_INTERVAL:
+        attempt_count = ATTEMPT_COUNTS.get(attempt_key, 0)
+        retry_interval = (
+            RECOVERY_FAST_RETRY_INTERVAL
+            if attempt_count <= RECOVERY_FAST_RETRIES
+            else RECOVERY_RETRY_INTERVAL
+        )
+        if previous_attempt is not None and now - previous_attempt < retry_interval:
             continue
         ATTEMPTED_AT[attempt_key] = now
-        if any(stream.get("health_status") == "auth_failed" for stream in streams):
-            results.append(
-                RecoveryResult(adoption["camera_uuid"], "auth_failed", previous_address, address)
-            )
-            continue
+        ATTEMPT_COUNTS[attempt_key] = attempt_count + 1
         credentials = repository.credentials_for_candidate(candidate_uuid)
         if credentials is None:
             continue
@@ -159,7 +196,6 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             for stream in streams
             if stream.get("uri")
         }
-        camera_uuid = str(adoption["camera_uuid"])
         revision_id: int | None = None
         revision_status: str | None = None
         try:
@@ -171,16 +207,10 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             ]
             all_sources = repository.managed_stream_sources()
             revision_id, revision_status = repository.record_desired_media_revision(all_sources)
+            # The replacement upstreams were validated above. A downstream probe
+            # can still be attached to go2rtc's in-flight dial of the old address,
+            # so probing here would roll a valid live PATCH back to a dead source.
             replace_streams(runtime_sources)
-            downstream = probe_streams(
-                runtime_sources,
-                "camadmiral",
-                repository.rtsp_access_password(),
-            )
-            if len(downstream) != len(runtime_sources) or any(
-                result.status != "ready" for result in downstream.values()
-            ):
-                raise RuntimeError("replacement stream did not stabilize")
         except Exception:
             if revision_id is not None and revision_status == "desired":
                 repository.complete_media_revision(
@@ -204,8 +234,7 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             continue
         if revision_id is not None and revision_status == "desired":
             repository.complete_media_revision(revision_id, "applied")
-        repository.record_probe_results(downstream)
         repository.record_address_change(camera_uuid, previous_address, address, evidence)
-        ATTEMPTED_AT.pop(attempt_key, None)
+        _clear_attempts(camera_uuid)
         results.append(RecoveryResult(camera_uuid, "recovered", previous_address, address))
     return results

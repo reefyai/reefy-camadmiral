@@ -1,10 +1,11 @@
 import json
 import ipaddress
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from starlette.requests import Request
 
@@ -1742,7 +1743,439 @@ class LiveEndpointBoundaryTests(unittest.IsolatedAsyncioTestCase):
         connect.assert_not_called()
 
 
+class MediaHealthCycleTests(unittest.TestCase):
+    def test_due_cycle_waits_for_media_lock_instead_of_being_discarded(self) -> None:
+        repository = Mock()
+        repository_ready = threading.Event()
+        events = []
+
+        def load_repository():
+            repository_ready.set()
+            return repository
+
+        with (
+            patch.object(app_module, "_repository", side_effect=load_repository),
+            patch.object(
+                app_module.RELAY_HEALTH_MONITOR,
+                "probe",
+                side_effect=lambda _repository: events.append("probe"),
+            ) as probe,
+            patch.object(
+                app_module,
+                "_queue_targeted_recovery_scan",
+                side_effect=lambda _repository: events.append("queue") or False,
+            ) as queue_recovery,
+        ):
+            app_module.MEDIA_LOCK.acquire()
+            worker = threading.Thread(target=app_module._media_health_cycle)
+            try:
+                worker.start()
+                self.assertTrue(repository_ready.wait(timeout=1))
+                self.assertTrue(worker.is_alive())
+                probe.assert_not_called()
+            finally:
+                app_module.MEDIA_LOCK.release()
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        probe.assert_called_once_with(repository)
+        self.assertEqual(queue_recovery.call_count, 2)
+        queue_recovery.assert_called_with(repository)
+        self.assertEqual(events, ["queue", "probe", "queue"])
+
+    def test_recovery_scheduler_does_not_skip_the_health_probe(self) -> None:
+        repository = Mock()
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module.RELAY_RUNTIME_ACTIVITY_MONITOR,
+                "poll",
+                return_value={"camera-stalled"},
+            ) as runtime_poll,
+            patch.object(
+                app_module,
+                "_queue_targeted_recovery_scan",
+                side_effect=[True, False, False],
+            ) as queue_recovery,
+            patch.object(app_module.RELAY_HEALTH_MONITOR, "probe") as probe,
+        ):
+            self.assertTrue(app_module._targeted_recovery_cycle())
+            self.assertTrue(app_module._media_health_cycle())
+
+        self.assertEqual(
+            queue_recovery.call_args_list,
+            [
+                call(
+                    repository,
+                    runtime_stalled_camera_uuids={"camera-stalled"},
+                ),
+                call(repository),
+                call(repository),
+            ],
+        )
+        runtime_poll.assert_called_once_with(repository)
+        probe.assert_called_once_with(repository)
+
+    def test_recovery_scheduler_skips_full_inventory_when_runtime_is_healthy(
+        self,
+    ) -> None:
+        repository = Mock()
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(
+                app_module.RELAY_RUNTIME_ACTIVITY_MONITOR,
+                "poll",
+                return_value=set(),
+            ) as runtime_poll,
+            patch.object(app_module, "_queue_targeted_recovery_scan") as queue_recovery,
+            patch.object(app_module, "RELAY_RUNTIME_POLL_FAILURE_ACTIVE", False),
+        ):
+            self.assertFalse(app_module._targeted_recovery_cycle())
+
+        runtime_poll.assert_called_once_with(repository)
+        queue_recovery.assert_not_called()
+        repository.adoption_map.assert_not_called()
+
+    def test_recovery_scheduler_clears_failed_poll_and_logs_once_per_outage(
+        self,
+    ) -> None:
+        repository = Mock()
+        runtime_monitor = Mock()
+        runtime_monitor.poll.side_effect = [
+            RuntimeError("synthetic outage"),
+            RuntimeError("same synthetic outage"),
+            set(),
+            RuntimeError("new synthetic outage"),
+        ]
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "RELAY_RUNTIME_ACTIVITY_MONITOR", runtime_monitor),
+            patch.object(app_module, "RELAY_RUNTIME_POLL_FAILURE_ACTIVE", False),
+            patch.object(app_module, "_queue_targeted_recovery_scan") as queue_recovery,
+            patch("builtins.print") as print_mock,
+        ):
+            self.assertFalse(app_module._targeted_recovery_cycle())
+            self.assertFalse(app_module._targeted_recovery_cycle())
+            self.assertFalse(app_module._targeted_recovery_cycle())
+            self.assertFalse(app_module._targeted_recovery_cycle())
+
+        self.assertEqual(runtime_monitor.reset.call_count, 3)
+        self.assertEqual(print_mock.call_count, 2)
+        print_mock.assert_called_with(
+            "media: runtime activity poll failed (RuntimeError)",
+            flush=True,
+        )
+        queue_recovery.assert_not_called()
+        repository.adoption_map.assert_not_called()
+
+    def test_recovery_scheduler_does_not_wait_for_the_media_lock(self) -> None:
+        repository = Mock()
+        media_lock = Mock()
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "MEDIA_LOCK", media_lock),
+            patch.object(
+                app_module.RELAY_RUNTIME_ACTIVITY_MONITOR,
+                "poll",
+                return_value={"camera-stalled"},
+            ),
+            patch.object(
+                app_module,
+                "_queue_targeted_recovery_scan",
+                return_value=True,
+            ) as queue_recovery,
+        ):
+            self.assertTrue(app_module._targeted_recovery_cycle())
+
+        media_lock.acquire.assert_not_called()
+        media_lock.release.assert_not_called()
+        queue_recovery.assert_called_once_with(
+            repository,
+            runtime_stalled_camera_uuids={"camera-stalled"},
+        )
+
+
 class TargetedRecoveryScanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+        app_module.RECOVERY_SCAN_ATTEMPT_COUNTS.clear()
+
+    def tearDown(self) -> None:
+        app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+        app_module.RECOVERY_SCAN_ATTEMPT_COUNTS.clear()
+
+    def test_first_failed_probe_queues_recovery_before_camera_is_marked_offline(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-early": {
+                "camera_uuid": "camera-early",
+                "streams": [
+                    {
+                        "health_status": "healthy",
+                        "probe_status": "unavailable",
+                        "consecutive_failures": 1,
+                    }
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-early",
+                                "mac": "02:00:00:00:00:41",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-early-camera"
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.41.0/24"],
+                ),
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertTrue(queued)
+
+    def test_runtime_stall_queues_recovery_with_stale_healthy_inventory(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-runtime": {
+                "camera_uuid": "camera-runtime",
+                "streams": [
+                    {
+                        "health_status": "healthy",
+                        "probe_status": "ready",
+                    }
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-runtime",
+                                "status": "online",
+                                "mac": "02:00:00:00:00:45",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-runtime-camera"
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(
+                    app_module,
+                    "_read_scan_state",
+                    return_value={"status": "complete"},
+                ),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.45.0/24"],
+                ),
+                patch.object(
+                    app_module,
+                    "RELAY_RUNTIME_ACTIVITY_MONITOR",
+                    Mock(stalled_camera_uuids={"camera-runtime"}),
+                ),
+                patch.object(app_module.time, "monotonic", return_value=100.0),
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertTrue(queued)
+        self.assertEqual(
+            app_module.RECOVERY_SCAN_ATTEMPT_COUNTS["candidate-runtime"],
+            1,
+        )
+
+    def test_ready_probe_rearms_recovery_after_an_outage(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-ready": {
+                "camera_uuid": "camera-ready",
+                "streams": [
+                    {
+                        "health_status": "healthy",
+                        "probe_status": "ready",
+                        "consecutive_failures": 0,
+                    }
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps({"devices": [{"candidate_uuid": "candidate-ready"}]}),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+            app_module.RECOVERY_SCAN_ATTEMPTS["candidate-ready"] = 10.0
+            app_module.RECOVERY_SCAN_ATTEMPT_COUNTS["candidate-ready"] = 3
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertFalse(queued)
+        self.assertNotIn("candidate-ready", app_module.RECOVERY_SCAN_ATTEMPTS)
+        self.assertNotIn("candidate-ready", app_module.RECOVERY_SCAN_ATTEMPT_COUNTS)
+
+    def test_outage_gets_four_fast_retries_before_normal_backoff(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-retry": {
+                "camera_uuid": "camera-retry",
+                "streams": [
+                    {
+                        "health_status": "degraded",
+                        "probe_status": "unavailable",
+                        "consecutive_failures": 2,
+                    }
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-retry",
+                                "mac": "02:00:00:00:00:42",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            now = 100.0
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.42.0/24"],
+                ),
+                patch.object(app_module, "RECOVERY_SCAN_INTERVAL", 300.0),
+            ):
+                for expected_count in range(1, 6):
+                    with patch.object(app_module.time, "monotonic", return_value=now):
+                        self.assertTrue(app_module._queue_targeted_recovery_scan(repository))
+                    self.assertEqual(
+                        app_module.RECOVERY_SCAN_ATTEMPT_COUNTS["candidate-retry"],
+                        expected_count,
+                    )
+                    request.unlink()
+                    now += app_module.RECOVERY_SCAN_FAST_RETRY_INTERVAL
+
+                with patch.object(app_module.time, "monotonic", return_value=now):
+                    self.assertFalse(app_module._queue_targeted_recovery_scan(repository))
+                with patch.object(
+                    app_module.time,
+                    "monotonic",
+                    return_value=100.0
+                    + 4 * app_module.RECOVERY_SCAN_FAST_RETRY_INTERVAL
+                    + 300.0,
+                ):
+                    self.assertTrue(app_module._queue_targeted_recovery_scan(repository))
+
+    def test_recovery_batches_prioritize_cameras_not_yet_attempted(self) -> None:
+        candidate_uuids = [f"candidate-{index:02d}" for index in range(17)]
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            candidate_uuid: {
+                "camera_uuid": f"camera-{index:02d}",
+                "streams": [
+                    {
+                        "health_status": "degraded",
+                        "probe_status": "unavailable",
+                    }
+                ],
+            }
+            for index, candidate_uuid in enumerate(candidate_uuids)
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": candidate_uuid,
+                                "mac": f"02:00:00:00:01:{index:02x}",
+                            }
+                            for index, candidate_uuid in enumerate(candidate_uuids)
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.43.0/24"],
+                ),
+            ):
+                with patch.object(app_module.time, "monotonic", return_value=100.0):
+                    self.assertTrue(app_module._queue_targeted_recovery_scan(repository))
+                first = json.loads(request.read_text(encoding="utf-8"))
+                request.unlink()
+                with patch.object(app_module.time, "monotonic", return_value=110.0):
+                    self.assertTrue(app_module._queue_targeted_recovery_scan(repository))
+                second = json.loads(request.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(first["targets"]), 16)
+        self.assertNotIn(
+            candidate_uuids[-1],
+            {target["candidate_uuid"] for target in first["targets"]},
+        )
+        self.assertIn(
+            candidate_uuids[-1],
+            {target["candidate_uuid"] for target in second["targets"]},
+        )
+
     def test_offline_camera_queues_identity_only_targeted_scan(self) -> None:
         repository = Mock()
         repository.adoption_map.return_value = {
@@ -1774,6 +2207,11 @@ class TargetedRecoveryScanTests(unittest.TestCase):
                 patch.object(app_module, "INVENTORY", inventory),
                 patch.object(app_module, "SCAN_REQUEST", request),
                 patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.20.0.0/16", "172.20.37.0/24"],
+                ),
                 patch.object(app_module.time, "monotonic", return_value=10.0),
             ):
                 queued = app_module._queue_targeted_recovery_scan(repository)
@@ -1781,6 +2219,10 @@ class TargetedRecoveryScanTests(unittest.TestCase):
 
         self.assertTrue(queued)
         self.assertEqual(payload["mode"], "targeted")
+        self.assertEqual(
+            payload["subnets"],
+            ["172.20.0.0/16", "172.20.37.0/24"],
+        )
         self.assertEqual(
             payload["targets"],
             [
@@ -1792,6 +2234,270 @@ class TargetedRecoveryScanTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("password", json.dumps(payload).lower())
+
+    def test_offline_camera_retries_quickly_after_a_missed_scan(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-retry": {
+                "camera_uuid": "camera-retry",
+                "streams": [
+                    {
+                        "health_status": "healthy",
+                        "probe_status": "ready",
+                    }
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-retry",
+                                "status": "offline",
+                                "mac": "02:00:00:00:00:03",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-retry-camera"
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS["candidate-retry"] = 100.0
+            app_module.RECOVERY_SCAN_ATTEMPT_COUNTS["candidate-retry"] = 1
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.44.0/24"],
+                ),
+                patch.object(app_module, "RECOVERY_SCAN_INTERVAL", 300.0),
+                patch.object(
+                    app_module.time,
+                    "monotonic",
+                    side_effect=[
+                        100.0 + app_module.RECOVERY_SCAN_FAST_RETRY_INTERVAL - 1.0,
+                        100.0 + app_module.RECOVERY_SCAN_FAST_RETRY_INTERVAL,
+                    ],
+                ),
+            ):
+                queued_early = app_module._queue_targeted_recovery_scan(repository)
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertFalse(queued_early)
+        self.assertTrue(queued)
+        self.assertEqual(
+            app_module.RECOVERY_SCAN_ATTEMPT_COUNTS["candidate-retry"],
+            2,
+        )
+
+    def test_auth_failed_camera_still_queues_identity_recovery(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-auth": {
+                "camera_uuid": "camera-auth",
+                "streams": [
+                    {"health_status": "auth_failed", "probe_status": "auth_failed"}
+                ],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-auth",
+                                "mac": "02:00:00:00:00:02",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-auth-camera"
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.21.10.0/24"],
+                ),
+                patch.object(app_module, "RECOVERY_SCAN_INTERVAL", 300.0),
+            ):
+                with patch.object(app_module.time, "monotonic", return_value=100.0):
+                    queued = app_module._queue_targeted_recovery_scan(repository)
+                payload = json.loads(request.read_text(encoding="utf-8"))
+                request.unlink()
+                with patch.object(app_module.time, "monotonic", return_value=110.0):
+                    fast_retry = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertTrue(queued)
+        self.assertFalse(fast_retry)
+        self.assertEqual(payload["targets"][0]["candidate_uuid"], "candidate-auth")
+
+    def test_conflicted_camera_does_not_queue_targeted_recovery(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-conflict": {
+                "camera_uuid": "camera-conflict",
+                "streams": [{"health_status": "offline"}],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-conflict",
+                                "mac": "02:00:00:00:00:31",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-conflict"
+                                },
+                                "identity_conflict": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(app_module, "_selected_discovery_subnets") as selected_subnets,
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertFalse(queued)
+        self.assertFalse(request.exists())
+        selected_subnets.assert_not_called()
+
+    def test_offline_camera_is_not_queued_without_a_selected_subnet(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "streams": [{"health_status": "offline"}],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-1",
+                                "onvif": {
+                                    "endpoint_reference": "urn:uuid:synthetic-camera"
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "_read_scan_state", return_value={"status": "complete"}),
+                patch.object(app_module, "_selected_discovery_subnets", return_value=[]),
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertFalse(queued)
+        self.assertFalse(request.exists())
+
+    def test_competing_scan_consumed_before_lock_is_not_overwritten(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-race": {
+                "camera_uuid": "camera-race",
+                "streams": [{"health_status": "offline"}],
+            }
+        }
+
+        class CompetingScanLock:
+            def __init__(self, scan_state: Path) -> None:
+                self.scan_state = scan_state
+
+            def __enter__(self):
+                self.scan_state.write_text(
+                    json.dumps({"status": "running", "scan_id": "competing-scan"}),
+                    encoding="utf-8",
+                )
+                return self
+
+            def __exit__(self, _exc_type, _exc, _traceback) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            request = root / "request.json"
+            scan_state = root / "scan-state.json"
+            inventory.write_text(
+                json.dumps(
+                    {
+                        "devices": [
+                            {
+                                "candidate_uuid": "candidate-race",
+                                "status": "offline",
+                                "mac": "02:00:00:00:00:46",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scan_state.write_text(json.dumps({"status": "complete"}), encoding="utf-8")
+            with (
+                patch.object(app_module, "INVENTORY", inventory),
+                patch.object(app_module, "SCAN_REQUEST", request),
+                patch.object(app_module, "SCAN_STATE", scan_state),
+                patch.object(
+                    app_module,
+                    "SCAN_REQUEST_LOCK",
+                    CompetingScanLock(scan_state),
+                ),
+                patch.object(
+                    app_module,
+                    "_selected_discovery_subnets",
+                    return_value=["172.22.46.0/24"],
+                ),
+            ):
+                queued = app_module._queue_targeted_recovery_scan(repository)
+
+        self.assertFalse(queued)
+        self.assertFalse(request.exists())
+        self.assertNotIn("candidate-race", app_module.RECOVERY_SCAN_ATTEMPTS)
+        self.assertNotIn("candidate-race", app_module.RECOVERY_SCAN_ATTEMPT_COUNTS)
 
 class RtspAdoptionTests(unittest.TestCase):
     def setUp(self) -> None:

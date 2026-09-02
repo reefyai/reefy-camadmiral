@@ -1844,6 +1844,28 @@ class CameraRepository:
             )
         return sources
 
+    def managed_stream_runtime_sources(self) -> list[dict[str, str]]:
+        """Return role-bound stream identities without loading camera credentials."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid "
+                "FROM managed_streams s "
+                "JOIN onvif_profiles p USING (profile_uuid) "
+                "JOIN cameras a USING (camera_uuid) "
+                "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
+                "WHERE p.uri IS NOT NULL AND a.enabled = 1 "
+                "AND s.health_status != 'auth_failed' "
+                "ORDER BY s.camera_uuid, s.stream_key"
+            ).fetchall()
+        return [
+            {
+                "stream_uuid": str(row["stream_uuid"]),
+                "stream_key": str(row["stream_key"]),
+                "camera_uuid": str(row["camera_uuid"]),
+            }
+            for row in rows
+        ]
+
     def record_desired_media_revision(
         self,
         sources: list[dict[str, str]],

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from camadmiral.storage import MIGRATIONS, CameraRepository
 from camadmiral.media import ProbeResult
@@ -641,6 +642,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertFalse(disabled["enabled"])
         self.assertEqual(len(disabled["streams"]), 1)
         self.assertEqual(self.repository.managed_stream_sources(), [])
+        self.assertEqual(self.repository.managed_stream_runtime_sources(), [])
         self.assertIsNone(self.repository.preview_stream_for_camera(adoption["camera_uuid"]))
         saved = self.repository.managed_stream_sources(
             include_disabled=True,
@@ -702,6 +704,7 @@ class CameraRepositoryTests(unittest.TestCase):
             self.repository.managed_stream_sources(include_auth_failed=False),
             [],
         )
+        self.assertEqual(self.repository.managed_stream_runtime_sources(), [])
 
         replaced = self.repository.replace_camera_credentials(
             adoption["camera_uuid"],
@@ -722,6 +725,7 @@ class CameraRepositoryTests(unittest.TestCase):
             len(self.repository.managed_stream_sources(include_auth_failed=False)),
             1,
         )
+        self.assertEqual(len(self.repository.managed_stream_runtime_sources()), 1)
 
     def test_consumer_inventory_excludes_upstream_urls_and_credentials(self) -> None:
         candidate = {"candidate_uuid": "candidate-consumer", "display_name": "Entrance"}
@@ -753,6 +757,58 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn("private-source", serialized)
         self.assertNotIn("synthetic-secret", serialized)
         self.assertNotIn("operator", serialized)
+
+    def test_runtime_sources_are_role_bound_and_do_not_decrypt_credentials(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-runtime", "display_name": "Entrance"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "main",
+                    "name": "Main",
+                    "uri": "rtsp://192.0.2.20/main",
+                    "width": 1920,
+                    "height": 1080,
+                    "encoding": "H264",
+                    "fps": 20,
+                    "bitrate_kbps": 2048,
+                },
+                {
+                    "token": "extra",
+                    "name": "Extra",
+                    "uri": "rtsp://192.0.2.20/extra",
+                    "width": 640,
+                    "height": 360,
+                    "encoding": "H264",
+                    "fps": 10,
+                    "bitrate_kbps": 512,
+                },
+            ],
+            {"record": "main", "detect": "main"},
+        )
+        main = next(
+            stream for stream in adoption["streams"] if stream["profile_token"] == "main"
+        )
+
+        with patch(
+            "camadmiral.storage.decrypt_password",
+            side_effect=AssertionError("runtime inventory must not decrypt credentials"),
+        ):
+            sources = self.repository.managed_stream_runtime_sources()
+
+        self.assertEqual(
+            sources,
+            [
+                {
+                    "stream_uuid": main["stream_uuid"],
+                    "stream_key": main["stream_key"],
+                    "camera_uuid": adoption["camera_uuid"],
+                }
+            ],
+        )
+        self.assertNotIn("synthetic-secret", str(sources))
+        self.assertNotIn("operator", str(sources))
 
     def test_manual_rtsp_source_is_structured_and_reconciled_like_onvif(self) -> None:
         candidate = {

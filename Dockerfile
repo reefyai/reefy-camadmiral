@@ -1,21 +1,41 @@
-FROM alpine:3.22 AS go2rtc
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS go2rtc
 
+ARG TARGETOS
 ARG TARGETARCH
-ARG GO2RTC_VERSION=1.9.14
-ARG GO2RTC_AMD64_SHA256=32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6
-ARG GO2RTC_ARM64_SHA256=359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50
+ARG GO2RTC_REVISION=b5948cfb25404cc5cb37b166ecaa2dca20b11d4b
+ARG GO2RTC_SOURCE_SHA256=78aa79bcedec8f155e4060a379613979b0b3ee48ff62ee5164bafc0ac6532386
 
-RUN apk add --no-cache ca-certificates curl \
-    && case "${TARGETARCH}" in \
-         amd64) asset=go2rtc_linux_amd64; expected="${GO2RTC_AMD64_SHA256}" ;; \
-         arm64) asset=go2rtc_linux_arm64; expected="${GO2RTC_ARM64_SHA256}" ;; \
-         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL \
-         "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/${asset}" \
-         -o /go2rtc \
-    && echo "${expected}  /go2rtc" | sha256sum -c - \
-    && chmod 0755 /go2rtc
+WORKDIR /src
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends patch \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --show-error --silent --location \
+        "https://github.com/AlexxIT/go2rtc/archive/${GO2RTC_REVISION}.tar.gz" \
+        --output /tmp/go2rtc.tar.gz \
+    && echo "${GO2RTC_SOURCE_SHA256}  /tmp/go2rtc.tar.gz" | sha256sum --check - \
+    && tar --extract --gzip --file /tmp/go2rtc.tar.gz --strip-components=1 \
+    && rm /tmp/go2rtc.tar.gz
+
+COPY third_party/go2rtc/patches/0001-live-source-handover.patch /tmp/go2rtc.patch
+
+RUN patch --batch --strip=1 --input=/tmp/go2rtc.patch \
+    && gofmt -w \
+         internal/streams/add_consumer.go \
+         internal/streams/play.go \
+         internal/streams/producer.go \
+         internal/streams/producer_replace_test.go \
+         internal/streams/stream.go \
+         internal/streams/stream_test.go \
+         pkg/core/node.go \
+         pkg/core/track.go \
+         pkg/core/track_replace_test.go \
+         pkg/rtsp/consumer.go \
+         pkg/rtsp/consumer_continuity_test.go \
+    && go test -race ./internal/streams ./pkg/core \
+    && go test -race ./pkg/rtsp -run '^Test(RTPContinuity|PacketWriter)' \
+    && CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+         go build -buildvcs=false -trimpath -ldflags="-s -w" -o /go2rtc .
 
 FROM python:3.13-alpine3.22
 
@@ -35,6 +55,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check \
     --root-user-action=ignore -r requirements.txt
 
 COPY --from=go2rtc /go2rtc /usr/local/bin/go2rtc
+COPY --from=go2rtc /src/LICENSE /usr/share/licenses/go2rtc/LICENSE
 COPY go2rtc.yaml /etc/camadmiral/go2rtc.yaml
 COPY VERSION ./VERSION
 COPY camadmiral ./camadmiral
