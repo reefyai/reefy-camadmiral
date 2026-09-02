@@ -3,5 +3,5 @@ api:
 rtsp:
   listen: ":8554"
 streams:
-  main: "ffmpeg:virtual?video=&size=1280x720&rate=10#video=h264"
-  sub: "ffmpeg:virtual?video=&size=640x360&rate=5#video=h264"
+  main: "ffmpeg:virtual?video=smptehdbars&size=1280x720&rate=10#video=h264"
+  sub: "ffmpeg:virtual?video=smptehdbars&size=640x360&rate=5#video=h264"

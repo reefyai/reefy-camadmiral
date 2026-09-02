@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -21,6 +22,73 @@ ADMIN_PASSWORD = os.environ.get(
 
 class UiScenarioFailure(RuntimeError):
     pass
+
+
+def assert_identity_history_details(page: Page, expected_periods: int) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    onvif_row = page.locator("#camera-rows tr.camera-row").filter(
+        has=page.locator(".protocol-badge", has_text="ONVIF")
+    ).first
+    expect(onvif_row).to_be_visible(timeout=30_000)
+    with page.expect_response(
+        lambda response: response.request.method == "GET"
+        and response.url.endswith("/identity-history")
+    ) as history_response:
+        onvif_row.get_by_role("button", name="Details", exact=True).click()
+    response = history_response.value
+    if not response.ok:
+        raise UiScenarioFailure("Camera identity history request failed")
+    payload = response.json()
+    expected = payload.get("periods") or []
+    if len(expected) != expected_periods:
+        raise UiScenarioFailure(
+            f"Expected {expected_periods} camera identity periods, got {len(expected)}"
+        )
+
+    modal = page.locator("#app-modal")
+    expect(modal).to_be_visible()
+    section = modal.locator(".detail-section").filter(
+        has=page.locator(".detail-title", has_text="Identity history")
+    )
+    expect(section).to_be_visible(timeout=15_000)
+    periods = section.locator(".identity-period")
+    expect(periods).to_have_count(expected_periods)
+    expect(periods.locator(".identity-current")).to_have_count(1)
+    for index, period in enumerate(expected):
+        item = periods.nth(index)
+        values = item.locator(".identity-field-value").all_inner_texts()
+        wanted = [
+            period.get("ip") or "Unavailable",
+            period.get("mac") or "Unavailable",
+            period.get("onvif_identity") or "Unavailable",
+        ]
+        if values != wanted:
+            raise UiScenarioFailure(
+                f"Camera identity period {index + 1} does not match its API response"
+            )
+        range_text = item.locator(".identity-period-range").inner_text()
+        if "From " not in range_text:
+            raise UiScenarioFailure("Camera identity period has no start time")
+        if period.get("current"):
+            if "Until current" not in range_text:
+                raise UiScenarioFailure("Current camera identity has no open-ended range")
+            expect(item.locator(".identity-current")).to_have_text("Current")
+        elif "Until " not in range_text or "Until current" in range_text:
+            raise UiScenarioFailure("Previous camera identity has no end time")
+
+    overflow = section.evaluate(
+        """
+        section => {
+          const body = document.querySelector('#app-modal-body').getBoundingClientRect();
+          return Array.from(section.querySelectorAll('.identity-period')).some(period => {
+            const bounds = period.getBoundingClientRect();
+            return bounds.left < body.left - 0.5 || bounds.right > body.right + 0.5;
+          });
+        }
+        """
+    )
+    if overflow:
+        raise UiScenarioFailure("Camera identity history overflows the mobile details modal")
 
 
 def assert_mobile_camera_actions(page: Page) -> None:
@@ -647,6 +715,9 @@ def assert_mobile_settings(page: Page) -> None:
 
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
+    mode = sys.argv[1] if len(sys.argv) > 1 else None
+    if mode not in {None, "identity-history"}:
+        raise UiScenarioFailure(f"Unknown browser E2E scenario: {mode}")
     with sync_playwright() as playwright:
         browser = playwright.webkit.launch(headless=True)
         context = browser.new_context(
@@ -658,6 +729,10 @@ def main() -> int:
         )
         page = context.new_page()
         try:
+            if mode == "identity-history":
+                assert_identity_history_details(page, 2)
+                print("CamAdmiral identity history browser E2E passed")
+                return 0
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
             assert_camera_unadopt_block_and_restore(page)
