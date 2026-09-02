@@ -15,6 +15,7 @@ from camadmiral.discovery import LanInterface
 from camadmiral.onvif_client import OnvifInspectionError
 from camadmiral.media import ProbeResult
 from camadmiral.rtsp_catalog import CatalogCandidate
+from camadmiral.storage import MIGRATIONS, CameraRepository
 
 
 def synthetic_candidate(*, amcrest: bool = True) -> dict:
@@ -192,6 +193,187 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(
             decorated["summary"],
             {"devices": 1, "online": 1, "offline": 0, "blocked": 0},
+        )
+
+    def test_matching_offline_identity_can_initialize_from_inventory(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "streams": [
+                    {"uri": "rtsp://172.21.10.20/main"},
+                    {"uri": "rtsp://172.21.10.20/sub"},
+                ],
+            }
+        }
+        candidate = {
+            "candidate_uuid": "candidate-1",
+            "display_name": "Synthetic camera",
+            "ip": "172.21.10.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            "status": "offline",
+        }
+
+        with patch.object(
+            app_module,
+            "_inventory_candidates",
+            return_value={"candidate-1": candidate},
+        ):
+            app_module._observe_inventory_identities(repository)
+
+        observations = repository.observe_inventory_identities.call_args.args[0]
+        self.assertEqual(observations[0][0], "camera-1")
+        self.assertEqual(observations[0][1]["ip"], "172.21.10.20")
+        self.assertEqual(
+            repository.observe_inventory_identities.call_args.kwargs[
+                "advance_existing_camera_uuids"
+            ],
+            set(),
+        )
+
+    def test_previous_schema_initializes_identity_history_through_health_observation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = CameraRepository(Path(directory) / "camadmiral.db", b"k" * 32)
+            repository.migrate()
+            candidate = {
+                "candidate_uuid": "candidate-upgrade",
+                "display_name": "Synthetic camera",
+                "ip": "172.21.10.20",
+                "mac": "02:00:00:00:00:20",
+                "status": "offline",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            }
+            adoption = repository.adopt(
+                candidate,
+                "operator",
+                "synthetic-secret",
+                [{
+                    "token": "main",
+                    "name": "Main",
+                    "uri": "rtsp://172.21.10.20/main",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }],
+                {"record": "main", "detect": "main"},
+            )
+            with repository.connect() as connection:
+                connection.execute("DROP TABLE camera_identity_periods")
+                connection.execute(
+                    "DELETE FROM schema_migrations WHERE version = ?",
+                    (len(MIGRATIONS),),
+                )
+                connection.commit()
+
+            repository.migrate()
+            self.assertEqual(
+                repository.camera_identity_history(adoption["camera_uuid"]),
+                [],
+            )
+            with patch.object(
+                app_module,
+                "_inventory_candidates",
+                return_value={"candidate-upgrade": candidate},
+            ):
+                app_module._observe_inventory_identities(repository)
+
+            history = repository.camera_identity_history(adoption["camera_uuid"])
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["ip"], "172.21.10.20")
+            self.assertEqual(history[0]["mac"], "02:00:00:00:00:20")
+            self.assertEqual(
+                history[0]["onvif_identity"],
+                "urn:uuid:synthetic-camera",
+            )
+            self.assertTrue(history[0]["current"])
+
+    def test_matching_online_identity_can_advance_from_inventory(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "streams": [{"uri": "rtsp://172.21.10.20/main"}],
+            }
+        }
+        candidate = {
+            "candidate_uuid": "candidate-1",
+            "ip": "172.21.10.20",
+            "mac": "02:00:00:00:00:21",
+            "status": "online",
+        }
+
+        with patch.object(
+            app_module,
+            "_inventory_candidates",
+            return_value={"candidate-1": candidate},
+        ):
+            app_module._observe_inventory_identities(repository)
+
+        self.assertEqual(
+            repository.observe_inventory_identities.call_args.kwargs[
+                "advance_existing_camera_uuids"
+            ],
+            {"camera-1"},
+        )
+
+    def test_mismatched_recovery_address_cannot_initialize_identity_history(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "streams": [{"uri": "rtsp://172.21.10.20/main"}],
+            }
+        }
+        failed_recovery_observation = {
+            "candidate_uuid": "candidate-1",
+            "ip": "172.21.10.99",
+            "mac": "02:00:00:00:00:99",
+            "status": "online",
+        }
+
+        with patch.object(
+            app_module,
+            "_inventory_candidates",
+            return_value={"candidate-1": failed_recovery_observation},
+        ):
+            app_module._observe_inventory_identities(repository)
+
+        repository.observe_inventory_identities.assert_called_once_with(
+            [],
+            advance_existing_camera_uuids=set(),
+        )
+
+    def test_conflicted_identity_is_not_observed(self) -> None:
+        repository = Mock()
+        repository.adoption_map.return_value = {
+            "candidate-1": {
+                "camera_uuid": "camera-1",
+                "streams": [{"uri": "rtsp://172.21.10.20/main"}],
+            }
+        }
+        candidate = {
+            "candidate_uuid": "candidate-1",
+            "ip": "172.21.10.20",
+            "mac": "02:00:00:00:00:20",
+            "status": "online",
+            "identity_conflict": True,
+        }
+
+        with patch.object(
+            app_module,
+            "_inventory_candidates",
+            return_value={"candidate-1": candidate},
+        ):
+            app_module._observe_inventory_identities(repository)
+
+        repository.observe_inventory_identities.assert_called_once_with(
+            [],
+            advance_existing_camera_uuids=set(),
         )
 
     def test_discovery_reports_only_an_available_cached_thumbnail(self) -> None:
@@ -400,6 +582,39 @@ class AvailabilityApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(json.loads(response.body)["status"], "invalid_window")
         repository.assert_not_called()
+
+
+class IdentityHistoryApiTests(unittest.TestCase):
+    def test_identity_history_returns_camera_periods(self) -> None:
+        repository = Mock()
+        repository.camera_identity_history.return_value = [
+            {
+                "ip": "192.0.2.20",
+                "mac": "02:00:00:00:00:20",
+                "onvif_identity": "urn:uuid:synthetic-camera",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "ended_at": None,
+                "current": True,
+            }
+        ]
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.camera_identity_history("camera-1")
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["camera_uuid"], "camera-1")
+        self.assertTrue(payload["periods"][0]["current"])
+        repository.camera_identity_history.assert_called_once_with("camera-1")
+
+    def test_identity_history_rejects_unknown_camera(self) -> None:
+        repository = Mock()
+        repository.camera_identity_history.return_value = None
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.camera_identity_history("missing-camera")
+
+        self.assertEqual(raised.exception.status_code, 404)
 
 
 class CameraLifecycleApiTests(unittest.TestCase):
@@ -1765,6 +1980,11 @@ class MediaHealthCycleTests(unittest.TestCase):
                 "_queue_targeted_recovery_scan",
                 side_effect=lambda _repository: events.append("queue") or False,
             ) as queue_recovery,
+            patch.object(
+                app_module,
+                "_observe_inventory_identities",
+                side_effect=lambda _repository: events.append("observe"),
+            ) as observe_identities,
         ):
             app_module.MEDIA_LOCK.acquire()
             worker = threading.Thread(target=app_module._media_health_cycle)
@@ -1781,7 +2001,8 @@ class MediaHealthCycleTests(unittest.TestCase):
         probe.assert_called_once_with(repository)
         self.assertEqual(queue_recovery.call_count, 2)
         queue_recovery.assert_called_with(repository)
-        self.assertEqual(events, ["queue", "probe", "queue"])
+        observe_identities.assert_called_once_with(repository)
+        self.assertEqual(events, ["queue", "probe", "queue", "observe"])
 
     def test_recovery_scheduler_does_not_skip_the_health_probe(self) -> None:
         repository = Mock()
@@ -1798,6 +2019,7 @@ class MediaHealthCycleTests(unittest.TestCase):
                 side_effect=[True, False, False],
             ) as queue_recovery,
             patch.object(app_module.RELAY_HEALTH_MONITOR, "probe") as probe,
+            patch.object(app_module, "_observe_inventory_identities") as observe,
         ):
             self.assertTrue(app_module._targeted_recovery_cycle())
             self.assertTrue(app_module._media_health_cycle())
@@ -1815,6 +2037,7 @@ class MediaHealthCycleTests(unittest.TestCase):
         )
         runtime_poll.assert_called_once_with(repository)
         probe.assert_called_once_with(repository)
+        observe.assert_called_once_with(repository)
 
     def test_recovery_scheduler_skips_full_inventory_when_runtime_is_healthy(
         self,

@@ -235,6 +235,7 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
         if revision_id is not None and revision_status == "desired":
             repository.complete_media_revision(revision_id, "applied")
         repository.record_address_change(camera_uuid, previous_address, address, evidence)
+        repository.observe_camera_identity(camera_uuid, candidate)
         _clear_attempts(camera_uuid)
         results.append(RecoveryResult(camera_uuid, "recovered", previous_address, address))
     return results

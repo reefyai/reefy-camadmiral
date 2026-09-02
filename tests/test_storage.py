@@ -1174,6 +1174,292 @@ class CameraRepositoryTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(tuple(event), ("192.168.1.20", "192.168.1.99", "unique-mac"))
 
+    def test_identity_history_keeps_one_current_period_and_closes_changes(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "URN:UUID:SYNTHETIC-CAMERA"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+
+        first = self.repository.camera_identity_history(camera_uuid)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(
+            {
+                "ip": first[0]["ip"],
+                "mac": first[0]["mac"],
+                "onvif_identity": first[0]["onvif_identity"],
+                "ended_at": first[0]["ended_at"],
+                "current": first[0]["current"],
+            },
+            {
+                "ip": "192.0.2.20",
+                "mac": "02:00:00:00:00:20",
+                "onvif_identity": "urn:uuid:synthetic-camera",
+                "ended_at": None,
+                "current": True,
+            },
+        )
+        self.assertFalse(
+            self.repository.observe_camera_identity(
+                camera_uuid,
+                {"candidate_uuid": "candidate-identity", "ip": "192.0.2.20"},
+            )
+        )
+
+        changed_at = "2099-01-02T03:04:05+00:00"
+        self.assertTrue(
+            self.repository.observe_camera_identity(
+                camera_uuid,
+                {
+                    **original,
+                    "ip": "192.0.2.99",
+                    "mac": "02:00:00:00:00:99",
+                },
+                observed_at=changed_at,
+            )
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "192.0.2.99")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:99")
+        self.assertEqual(history[0]["started_at"], changed_at)
+        self.assertTrue(history[0]["current"])
+        self.assertEqual(history[1]["ip"], "192.0.2.20")
+        self.assertEqual(history[1]["ended_at"], changed_at)
+        self.assertFalse(history[1]["current"])
+
+    def test_identity_history_initialization_does_not_advance_existing_period(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-initialized",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        changes = self.repository.initialize_camera_identities(
+            [(adoption["camera_uuid"], {**original, "ip": "192.0.2.99"})],
+            observed_at="2099-01-02T03:04:05+00:00",
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertEqual(changes, 0)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["ip"], "192.0.2.20")
+        self.assertTrue(history[0]["current"])
+
+    def test_identity_history_initializes_existing_camera_without_a_period(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-migrated-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM camera_identity_periods WHERE camera_uuid = ?",
+                (adoption["camera_uuid"],),
+            )
+            connection.commit()
+
+        changes = self.repository.initialize_camera_identities(
+            [(adoption["camera_uuid"], original)],
+            observed_at="2099-01-02T03:04:05+00:00",
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["ip"], "192.0.2.20")
+        self.assertTrue(history[0]["current"])
+
+    def test_identity_history_keeps_unobserved_fields_unknown_after_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-partial-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        changed = self.repository.observe_camera_identity(
+            adoption["camera_uuid"],
+            {
+                "candidate_uuid": "candidate-partial-identity",
+                "ip": "192.0.2.99",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            },
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertTrue(changed)
+        self.assertEqual(history[0]["ip"], "192.0.2.99")
+        self.assertIsNone(history[0]["mac"])
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+
+    def test_identity_history_enriches_unknown_current_fields_without_new_period(self) -> None:
+        candidate = {
+            "candidate_uuid": "candidate-enriched-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+        }
+        adoption = self.repository.adopt(
+            candidate,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        enriched = self.repository.observe_camera_identity(
+            adoption["camera_uuid"],
+            {
+                **candidate,
+                "mac": "02:00:00:00:00:20",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            },
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertTrue(enriched)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:20")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+
+    def test_inventory_observation_records_same_ip_mac_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-same-ip-new-mac",
+            "display_name": "Synthetic camera",
+            "ip": "172.21.10.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://172.21.10.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        changed_at = "2099-01-02T03:04:05+00:00"
+
+        changes = self.repository.observe_inventory_identities(
+            [(camera_uuid, {**original, "mac": "02:00:00:00:00:21"})],
+            advance_existing_camera_uuids={camera_uuid},
+            observed_at=changed_at,
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "172.21.10.20")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:21")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+        self.assertEqual(history[0]["started_at"], changed_at)
+        self.assertEqual(history[1]["mac"], "02:00:00:00:00:20")
+        self.assertEqual(history[1]["ended_at"], changed_at)
+
+    def test_inventory_observation_records_same_ip_onvif_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-same-ip-new-onvif",
+            "display_name": "Synthetic camera",
+            "ip": "172.21.10.30",
+            "mac": "02:00:00:00:00:30",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera-old"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://172.21.10.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+
+        changes = self.repository.observe_inventory_identities(
+            [(
+                camera_uuid,
+                {
+                    **original,
+                    "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera-new"},
+                },
+            )],
+            advance_existing_camera_uuids={camera_uuid},
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "172.21.10.30")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:30")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera-new")
+        self.assertEqual(history[1]["onvif_identity"], "urn:uuid:synthetic-camera-old")
+
+    def test_identity_history_returns_none_for_unknown_camera(self) -> None:
+        self.assertIsNone(self.repository.camera_identity_history("missing-camera"))
+
     def test_media_revisions_are_secret_free_and_keep_last_known_good(self) -> None:
         candidate = {"candidate_uuid": "candidate-revision", "display_name": "Camera"}
         self.repository.adopt(

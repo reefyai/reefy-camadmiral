@@ -208,7 +208,7 @@ class RecoveryTests(unittest.TestCase):
     @patch("camadmiral.recovery.replace_streams")
     @patch("camadmiral.recovery.probe_source")
     def test_failed_validation_keeps_previous_source(self, probe_source, replace_streams) -> None:
-        self.repository.adopt(
+        adoption = self.repository.adopt(
             {
                 "candidate_uuid": "candidate-2",
                 "display_name": "Camera",
@@ -256,6 +256,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(probe_source.call_count, 2)
         self.assertEqual(after["streams"][0]["uri"], "rtsp://192.168.1.20/live")
         replace_streams.assert_not_called()
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["ip"], "192.168.1.20")
 
     @patch("camadmiral.recovery.replace_streams")
     @patch("camadmiral.recovery.probe_source")
@@ -421,6 +424,14 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result[0].status, "recovered")
         self.assertEqual(after["streams"][0]["stream_uuid"], before["streams"][0]["stream_uuid"])
         self.assertEqual(after["streams"][0]["uri"], "rtsp://192.168.1.77/media")
+        history = self.repository.camera_identity_history(before["camera_uuid"])
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "192.168.1.77")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:03")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+        self.assertTrue(history[0]["current"])
+        self.assertEqual(history[1]["ip"], "192.168.1.20")
+        self.assertFalse(history[1]["current"])
 
 
 if __name__ == "__main__":

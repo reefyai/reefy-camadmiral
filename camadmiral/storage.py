@@ -312,6 +312,22 @@ MIGRATIONS: tuple[str, ...] = (
         WHERE selections.target_id = frigate_targets.target_id
     );
     """,
+    """
+    CREATE TABLE camera_identity_periods (
+        period_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        ip_address TEXT,
+        mac_address TEXT,
+        onvif_identity TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        CHECK(ip_address IS NOT NULL OR mac_address IS NOT NULL OR onvif_identity IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX camera_identity_periods_one_current
+        ON camera_identity_periods(camera_uuid) WHERE ended_at IS NULL;
+    CREATE INDEX camera_identity_periods_camera_time
+        ON camera_identity_periods(camera_uuid, started_at DESC);
+    """,
 )
 
 
@@ -1064,6 +1080,177 @@ class CameraRepository:
         mac = str(candidate.get("mac") or "").strip().lower() or None
         return onvif_identity, mac
 
+    @classmethod
+    def _candidate_identity(
+        cls,
+        candidate: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        onvif_identity, mac = cls._candidate_stable_identity(candidate)
+        ip_address = str(candidate.get("ip") or "").strip() or None
+        return ip_address, mac, onvif_identity
+
+    @classmethod
+    def _observe_camera_identity(
+        cls,
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        observed_at: str,
+    ) -> bool:
+        observed_identity = cls._candidate_identity(candidate)
+        current = connection.execute(
+            "SELECT period_uuid, ip_address, mac_address, onvif_identity "
+            "FROM camera_identity_periods WHERE camera_uuid = ? AND ended_at IS NULL",
+            (camera_uuid,),
+        ).fetchone()
+        identity = observed_identity
+        if not any(identity):
+            return False
+        if current is not None:
+            current_identity = (
+                current["ip_address"],
+                current["mac_address"],
+                current["onvif_identity"],
+            )
+            # Missing fields are unknown, not evidence that a value disappeared.
+            # Fill newly learned values into the current period. Start a new
+            # period only when two known values conflict, and keep any fields
+            # that are unknown in that new observation null.
+            changed = any(
+                observed is not None
+                and previous is not None
+                and observed != previous
+                for observed, previous in zip(identity, current_identity, strict=True)
+            )
+            if not changed:
+                enriched = tuple(
+                    observed if previous is None else previous
+                    for observed, previous in zip(identity, current_identity, strict=True)
+                )
+                if enriched == current_identity:
+                    return False
+                connection.execute(
+                    "UPDATE camera_identity_periods SET ip_address = ?, mac_address = ?, "
+                    "onvif_identity = ? WHERE period_uuid = ?",
+                    (*enriched, current["period_uuid"]),
+                )
+                return True
+        if current is not None:
+            connection.execute(
+                "UPDATE camera_identity_periods SET ended_at = ? WHERE period_uuid = ?",
+                (observed_at, current["period_uuid"]),
+            )
+        connection.execute(
+            "INSERT INTO camera_identity_periods(period_uuid, camera_uuid, ip_address, "
+            "mac_address, onvif_identity, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (str(uuid.uuid4()), camera_uuid, *identity, observed_at),
+        )
+        return True
+
+    def observe_camera_identity(
+        self,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        *,
+        observed_at: str | None = None,
+    ) -> bool:
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                connection.rollback()
+                return False
+            changed = self._observe_camera_identity(
+                connection,
+                camera_uuid,
+                candidate,
+                timestamp,
+            )
+            connection.commit()
+        return changed
+
+    def initialize_camera_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        observed_at: str | None = None,
+    ) -> int:
+        return self.observe_inventory_identities(
+            observations,
+            observed_at=observed_at,
+        )
+
+    def observe_inventory_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        advance_existing_camera_uuids: set[str] | frozenset[str] = frozenset(),
+        observed_at: str | None = None,
+    ) -> int:
+        if not observations:
+            return 0
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            known = {
+                str(row["camera_uuid"])
+                for row in connection.execute("SELECT camera_uuid FROM cameras")
+            }
+            initialized = {
+                str(row["camera_uuid"])
+                for row in connection.execute(
+                    "SELECT camera_uuid FROM camera_identity_periods WHERE ended_at IS NULL"
+                )
+            }
+            changes = 0
+            for camera_uuid, candidate in observations:
+                if camera_uuid not in known or (
+                    camera_uuid in initialized
+                    and camera_uuid not in advance_existing_camera_uuids
+                ):
+                    continue
+                if self._observe_camera_identity(
+                    connection,
+                    camera_uuid,
+                    candidate,
+                    timestamp,
+                ):
+                    changes += 1
+                    initialized.add(camera_uuid)
+            connection.commit()
+        return changes
+
+    def camera_identity_history(self, camera_uuid: str) -> list[dict[str, Any]] | None:
+        with self.connect() as connection:
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                return None
+            rows = connection.execute(
+                "SELECT ip_address, mac_address, onvif_identity, started_at, ended_at "
+                "FROM camera_identity_periods WHERE camera_uuid = ? "
+                "ORDER BY started_at DESC, period_uuid DESC",
+                (camera_uuid,),
+            ).fetchall()
+        return [
+            {
+                "ip": row["ip_address"],
+                "mac": row["mac_address"],
+                "onvif_identity": row["onvif_identity"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "current": row["ended_at"] is None,
+            }
+            for row in rows
+        ]
+
     def blocked_devices(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -1707,6 +1894,12 @@ class CameraRepository:
                     timestamp,
                     timestamp,
                 ),
+            )
+            self._observe_camera_identity(
+                connection,
+                camera_uuid,
+                candidate,
+                timestamp,
             )
             current_tokens = {str(profile["token"]) for profile in profiles}
             connection.execute("DELETE FROM consumer_bindings WHERE camera_uuid = ?", (camera_uuid,))

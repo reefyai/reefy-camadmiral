@@ -421,6 +421,7 @@ def _media_health_cycle() -> bool:
         _queue_targeted_recovery_scan(repository)
         RELAY_HEALTH_MONITOR.probe(repository)
         _queue_targeted_recovery_scan(repository)
+        _observe_inventory_identities(repository)
         return True
     except Exception as exc:
         print(f"media: health probe failed ({type(exc).__name__})", flush=True)
@@ -474,6 +475,56 @@ def _targeted_recovery_loop() -> None:
     while True:
         time.sleep(1)
         _targeted_recovery_cycle()
+
+
+def _observation_matches_saved_sources(
+    candidate: dict[str, object],
+    adoption: dict[str, object],
+) -> bool:
+    if candidate.get("identity_conflict"):
+        return False
+    try:
+        candidate_address = str(ipaddress.ip_address(str(candidate.get("ip") or "")))
+    except ValueError:
+        return False
+    streams = adoption.get("streams") or []
+    if not isinstance(streams, list) or not streams:
+        return False
+    source_hosts: list[str] = []
+    for stream in streams:
+        if not isinstance(stream, dict) or not stream.get("uri"):
+            return False
+        try:
+            source_host = urllib.parse.urlsplit(str(stream["uri"])).hostname
+        except ValueError:
+            return False
+        if not source_host:
+            return False
+        try:
+            source_hosts.append(str(ipaddress.ip_address(source_host)))
+        except ValueError:
+            source_hosts.append(source_host.lower())
+    return all(source_host == candidate_address for source_host in source_hosts)
+
+
+def _observe_inventory_identities(repository: CameraRepository) -> None:
+    candidates = _inventory_candidates()
+    adoptions = repository.adoption_map()
+    observations = [
+        (str(adoptions[candidate_uuid]["camera_uuid"]), candidate)
+        for candidate_uuid, candidate in candidates.items()
+        if candidate_uuid in adoptions
+        and _observation_matches_saved_sources(candidate, adoptions[candidate_uuid])
+    ]
+    advance_existing = {
+        camera_uuid
+        for camera_uuid, candidate in observations
+        if candidate.get("status") == "online"
+    }
+    repository.observe_inventory_identities(
+        observations,
+        advance_existing_camera_uuids=advance_existing,
+    )
 
 
 def _media_runtime_reconciliation_loop() -> None:
@@ -1137,6 +1188,16 @@ def camera_availability(camera_uuid: str, window: str = "24h") -> JSONResponse:
         raise HTTPException(status_code=404, detail="Adopted camera not found")
     result["window"] = window
     return _secured_json(result)
+
+
+@app.get("/internal/cameras/{camera_uuid}/identity-history", include_in_schema=False)
+def camera_identity_history(camera_uuid: str) -> JSONResponse:
+    repository = _repository(required=True)
+    assert repository is not None
+    periods = repository.camera_identity_history(camera_uuid)
+    if periods is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    return _secured_json({"camera_uuid": camera_uuid, "periods": periods})
 
 
 @app.get("/internal/incidents", include_in_schema=False)
