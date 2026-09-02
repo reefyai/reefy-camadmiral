@@ -1,0 +1,7 @@
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+streams:
+  main: "ffmpeg:virtual?video=smptebars&size=1280x720&rate=10#video=h264"
+  sub: "ffmpeg:virtual?video=smptebars&size=640x360&rate=5#video=h264"

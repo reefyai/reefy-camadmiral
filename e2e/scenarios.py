@@ -20,14 +20,43 @@ from pathlib import Path
 
 import yaml
 
+try:
+    from .frame_fingerprint import (
+        FRAME_HEIGHT,
+        FRAME_SIZE,
+        FRAME_WIDTH,
+        fingerprint_distance,
+        frame_fingerprint,
+        mean_fingerprint,
+    )
+except ImportError:
+    from frame_fingerprint import (
+        FRAME_HEIGHT,
+        FRAME_SIZE,
+        FRAME_WIDTH,
+        fingerprint_distance,
+        frame_fingerprint,
+        mean_fingerprint,
+    )
+
 
 BASE_URL = "http://camadmiral:18080"
 API_TOKEN = "synthetic-e2e-api-token"
 FRIGATE_API_URL = "http://172.30.0.30:5000"
 STATE_PATH = Path("/state/baseline.json")
+IDENTITY_STATE_PATH = Path("/state/identity-recovery.json")
+IDENTITY_FRAME_TELEMETRY_PATH = Path("/state/identity-consumer-frames.jsonl")
 OPEN_NAME = "Synthetic open camera"
 AUTH_NAME = "Synthetic authenticated camera"
 ONVIF_NAME = "Synthetic ONVIF camera"
+ONVIF_ENDPOINT = "urn:uuid:synthetic-onvif-camera"
+ONVIF_REPLACEMENT_ENDPOINT = "urn:uuid:synthetic-onvif-replacement"
+ONVIF_ORIGINAL_IP = "172.30.0.13"
+ONVIF_MOVED_IP = "172.30.0.15"
+ONVIF_REPLACEMENT_IP = "172.30.0.16"
+ONVIF_ORIGINAL_MAC = "02:00:00:00:00:13"
+ONVIF_MOVED_MAC = "02:00:00:00:00:15"
+ONVIF_REPLACEMENT_MAC = "02:00:00:00:00:16"
 ADMIN_PASSWORD = os.environ.get("CAMADMIRAL_E2E_ADMIN_PASSWORD", "")
 
 
@@ -1216,14 +1245,13 @@ def camera_recovery() -> None:
             device.get("connectivity_status") == "online" for device in devices
         )
         return (
-            open_device.get("status") == "offline"
-            and open_device.get("connectivity_status") == "online"
+            open_device.get("connectivity_status") == "online"
             and summary.get("online") == expected_online
             and summary.get("offline") == 0
         )
 
     wait_for(
-        "recovered media overriding stale scan summary",
+        "recovered media and online summary",
         recovered_summary,
         timeout=120,
     )
@@ -1252,7 +1280,7 @@ def camera_recovery() -> None:
     )
     if recovered is None or recovered.get("resolution_reason") != "recovered":
         raise ScenarioFailure("Recovered camera did not retain its resolved incident")
-    print("camera-recovery: media, availability, and stale scan summary recovered without user action")
+    print("camera-recovery: media and availability recovered without user action")
 
 
 def container_restart() -> None:
@@ -2098,6 +2126,994 @@ def frigate_ambiguous_delete_verify() -> None:
     print("frigate: ambiguous partial-success deletion recovered")
 
 
+def _load_identity_state() -> dict[str, object]:
+    try:
+        return json.loads(IDENTITY_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ScenarioFailure("Identity recovery E2E state is unavailable") from exc
+
+
+def _device_by_onvif_endpoint(endpoint: str) -> dict[str, object] | None:
+    expected = endpoint.lower()
+    return next(
+        (
+            device
+            for device in discovery().get("devices", [])
+            if str((device.get("onvif") or {}).get("endpoint_reference") or "").lower()
+            == expected
+        ),
+        None,
+    )
+
+
+def _camera_by_id(directory: dict[str, object], camera_uuid: str) -> dict[str, object] | None:
+    return next(
+        (
+            camera
+            for camera in directory.get("cameras", [])
+            if str(camera.get("id")) == camera_uuid
+        ),
+        None,
+    )
+
+
+def _frigate_camera_key(camera_uuid: str) -> str:
+    return "camadmiral_" + re.sub(r"[^a-zA-Z0-9_]", "_", camera_uuid)
+
+
+def _frigate_api_json(path: str) -> dict[str, object]:
+    try:
+        with urllib.request.urlopen(f"http://camadmiral:5000{path}", timeout=8) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _frigate_latest_frame(camera_key: str) -> bool:
+    try:
+        decoded = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                f"http://camadmiral:5000/api/{camera_key}/latest.webp",
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=32:18,format=gray",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return decoded.returncode == 0 and bool(decoded.stdout)
+
+
+def _stream_fingerprint(url: str) -> list[float]:
+    try:
+        decoded = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                url,
+                "-map",
+                "0:v:0",
+                "-an",
+                "-vf",
+                f"scale={FRAME_WIDTH}:{FRAME_HEIGHT},format=rgb24",
+                "-frames:v",
+                "5",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ScenarioFailure(f"Timed out fingerprinting {url}") from exc
+    if decoded.returncode != 0 or len(decoded.stdout) < FRAME_SIZE * 3:
+        raise ScenarioFailure(f"Could not decode enough frames to fingerprint {url}")
+    frames = [
+        decoded.stdout[offset : offset + FRAME_SIZE]
+        for offset in range(0, len(decoded.stdout) - FRAME_SIZE + 1, FRAME_SIZE)
+    ]
+    return mean_fingerprint([frame_fingerprint(frame) for frame in frames])
+
+
+def _identity_consumer_status() -> dict[str, object]:
+    try:
+        payload = json.loads(
+            Path("/state/identity-consumer-status.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _identity_consumer_frames() -> list[dict[str, object]]:
+    try:
+        lines = IDENTITY_FRAME_TELEMETRY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    frames: list[dict[str, object]] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if index == len(lines) - 1:
+                continue
+            raise ScenarioFailure("Identity consumer telemetry is malformed") from exc
+        if not isinstance(record, dict):
+            raise ScenarioFailure("Identity consumer telemetry record is malformed")
+        frames.append(record)
+    return frames
+
+
+def _identity_moved_frame_transition(
+    *,
+    outage_started_at: float,
+    session_id: str,
+    original_fingerprint: list[float],
+    moved_fingerprint: list[float],
+    source_separation: float,
+) -> dict[str, float | int] | None:
+    records = _identity_consumer_frames()
+    if not records:
+        return None
+
+    def classified(record: dict[str, object], expected: list[float], other: list[float]) -> bool:
+        fingerprint = record.get("fingerprint")
+        if not isinstance(fingerprint, list):
+            return False
+        expected_distance = fingerprint_distance(fingerprint, expected)
+        other_distance = fingerprint_distance(fingerprint, other)
+        return (
+            expected_distance <= max(8, source_separation * 0.35)
+            and expected_distance < other_distance
+        )
+
+    moved_run = 3
+    for index in range(len(records) - moved_run + 1):
+        first = records[index]
+        try:
+            first_decoded_at = float(first["decoded_at"])
+            first_frame_index = int(first["frame_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if first_decoded_at < outage_started_at:
+            continue
+        window = records[index : index + moved_run]
+        if any(str(record.get("session_id") or "") != session_id for record in window):
+            continue
+        try:
+            frame_indexes = [int(record["frame_index"]) for record in window]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if frame_indexes != list(range(first_frame_index, first_frame_index + moved_run)):
+            continue
+        if not all(
+            classified(record, moved_fingerprint, original_fingerprint)
+            for record in window
+        ):
+            continue
+
+        preceding = [
+            record
+            for record in records[:index]
+            if str(record.get("session_id") or "") == session_id
+            and classified(record, original_fingerprint, moved_fingerprint)
+        ]
+        if not preceding:
+            raise ScenarioFailure(
+                "Identity consumer telemetry has moved frames without original frames"
+            )
+        try:
+            last_original_at = max(float(record["decoded_at"]) for record in preceding)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ScenarioFailure(
+                "Identity consumer telemetry has an invalid decode timestamp"
+            ) from exc
+
+        same_session = [
+            record
+            for record in records[: index + 1]
+            if str(record.get("session_id") or "") == session_id
+        ]
+        maximum_gap = 0.0
+        for previous, current in zip(same_session, same_session[1:]):
+            try:
+                current_at = float(current["decoded_at"])
+                previous_at = float(previous["decoded_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if current_at >= outage_started_at:
+                maximum_gap = max(maximum_gap, current_at - previous_at)
+        return {
+            "first_moved_frame_at": first_decoded_at,
+            "first_moved_frame_index": first_frame_index,
+            "last_original_frame_at": last_original_at,
+            "maximum_frame_gap": maximum_gap,
+        }
+    return None
+
+
+def _assert_identity_period(
+    period: dict[str, object],
+    *,
+    ip: str,
+    mac: str,
+    endpoint: str,
+    current: bool,
+) -> None:
+    expected = {
+        "ip": ip,
+        "mac": mac,
+        "onvif_identity": endpoint,
+        "current": current,
+    }
+    observed = {field: period.get(field) for field in expected}
+    if observed != expected:
+        raise ScenarioFailure(
+            f"Camera identity period was unexpected: expected={expected}, observed={observed}"
+        )
+
+
+def identity_recovery_setup() -> None:
+    wait_for_health()
+    wait_for_camera_sources(
+        "original ONVIF identity source readiness",
+        {
+            f"rtsp://{ONVIF_ORIGINAL_IP}:8554/main": (1280, 720),
+            f"rtsp://{ONVIF_ORIGINAL_IP}:8554/sub": (640, 360),
+        },
+    )
+
+    def adopted_onvif() -> dict[str, object] | None:
+        device = _device_by_onvif_endpoint(ONVIF_ENDPOINT)
+        adoption = device.get("adoption") if device else None
+        if (
+            device is None
+            or device.get("status") != "online"
+            or str(device.get("ip")) != ONVIF_ORIGINAL_IP
+            or str(device.get("mac") or "").lower() != ONVIF_ORIGINAL_MAC
+            or not adoption
+            or not adoption.get("streams")
+        ):
+            return None
+        return device
+
+    device = wait_for("adopted ONVIF identity recovery fixture", adopted_onvif)
+    candidate_uuid = str(device["candidate_uuid"])
+    adoption = device["adoption"]
+    camera_uuid = str(adoption["camera_uuid"])
+
+    def target_ready() -> dict[str, object] | None:
+        return next(
+            (
+                target
+                for target in request_json("/internal/frigate-targets").get("targets", [])
+                if target.get("api_url") == FRIGATE_API_URL
+            ),
+            None,
+        )
+
+    target = wait_for("existing Frigate identity recovery target", target_ready, timeout=120)
+    target_id = str(target["target_id"])
+    encoded_target_id = urllib.parse.quote(target_id, safe="")
+    selected = request_json(
+        f"/internal/frigate-targets/{encoded_target_id}/cameras/"
+        f"{urllib.parse.quote(camera_uuid, safe='')}",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+        expected=202,
+        timeout=30,
+    )
+    if selected.get("selected") is not True or selected.get("status") != "syncing":
+        raise ScenarioFailure(f"Identity recovery Frigate sync did not start: {selected}")
+
+    def binding_applied() -> dict[str, object] | None:
+        current = discovery_device(candidate_uuid)
+        current_adoption = current.get("adoption") if current else None
+        for status in (current_adoption or {}).get("frigate", []):
+            if str(status.get("target_id")) != target_id:
+                continue
+            if status.get("status") == "error":
+                raise ScenarioFailure(
+                    "Identity recovery Frigate sync failed with "
+                    f"{status.get('error_code') or 'unknown error'}"
+                )
+            if status.get("status") == "applied":
+                return status
+        return None
+
+    wait_for("identity recovery Frigate synchronization", binding_applied, timeout=180)
+    camera_key = _frigate_camera_key(camera_uuid)
+    aliases = (f"{camera_key}_record", f"{camera_key}_detect")
+
+    def saved_configuration_ready() -> dict[str, object] | None:
+        try:
+            saved = frigate_saved_config()
+        except Exception:
+            return None
+        cameras = saved.get("cameras") or {}
+        streams = (saved.get("go2rtc") or {}).get("streams") or {}
+        if camera_key not in cameras or not all(alias in streams for alias in aliases):
+            return None
+        return saved
+
+    saved = wait_for(
+        "saved Frigate identity recovery configuration",
+        saved_configuration_ready,
+        timeout=180,
+        interval=2,
+    )
+
+    def frigate_processing() -> bool:
+        stats = _frigate_api_json("/api/stats")
+        camera_stats = (stats.get("cameras") or {}).get(camera_key) or {}
+        return float(camera_stats.get("camera_fps") or 0) > 0
+
+    wait_for("Frigate processing before identity move", frigate_processing, timeout=120, interval=2)
+    wait_for(
+        "Frigate frame before identity move",
+        lambda: _frigate_latest_frame(camera_key),
+        timeout=90,
+        interval=2,
+    )
+
+    directory = consumer_directory()
+    consumer_camera = _camera_by_id(directory, camera_uuid)
+    if consumer_camera is None or consumer_camera.get("state") != "online":
+        raise ScenarioFailure("ONVIF identity fixture is absent from the consumer directory")
+    signature = directory_signature(directory).get(camera_uuid)
+    if not signature:
+        raise ScenarioFailure("ONVIF identity fixture has no stable consumer signature")
+    identity_history = request_json(f"/internal/cameras/{camera_uuid}/identity-history")
+    periods = identity_history.get("periods") or []
+    if len(periods) != 1:
+        raise ScenarioFailure(f"Initial camera identity history was unexpected: {periods}")
+    _assert_identity_period(
+        periods[0],
+        ip=ONVIF_ORIGINAL_IP,
+        mac=ONVIF_ORIGINAL_MAC,
+        endpoint=ONVIF_ENDPOINT,
+        current=True,
+    )
+    if periods[0].get("ended_at") is not None:
+        raise ScenarioFailure("Initial camera identity period is already closed")
+    record_stream = next(
+        (
+            stream
+            for stream in consumer_camera.get("streams", [])
+            if "record" in stream.get("roles", [])
+        ),
+        None,
+    )
+    if record_stream is None:
+        raise ScenarioFailure("ONVIF identity fixture has no recording stream")
+    streams = (saved.get("go2rtc") or {}).get("streams") or {}
+    state = {
+        "candidate_uuid": candidate_uuid,
+        "camera_uuid": camera_uuid,
+        "endpoint_reference": ONVIF_ENDPOINT,
+        "ip": ONVIF_ORIGINAL_IP,
+        "mac": ONVIF_ORIGINAL_MAC,
+        "scan_id": discovery().get("scan_id"),
+        "consumer_signature": signature,
+        "consumer_url": authenticated_rtsp_url(record_stream),
+        "frigate_target_id": target_id,
+        "frigate_camera_key": camera_key,
+        "frigate_camera": (saved.get("cameras") or {})[camera_key],
+        "frigate_streams": {alias: streams[alias] for alias in aliases},
+    }
+    IDENTITY_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    IDENTITY_STATE_PATH.chmod(0o600)
+    print("identity-recovery-setup: stable ONVIF and Frigate identities saved")
+
+
+def identity_consumer_ready() -> None:
+    state = _load_identity_state()
+
+    def ready() -> dict[str, object] | None:
+        status = _identity_consumer_status()
+        if (
+            status.get("status") != "running"
+            or int(status.get("frames") or 0) < 5
+            or not status.get("fingerprint")
+        ):
+            return None
+        return status
+
+    consumer = wait_for("long-lived downstream consumer", ready, timeout=90)
+    state.update(
+        {
+            "consumer_session_id": consumer["session_id"],
+            "consumer_pid": consumer["consumer_pid"],
+            "consumer_container_pid": consumer["container_pid"],
+            "consumer_frames_before_move": consumer["frames"],
+            "consumer_original_fingerprint": consumer["fingerprint"],
+        }
+    )
+    IDENTITY_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    IDENTITY_STATE_PATH.chmod(0o600)
+    print("identity-consumer-ready: persistent downstream session is receiving original media")
+
+
+def identity_outage_start() -> None:
+    state = _load_identity_state()
+    state["outage_started_at"] = time.time()
+    IDENTITY_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    IDENTITY_STATE_PATH.chmod(0o600)
+    print("identity-outage-start: recovery deadline started before camera shutdown")
+
+
+def identity_recovery_missed_scan() -> None:
+    before = _load_identity_state()
+    observation: dict[str, object] = {}
+
+    def missed_scan() -> dict[str, object] | None:
+        scan = discovery()
+        device = next(
+            (
+                item
+                for item in scan.get("devices", [])
+                if str(item.get("candidate_uuid")) == str(before["candidate_uuid"])
+            ),
+            None,
+        )
+        raw_log = "\n".join(str(line) for line in scan.get("raw_log", []))
+        observation.clear()
+        observation.update(
+            {
+                "scan_id": scan.get("scan_id"),
+                "scanner": (scan.get("scanners") or {}).get("recovery"),
+                "camera_status": device.get("status") if device else None,
+                "raw_log": raw_log[-500:],
+            }
+        )
+        if (
+            scan.get("scan_id") == before.get("scan_id")
+            or (scan.get("scanners") or {}).get("recovery") != "complete"
+            or device is None
+            or device.get("status") != "offline"
+            or f"RECOVERY: target candidate {before['candidate_uuid']}" not in raw_log
+        ):
+            return None
+        return scan
+
+    try:
+        missed = wait_for(
+            "a targeted recovery scan while the camera is still rebooting",
+            missed_scan,
+            timeout=35,
+            interval=1,
+        )
+    except ScenarioFailure as exc:
+        raise ScenarioFailure(
+            f"{exc}; last observation={json.dumps(observation, sort_keys=True)}"
+        ) from exc
+    before["missed_recovery_scan_id"] = missed.get("scan_id")
+    IDENTITY_STATE_PATH.write_text(json.dumps(before), encoding="utf-8")
+    IDENTITY_STATE_PATH.chmod(0o600)
+    print("identity-recovery-missed-scan: first targeted scan missed the rebooting camera")
+
+
+def identity_recovery() -> None:
+    wait_for_camera_sources(
+        "moved ONVIF identity source readiness",
+        {
+            f"rtsp://{ONVIF_MOVED_IP}:8554/main": (1280, 720),
+            f"rtsp://{ONVIF_MOVED_IP}:8554/sub": (640, 360),
+        },
+    )
+    before = _load_identity_state()
+    moved_fingerprint = _stream_fingerprint(f"rtsp://{ONVIF_MOVED_IP}:8554/main")
+    original_fingerprint = before["consumer_original_fingerprint"]
+    source_separation = fingerprint_distance(original_fingerprint, moved_fingerprint)
+    if source_separation < 12:
+        raise ScenarioFailure(
+            "Original and moved ONVIF fixtures are not visually distinguishable "
+            f"(fingerprint distance {source_separation:.2f})"
+        )
+    observation: dict[str, object] = {}
+
+    def automatically_recovered() -> dict[str, object] | None:
+        scan = discovery()
+        device = next(
+            (
+                item
+                for item in scan.get("devices", [])
+                if str(item.get("candidate_uuid")) == str(before["candidate_uuid"])
+            ),
+            None,
+        )
+        adoption = device.get("adoption") if device else None
+        streams = (adoption or {}).get("streams") or []
+        observation.clear()
+        observation.update(
+            {
+                "scan_id": scan.get("scan_id"),
+                "scanner": (scan.get("scanners") or {}).get("recovery"),
+                "ip": device.get("ip") if device else None,
+                "mac": device.get("mac") if device else None,
+                "camera_uuid": (adoption or {}).get("camera_uuid"),
+                "sources": [stream.get("uri") for stream in streams],
+                "health": [stream.get("health_status") for stream in streams],
+            }
+        )
+        endpoint = str((device.get("onvif") or {}).get("endpoint_reference") or "").lower() if device else ""
+        raw_log = "\n".join(str(line) for line in scan.get("raw_log", []))
+        if (
+            device is None
+            or scan.get("scan_id") == before.get("scan_id")
+            or (scan.get("scanners") or {}).get("recovery") != "complete"
+            or f"matched {before['candidate_uuid']} by ONVIF endpoint identity" not in raw_log
+            or device.get("status") != "online"
+            or str(device.get("ip")) != ONVIF_MOVED_IP
+            or str(device.get("mac") or "").lower() != ONVIF_MOVED_MAC
+            or endpoint != ONVIF_ENDPOINT
+            or not adoption
+            or str(adoption.get("camera_uuid")) != str(before["camera_uuid"])
+            or not streams
+            or any(
+                urllib.parse.urlsplit(str(stream.get("uri") or "")).hostname
+                != ONVIF_MOVED_IP
+                or stream.get("health_status") != "healthy"
+                for stream in streams
+            )
+        ):
+            return None
+        return device
+
+    try:
+        recovered = wait_for(
+            "automatic ONVIF identity address recovery",
+            automatically_recovered,
+            timeout=240,
+            interval=2,
+        )
+    except ScenarioFailure as exc:
+        raise ScenarioFailure(
+            f"{exc}; last observation={json.dumps(observation, sort_keys=True)}"
+        ) from exc
+    if observation.get("scan_id") == before.get("missed_recovery_scan_id"):
+        raise ScenarioFailure("Camera recovery did not require a targeted scan retry")
+
+    consumer_observation: dict[str, object] = {}
+
+    def existing_consumer_switched_source() -> dict[str, object] | None:
+        status = _identity_consumer_status()
+        consumer_observation.clear()
+        consumer_observation.update(status)
+        if (
+            status.get("status") != "running"
+            or status.get("session_id") != before.get("consumer_session_id")
+            or status.get("consumer_pid") != before.get("consumer_pid")
+            or status.get("container_pid") != before.get("consumer_container_pid")
+            or int(status.get("frames") or 0)
+            <= int(before.get("consumer_frames_before_move") or 0) + 5
+            or not status.get("fingerprint")
+        ):
+            return None
+        moved_distance = fingerprint_distance(status["fingerprint"], moved_fingerprint)
+        original_distance = fingerprint_distance(
+            status["fingerprint"], original_fingerprint
+        )
+        consumer_observation.update(
+            {
+                "moved_distance": round(moved_distance, 3),
+                "original_distance": round(original_distance, 3),
+                "source_separation": round(source_separation, 3),
+            }
+        )
+        if (
+            moved_distance > max(8, source_separation * 0.35)
+            or moved_distance >= original_distance
+        ):
+            return None
+        return status
+
+    try:
+        switched = wait_for(
+            "the existing downstream session to switch to moved media",
+            existing_consumer_switched_source,
+            timeout=120,
+            interval=1,
+        )
+    except ScenarioFailure as exc:
+        raise ScenarioFailure(
+            f"{exc}; last consumer={json.dumps(consumer_observation, sort_keys=True)}"
+        ) from exc
+    transition = wait_for(
+        "immutable decoded-frame evidence from the moved camera",
+        lambda: _identity_moved_frame_transition(
+            outage_started_at=float(before["outage_started_at"]),
+            session_id=str(before["consumer_session_id"]),
+            original_fingerprint=original_fingerprint,
+            moved_fingerprint=moved_fingerprint,
+            source_separation=source_separation,
+        ),
+        timeout=10,
+        interval=0.2,
+    )
+    handover_seconds = float(transition["first_moved_frame_at"]) - float(
+        before["outage_started_at"]
+    )
+    if handover_seconds >= 45:
+        raise ScenarioFailure(
+            "Live media handover exceeded the recovery budget "
+            f"({handover_seconds:.1f}s >= 45s)"
+        )
+
+    switched_frames = int(switched.get("frames") or 0)
+
+    def existing_consumer_remains_fresh() -> dict[str, object] | None:
+        status = _identity_consumer_status()
+        if (
+            status.get("status") != "running"
+            or status.get("session_id") != before.get("consumer_session_id")
+            or status.get("consumer_pid") != before.get("consumer_pid")
+            or status.get("container_pid") != before.get("consumer_container_pid")
+            or int(status.get("frames") or 0) <= switched_frames + 5
+            or not status.get("fingerprint")
+        ):
+            return None
+        moved_distance = fingerprint_distance(status["fingerprint"], moved_fingerprint)
+        original_distance = fingerprint_distance(
+            status["fingerprint"], original_fingerprint
+        )
+        if (
+            moved_distance > max(8, source_separation * 0.35)
+            or moved_distance >= original_distance
+        ):
+            return None
+        return status
+
+    wait_for(
+        "the switched downstream session to keep receiving fresh moved media",
+        existing_consumer_remains_fresh,
+        timeout=30,
+        interval=1,
+    )
+
+    directory = consumer_directory()
+    camera_uuid = str(before["camera_uuid"])
+    if directory_signature(directory).get(camera_uuid) != before["consumer_signature"]:
+        raise ScenarioFailure("ONVIF address recovery changed consumer camera or stream identity")
+    consumer_camera = _camera_by_id(directory, camera_uuid)
+    if consumer_camera is None or consumer_camera.get("state") != "online":
+        raise ScenarioFailure("Recovered ONVIF camera is not online for consumers")
+    record_stream = next(
+        (
+            stream
+            for stream in consumer_camera.get("streams", [])
+            if "record" in stream.get("roles", [])
+        ),
+        None,
+    )
+    if record_stream is None:
+        raise ScenarioFailure(
+            "Recovered consumer recording stream no longer maps to the main profile"
+        )
+    for stream in consumer_camera.get("streams", []):
+        video = probe_stream(stream)
+        if stream is record_stream and (
+            int(video.get("width") or 0) != 1280
+            or int(video.get("height") or 0) != 720
+        ):
+            raise ScenarioFailure(
+                "Recovered recording stream does not decode the main profile"
+            )
+    assert_snapshot(camera_uuid)
+
+    saved = frigate_saved_config()
+    camera_key = str(before["frigate_camera_key"])
+    saved_camera = (saved.get("cameras") or {}).get(camera_key)
+    saved_streams = (saved.get("go2rtc") or {}).get("streams") or {}
+    expected_streams = before["frigate_streams"]
+    if saved_camera != before["frigate_camera"]:
+        raise ScenarioFailure("Automatic camera recovery changed the Frigate camera config")
+    if {alias: saved_streams.get(alias) for alias in expected_streams} != expected_streams:
+        raise ScenarioFailure("Automatic camera recovery changed the Frigate stream config")
+
+    def frigate_resumed() -> bool:
+        stats = _frigate_api_json("/api/stats")
+        camera_stats = (stats.get("cameras") or {}).get(camera_key) or {}
+        return float(camera_stats.get("camera_fps") or 0) > 0
+
+    wait_for("Frigate processing after identity move", frigate_resumed, timeout=180, interval=2)
+    wait_for(
+        "Frigate frame after identity move",
+        lambda: _frigate_latest_frame(camera_key),
+        timeout=120,
+        interval=2,
+    )
+
+    def identity_history_updated() -> list[dict[str, object]] | None:
+        history = request_json(
+            f"/internal/cameras/{camera_uuid}/identity-history"
+        ).get("periods") or []
+        return history if len(history) == 2 else None
+
+    periods = wait_for(
+        "camera identity history after address recovery",
+        identity_history_updated,
+        timeout=60,
+    )
+    _assert_identity_period(
+        periods[0],
+        ip=ONVIF_MOVED_IP,
+        mac=ONVIF_MOVED_MAC,
+        endpoint=ONVIF_ENDPOINT,
+        current=True,
+    )
+    _assert_identity_period(
+        periods[1],
+        ip=ONVIF_ORIGINAL_IP,
+        mac=ONVIF_ORIGINAL_MAC,
+        endpoint=ONVIF_ENDPOINT,
+        current=False,
+    )
+    if periods[0].get("ended_at") is not None or not periods[1].get("ended_at"):
+        raise ScenarioFailure("Recovered identity periods do not have one current period")
+    if str(recovered.get("candidate_uuid")) != str(before["candidate_uuid"]):
+        raise ScenarioFailure("Automatic recovery created a replacement candidate identity")
+    print(
+        "identity-recovery: IP and MAC changed, stable ONVIF identity recovered "
+        "without a manual scan or consumer reconfiguration; "
+        f"first moved frame decoded in {handover_seconds:.1f}s "
+        f"(maximum frame gap {float(transition['maximum_frame_gap']):.1f}s)"
+    )
+
+
+def identity_runtime_restart() -> None:
+    before = _load_identity_state()
+    moved_fingerprint = _stream_fingerprint(f"rtsp://{ONVIF_MOVED_IP}:8554/main")
+    original_fingerprint = before["consumer_original_fingerprint"]
+    source_separation = fingerprint_distance(original_fingerprint, moved_fingerprint)
+    observation: dict[str, object] = {}
+
+    def persisted_source_resumed() -> bool:
+        try:
+            fingerprint = _stream_fingerprint(str(before["consumer_url"]))
+        except ScenarioFailure as exc:
+            observation.clear()
+            observation["error"] = str(exc)
+            return False
+        moved_distance = fingerprint_distance(fingerprint, moved_fingerprint)
+        original_distance = fingerprint_distance(fingerprint, original_fingerprint)
+        observation.clear()
+        observation.update(
+            {
+                "moved_distance": round(moved_distance, 3),
+                "original_distance": round(original_distance, 3),
+                "source_separation": round(source_separation, 3),
+            }
+        )
+        return (
+            moved_distance <= max(8, source_separation * 0.35)
+            and moved_distance < original_distance
+        )
+
+    try:
+        wait_for(
+            "the persisted moved source after go2rtc child restart",
+            persisted_source_resumed,
+            timeout=120,
+            interval=1,
+        )
+    except ScenarioFailure as exc:
+        raise ScenarioFailure(
+            f"{exc}; last observation={json.dumps(observation, sort_keys=True)}"
+        ) from exc
+
+    camera_uuid = str(before["camera_uuid"])
+    directory = consumer_directory()
+    if directory_signature(directory).get(camera_uuid) != before["consumer_signature"]:
+        raise ScenarioFailure("go2rtc child restart changed the consumer stream identity")
+    print(
+        "identity-runtime-restart: moved source persisted across a supervised go2rtc "
+        "child restart without restarting CamAdmiral"
+    )
+
+
+def identity_replacement() -> None:
+    wait_for_camera_sources(
+        "replacement ONVIF identity source readiness",
+        {
+            f"rtsp://{ONVIF_REPLACEMENT_IP}:8554/main": (1280, 720),
+            f"rtsp://{ONVIF_REPLACEMENT_IP}:8554/sub": (640, 360),
+        },
+    )
+    before = _load_identity_state()
+    network_configuration = request_json("/internal/discovery/networks")
+    selected_before = [
+        str(network["cidr"])
+        for network in network_configuration.get("networks", [])
+        if network.get("selected")
+    ]
+    custom_before = [
+        str(network["cidr"])
+        for network in network_configuration.get("networks", [])
+        if network.get("source") == "custom"
+    ]
+    request_json(
+        "/internal/discovery/networks",
+        method="PUT",
+        headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+        payload={
+            "selected_subnets": ["172.30.0.0/24"],
+            "custom_subnets": custom_before,
+        },
+    )
+    try:
+        def start_full_scan() -> dict[str, object] | None:
+            status, body, _headers = request(
+                "/internal/discovery/scan",
+                method="POST",
+                headers={"X-CamAdmiral-Action": "scan"},
+                timeout=15,
+            )
+            if status == 409:
+                return None
+            try:
+                payload = json.loads(body)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise ScenarioFailure(
+                    f"Identity replacement scan returned invalid JSON with HTTP {status}"
+                ) from exc
+            if status != 202:
+                raise ScenarioFailure(
+                    f"Identity replacement scan returned HTTP {status}: {payload}"
+                )
+            return payload
+
+        queued = wait_for(
+            "identity replacement full scan start",
+            start_full_scan,
+            timeout=90,
+            interval=2,
+        )
+        scan_id = str(queued.get("scan_id") or "")
+        if not scan_id:
+            raise ScenarioFailure("Identity replacement scan has no scan identity")
+
+        def scan_complete() -> dict[str, object] | None:
+            scan = discovery()
+            if scan.get("scan_id") != scan_id or scan.get("status") in {"queued", "running"}:
+                return None
+            if scan.get("status") != "complete":
+                raise ScenarioFailure(f"Identity replacement scan failed: {scan}")
+            return scan
+
+        scanned = wait_for(
+            "identity replacement full scan completion",
+            scan_complete,
+            timeout=180,
+            interval=2,
+        )
+    finally:
+        request_json(
+            "/internal/discovery/networks",
+            method="PUT",
+            headers={"X-CamAdmiral-Action": "save-discovery-networks"},
+            payload={
+                "selected_subnets": selected_before,
+                "custom_subnets": custom_before,
+            },
+        )
+
+    old_candidate = next(
+        (
+            device
+            for device in scanned.get("devices", [])
+            if str(device.get("candidate_uuid")) == str(before["candidate_uuid"])
+        ),
+        None,
+    )
+    new_candidate = next(
+        (
+            device
+            for device in scanned.get("devices", [])
+            if str((device.get("onvif") or {}).get("endpoint_reference") or "").lower()
+            == ONVIF_REPLACEMENT_ENDPOINT
+        ),
+        None,
+    )
+    old_endpoint = str(
+        ((old_candidate or {}).get("onvif") or {}).get("endpoint_reference") or ""
+    ).lower()
+    old_camera_uuid = str(
+        ((old_candidate or {}).get("adoption") or {}).get("camera_uuid") or ""
+    )
+    if (
+        old_candidate is None
+        or old_candidate.get("status") != "offline"
+        or str(old_candidate.get("ip")) != ONVIF_MOVED_IP
+        or str(old_candidate.get("mac") or "").lower() != ONVIF_MOVED_MAC
+        or old_endpoint != ONVIF_ENDPOINT
+        or old_camera_uuid != str(before["camera_uuid"])
+    ):
+        raise ScenarioFailure(f"Old ONVIF identity was not retained offline: {old_candidate}")
+    if (
+        new_candidate is None
+        or new_candidate.get("status") != "online"
+        or str(new_candidate.get("ip")) != ONVIF_REPLACEMENT_IP
+        or str(new_candidate.get("mac") or "").lower() != ONVIF_REPLACEMENT_MAC
+        or str(new_candidate.get("candidate_uuid")) == str(before["candidate_uuid"])
+        or new_candidate.get("adoption")
+    ):
+        raise ScenarioFailure(f"New ONVIF identity was not discovered separately: {new_candidate}")
+
+    new_candidate_uuid = str(new_candidate["candidate_uuid"])
+    adopted = request_json(
+        f"/internal/discovery/{urllib.parse.quote(new_candidate_uuid, safe='')}/adopt",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "adopt"},
+        payload={"username": "", "password": "", "allow_factory_credentials": False},
+        timeout=120,
+    )
+    new_camera_uuid = str((adopted.get("adoption") or {}).get("camera_uuid") or "")
+    if not new_camera_uuid or new_camera_uuid == str(before["camera_uuid"]):
+        raise ScenarioFailure("Reidentified ONVIF camera did not receive a new camera identity")
+
+    def replacement_online() -> dict[str, object] | None:
+        directory = consumer_directory()
+        old_camera = _camera_by_id(directory, str(before["camera_uuid"]))
+        new_camera = _camera_by_id(directory, new_camera_uuid)
+        if (
+            old_camera is None
+            or old_camera.get("state") not in {"degraded", "offline"}
+            or new_camera is None
+            or new_camera.get("state") != "online"
+            or not new_camera.get("streams")
+        ):
+            return None
+        return new_camera
+
+    replacement = wait_for(
+        "adopted replacement ONVIF camera",
+        replacement_online,
+        timeout=120,
+        interval=2,
+    )
+    for stream in replacement.get("streams", []):
+        probe_stream(stream)
+    assert_snapshot(new_camera_uuid)
+
+    saved = frigate_saved_config()
+    old_camera_key = str(before["frigate_camera_key"])
+    new_camera_key = _frigate_camera_key(new_camera_uuid)
+    cameras = saved.get("cameras") or {}
+    if old_camera_key not in cameras:
+        raise ScenarioFailure("Frigate silently removed the old offline camera identity")
+    if new_camera_key in cameras:
+        raise ScenarioFailure("Frigate silently synchronized the replacement camera identity")
+    print(
+        "identity-replacement: changed IP, MAC, and ONVIF identity produced an offline old "
+        "camera and an independently adoptable replacement"
+    )
+
+
 SCENARIOS = {
     "baseline": baseline,
     "multi-subnet-discovery": multi_subnet_discovery,
@@ -2120,6 +3136,13 @@ SCENARIOS = {
     "frigate-unadopt": frigate_unadopt,
     "frigate-ambiguous-delete-setup": frigate_ambiguous_delete_setup,
     "frigate-ambiguous-delete-verify": frigate_ambiguous_delete_verify,
+    "identity-recovery-setup": identity_recovery_setup,
+    "identity-consumer-ready": identity_consumer_ready,
+    "identity-outage-start": identity_outage_start,
+    "identity-recovery-missed-scan": identity_recovery_missed_scan,
+    "identity-recovery": identity_recovery,
+    "identity-runtime-restart": identity_runtime_restart,
+    "identity-replacement": identity_replacement,
     "relay-latency": relay_latency,
 }
 

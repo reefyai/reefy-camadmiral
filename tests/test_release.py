@@ -52,20 +52,68 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('["ubuntu-latest"]', gate)
         self.assertNotIn('tags: ["v*"]', gate)
 
-    def test_release_gate_runs_e2e_only_for_versioned_release_commits(self) -> None:
+    def test_release_gate_runs_e2e_for_releases_and_relay_runtime_changes(self) -> None:
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
+        classifier = (
+            ROOT / ".github" / "scripts" / "release-gate-classifier.cjs"
+        ).read_text()
+        classifier_test = (
+            ROOT / ".github" / "scripts" / "release-gate-classifier.test.cjs"
+        ).read_text()
 
         self.assertIn("Classify changes", gate)
-        self.assertIn('path === "README.md" || path.startsWith("docs/")', gate)
-        self.assertIn("github.rest.repos.getCommit", gate)
-        self.assertIn('file.filename === "VERSION"', gate)
-        self.assertIn('core.setOutput("e2e", releaseCandidate || !complete', gate)
-        self.assertIn("file.previous_filename", gate)
+        self.assertIn("github.rest.pulls.listFiles", gate)
+        self.assertIn("context.payload.pull_request.number", gate)
+        self.assertIn("release-gate-classifier.cjs", gate)
+        self.assertIn("release-gate-classifier.test.cjs", gate)
         self.assertIn("needs: classify-changes", gate)
         self.assertIn("needs.classify-changes.outputs.runtime == 'true'", gate)
         self.assertIn("needs.classify-changes.outputs.e2e == 'true'", gate)
-        self.assertIn("Development commit: running fast validation only.", gate)
+        self.assertIn('file.filename === "VERSION"', classifier)
+        self.assertIn('file.filename === "Dockerfile"', classifier)
+        self.assertIn('file.filename.startsWith("third_party/go2rtc/")', classifier)
+        self.assertIn("Development commit: running fast validation only.", classifier)
+        self.assertIn("multi-commit PR requires full E2E", classifier_test)
         self.assertNotIn("paths-ignore:", gate)
+
+    def test_patched_go2rtc_handover_is_pinned_tested_and_exercised(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        patch_file = (
+            ROOT
+            / "third_party"
+            / "go2rtc"
+            / "patches"
+            / "0001-live-source-handover.patch"
+        ).read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+
+        self.assertIn(
+            "GO2RTC_REVISION=b5948cfb25404cc5cb37b166ecaa2dca20b11d4b",
+            dockerfile,
+        )
+        self.assertIn(
+            "GO2RTC_SOURCE_SHA256=78aa79bcedec8f155e4060a379613979b0b3ee48ff62ee5164bafc0ac6532386",
+            dockerfile,
+        )
+        self.assertIn("patch --batch --strip=1", dockerfile)
+        self.assertIn("apt-get install --yes --no-install-recommends patch", dockerfile)
+        self.assertIn("go test -race ./internal/streams ./pkg/core", dockerfile)
+        self.assertIn(
+            "go test -race ./pkg/rtsp -run '^Test(RTPContinuity|PacketWriter)'",
+            dockerfile,
+        )
+        self.assertIn("TestSetSourceMovesExistingSenderBeforeStoppingOldProducer", patch_file)
+        self.assertIn("TestReceiverReplacementWaitsForOldPacketDelivery", patch_file)
+        self.assertIn("TestReceiverReplacementAndSenderCloseAreAtomic", patch_file)
+        self.assertIn("TestRTPContinuityAcrossProducerReplacement", patch_file)
+        self.assertIn("TestPacketWriterResetsH264RepacketizerAtReplacement", patch_file)
+        self.assertIn("TestPacketWriterResetsH265RepacketizerAtReplacement", patch_file)
+        self.assertIn("assert_identity_consumer_handover", runner)
+        self.assertIn("assert_identity_consumer_keeps_advancing", runner)
+        self.assertIn("wait_for_identity_consumer_advancement", runner)
+        self.assertIn("existing_consumer_switched_source", scenarios)
+        self.assertIn("fingerprint_distance(status[\"fingerprint\"]", scenarios)
 
     def test_e2e_runs_the_docker_only_launcher(self) -> None:
         runner = (ROOT / "e2e" / "run.py").read_text()

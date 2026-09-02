@@ -31,6 +31,18 @@ jobs:
       runtime: ${{ steps.classify.outputs.runtime }}
       e2e: ${{ steps.classify.outputs.e2e }}
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Test release-gate classification
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { runClassifierTests } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/release-gate-classifier.test.cjs`
+            );
+            runClassifierTests();
+            core.info("Release-gate classifier tests passed.");
+
       - name: Decide whether runtime validation is required
         id: classify
         uses: actions/github-script@v7
@@ -44,45 +56,30 @@ jobs:
               return;
             }
 
+            const { classifyReleaseGate } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/release-gate-classifier.cjs`
+            );
             const files = [];
             let complete = false;
             for (let page = 1; page <= 30; page += 1) {
-              const response = await github.rest.repos.getCommit({
+              const response = await github.rest.pulls.listFiles({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: context.payload.pull_request.head.sha,
+                pull_number: context.payload.pull_request.number,
                 per_page: 100,
                 page,
               });
-              const pageFiles = response.data.files || [];
+              const pageFiles = response.data || [];
               files.push(...pageFiles);
               if (pageFiles.length < 100) {
                 complete = true;
                 break;
               }
             }
-            const documentationPath = path => path === "README.md" || path.startsWith("docs/");
-            const documentationOnly = files.length > 0 && complete && files.every(file =>
-              documentationPath(file.filename) &&
-              (!file.previous_filename || documentationPath(file.previous_filename))
-            );
-            if (documentationOnly) {
-              core.setOutput("runtime", "false");
-              core.setOutput("e2e", "false");
-              core.info("Documentation-only commit: skipping runtime validation.");
-              return;
-            }
-
-            const releaseCandidate = complete && files.some(file =>
-              file.filename === "VERSION" || file.previous_filename === "VERSION"
-            );
-            core.setOutput("runtime", "true");
-            core.setOutput("e2e", releaseCandidate || !complete ? "true" : "false");
-            core.info(releaseCandidate
-              ? "Versioned release-candidate commit: running the complete E2E gate."
-              : complete
-                ? "Development commit: running fast validation only."
-                : "Large or incomplete commit: running the complete E2E gate.");
+            const decision = classifyReleaseGate(files, complete);
+            core.setOutput("runtime", decision.runtime ? "true" : "false");
+            core.setOutput("e2e", decision.e2e ? "true" : "false");
+            core.info(decision.reason);
 
   release-gate:
     name: Unit, component, and E2E
@@ -130,4 +127,4 @@ jobs:
         if: always() && needs.classify-changes.outputs.e2e == 'true'
         run: >-
           docker compose --project-name camadmiral-e2e --file e2e/compose.yaml
-          --profile moved --profile rotated down --volumes --remove-orphans
+          --profile moved --profile rotated --profile identity down --volumes --remove-orphans

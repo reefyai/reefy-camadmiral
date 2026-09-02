@@ -12,6 +12,7 @@ import urllib.parse
 ADDRESS = os.environ.get("ONVIF_ADDRESS", "172.30.0.13")
 CAMERA_UUID = os.environ.get("ONVIF_UUID", "synthetic-onvif-camera")
 CAMERA_NAME = os.environ.get("ONVIF_NAME", "Synthetic ONVIF")
+MEDIA_CONFIG = os.environ.get("ONVIF_MEDIA_CONFIG", "/e2e/camera-onvif.yaml")
 ONVIF_MULTICAST_GROUP = "239.255.255.250"
 DEVICE_URL = f"http://{ADDRESS}:8080/onvif/device_service"
 MEDIA_URL = f"http://{ADDRESS}:8080/onvif/media_service"
@@ -97,9 +98,7 @@ def discovery_responder(stop: threading.Event) -> None:
 
 def main() -> int:
     stop = threading.Event()
-    media = subprocess.Popen(
-        ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-onvif.yaml"]
-    )
+    media = subprocess.Popen(["/usr/local/bin/go2rtc", "-config", MEDIA_CONFIG])
     server = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     threading.Thread(target=discovery_responder, args=(stop,), daemon=True).start()
     signal.signal(
