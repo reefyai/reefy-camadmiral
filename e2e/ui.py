@@ -101,7 +101,7 @@ def assert_mobile_camera_actions(page: Page) -> None:
         """
         controls => {
           const scan = controls.querySelector("#scan").getBoundingClientRect();
-          const add = controls.querySelector("#show-add-address").getBoundingClientRect();
+          const add = controls.querySelector("#show-add-rtsp").getBoundingClientRect();
           return {
             sameRow: Math.abs(scan.top - add.top) < 1,
             primaryLast: add.left < scan.left,
@@ -212,11 +212,11 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(page.locator("#scan-log")).to_be_visible()
     page.get_by_role("button", name="Collapse scan network").click()
 
-    page.get_by_role("button", name="Add camera").click()
-    expect(page.get_by_role("heading", name="Add camera manually")).to_be_visible()
+    page.get_by_role("button", name="Add RTSP camera").click()
+    expect(page.get_by_role("heading", name="Add RTSP camera")).to_be_visible()
     expect(page.locator("#manual-card")).to_be_visible()
     expect(page.locator("#app-modal")).to_be_hidden()
-    page.get_by_role("button", name="Collapse manual camera form").click()
+    page.get_by_role("button", name="Collapse RTSP camera form").click()
 
     list_surface = page.locator(".camera-list-surface")
     attached_controls = list_surface.evaluate(
@@ -375,6 +375,85 @@ def assert_downstream_password_masking(page: Page) -> None:
         raise UiScenarioFailure("Copied downstream URL does not contain its real password")
     if "********" in copied:
         raise UiScenarioFailure("Copied downstream URL contains the display mask")
+
+
+def assert_direct_rtsp_camera_flow(page: Page) -> None:
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+
+    def add_camera(name: str, path: str) -> None:
+        page.get_by_role("button", name="Add RTSP camera").click()
+        expect(page.get_by_role("heading", name="Add RTSP camera")).to_be_visible()
+        password_alignment = page.locator("#direct-rtsp-password-toggle").evaluate(
+            """
+            button => {
+              const input = document.querySelector('#direct-rtsp-password');
+              const buttonBounds = button.getBoundingClientRect();
+              const inputBounds = input.getBoundingClientRect();
+              return {
+                centered: Math.abs(
+                  (buttonBounds.top + buttonBounds.height / 2) -
+                  (inputBounds.top + inputBounds.height / 2)
+                ) <= 1,
+                contained:
+                  buttonBounds.top >= inputBounds.top &&
+                  buttonBounds.bottom <= inputBounds.bottom,
+              };
+            }
+            """
+        )
+        if not all(password_alignment.values()):
+            raise UiScenarioFailure(
+                "Direct RTSP password visibility control is not centered in its input"
+            )
+        page.locator("#direct-camera-name").fill(name)
+        page.locator("#direct-rtsp-url-1").fill(f"rtsp://rtsp-bridge:8554/{path}")
+        page.locator("#direct-rtsp-username").fill("operator")
+        page.locator("#direct-rtsp-password").fill("synthetic-bridge-secret")
+        with page.expect_response(
+            lambda response: response.request.method == "POST"
+            and response.url.endswith("/internal/cameras/rtsp")
+        ) as adoption_response:
+            page.get_by_role("button", name="Validate and adopt").click()
+        if adoption_response.value.status != 201:
+            raise UiScenarioFailure(
+                f"Direct RTSP camera creation returned HTTP {adoption_response.value.status}"
+            )
+        expect(page.locator("#manual-card")).to_be_hidden(timeout=30_000)
+        row = page.locator("#camera-rows tr.camera-row").filter(has_text=name)
+        expect(row).to_be_visible(timeout=30_000)
+        expect(row).to_contain_text("Direct RTSP")
+        expect(row).to_contain_text("rtsp-bridge")
+
+    add_camera("Synthetic bridge entrance", "entrance")
+    add_camera("Synthetic bridge loading", "loading")
+
+    rows = page.locator("#camera-rows tr.camera-row").filter(has_text="Synthetic bridge")
+    expect(rows).to_have_count(2)
+    first = rows.filter(has_text="Synthetic bridge entrance")
+    first.get_by_role("button", name="Details", exact=True).click()
+    expect(page.locator("#app-modal")).to_be_visible()
+    if page.locator("#app-modal").get_by_text("Identity history", exact=True).count():
+        raise UiScenarioFailure("Direct RTSP camera exposes discovery identity history")
+    page.locator("#app-modal-close").click()
+
+    page.get_by_role("button", name="Add RTSP camera").click()
+    page.locator("#direct-camera-name").fill("Synthetic duplicate")
+    page.locator("#direct-rtsp-url-1").fill("rtsp://RTSP-BRIDGE.:8554/entrance")
+    page.locator("#direct-rtsp-username").fill("operator")
+    page.locator("#direct-rtsp-password").fill("synthetic-bridge-secret")
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and response.url.endswith("/internal/cameras/rtsp")
+    ) as duplicate_response:
+        page.get_by_role("button", name="Validate and adopt").click()
+    if duplicate_response.value.status != 409:
+        raise UiScenarioFailure(
+            f"Duplicate direct RTSP URL returned HTTP {duplicate_response.value.status}"
+        )
+    expect(page.locator("#direct-rtsp-status")).to_contain_text("already assigned")
+    expect(page.locator("#manual-card")).to_be_visible()
+    expect(page.locator("#camera-rows tr.camera-row").filter(has_text="Synthetic duplicate")).to_have_count(0)
+    page.get_by_role("button", name="Collapse RTSP camera form").click()
 
 
 def assert_camera_unadopt_block_and_restore(page: Page) -> None:
@@ -716,7 +795,7 @@ def assert_mobile_settings(page: Page) -> None:
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else None
-    if mode not in {None, "identity-history"}:
+    if mode not in {None, "identity-history", "direct-rtsp"}:
         raise UiScenarioFailure(f"Unknown browser E2E scenario: {mode}")
     with sync_playwright() as playwright:
         browser = playwright.webkit.launch(headless=True)
@@ -732,6 +811,10 @@ def main() -> int:
             if mode == "identity-history":
                 assert_identity_history_details(page, 2)
                 print("CamAdmiral identity history browser E2E passed")
+                return 0
+            if mode == "direct-rtsp":
+                assert_direct_rtsp_camera_flow(page)
+                print("CamAdmiral direct RTSP browser E2E passed")
                 return 0
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)

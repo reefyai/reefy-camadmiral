@@ -52,7 +52,7 @@
     }
     .dashboard-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
     .dashboard-actions > button {
-      width: 120px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
+      width: 140px; min-height: 38px; border-radius: 9px; padding: 8px 11px;
       font-size: 12px; font-weight: 800;
     }
     .dashboard-inline-card {
@@ -192,15 +192,14 @@
     .incident-state { color: #fb7185; font-size: 11px; font-weight: 800; text-transform: uppercase; }
     .incident-state.resolved { color: #86efac; }
     .incident-meta { grid-column: 1 / -1; color: #7890a4; font-size: 11px; }
-    .address-panel {
-      display: flex; align-items: end; justify-content: flex-end; gap: 9px; margin: 0; flex-wrap: wrap;
-    }
-    .address-panel .setup-field { flex: 1 1 420px; min-width: 0; }
-    .address-panel .setup-field input {
-      width: 100%; border: 1px solid rgba(148, 163, 184, .2); border-radius: 9px;
-      background: rgba(12, 26, 42, .9); color: #eef5f8; padding: 9px 10px; font: inherit;
-    }
-    .address-status { flex: 1 1 100%; min-width: 180px; color: #fda4af; font-size: 12px; }
+    .direct-rtsp-form { display: grid; grid-template-columns: minmax(180px, .65fr) minmax(320px, 1.35fr); gap: 11px; }
+    .direct-rtsp-form .setup-field input { width: 100%; }
+    .direct-rtsp-camera-name { grid-column: 1 / -1; }
+    .direct-rtsp-source { display: grid; grid-template-columns: minmax(140px, .45fr) minmax(280px, 1.55fr); gap: 11px; grid-column: 1 / -1; }
+    .direct-rtsp-credentials { display: flex; align-items: end; gap: 11px; grid-column: 1 / -1; flex-wrap: wrap; }
+    .direct-rtsp-credentials .setup-field { flex: 1 1 220px; }
+    .direct-rtsp-actions { display: flex; align-items: center; gap: 12px; grid-column: 1 / -1; }
+    .direct-rtsp-status { color: #fda4af; font-size: 12px; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
     .dot.ready { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .11); }
     .dot.busy { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, .1); animation: pulse 1.2s infinite; }
@@ -569,8 +568,9 @@
     .password-toggle {
       position: absolute; top: 50%; right: 5px; transform: translateY(-50%); width: 30px; height: 30px;
       border: 0; border-radius: 6px; background: transparent; color: #7890a4; cursor: pointer;
-      font-size: 16px; line-height: 1;
+      display: grid; place-items: center; padding: 0; font-size: 16px; line-height: 1;
     }
+    .password-toggle svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
     .password-toggle:hover, .password-toggle.visible { color: #b9fff5; background: rgba(45, 212, 191, .08); }
     .setup-status { width: 100%; min-height: 16px; color: #8ea2b3; font-size: 12px; }
     .setup-status.trying { color: #fbbf24; }
@@ -659,7 +659,7 @@
       .primary-nav a { flex: 1; padding: 10px 5px; text-align: center; }
       .dashboard-actions { display: grid; grid-template-columns: 1fr 1fr; }
       .dashboard-actions > button { width: 100%; min-height: 44px; padding: 9px 10px; font-size: 12px; }
-      #show-add-address { grid-column: 1; grid-row: 1; }
+      #show-add-rtsp { grid-column: 1; grid-row: 1; }
       #scan { grid-column: 2; grid-row: 1; }
       #scan-start { min-height: 44px; }
       .dashboard-inline-card-body { padding: 12px; }
@@ -673,10 +673,10 @@
       .scan-result-detail { align-items: flex-start; flex-direction: column; gap: 6px; }
       .scanner-progress { flex-wrap: wrap; }
       .scan-network-progress-row { grid-template-columns: minmax(0, 1fr) auto; }
-      .address-panel { align-items: stretch; flex-direction: column; margin: 0 0 12px; }
-      .address-panel .setup-field { flex: none; width: 100%; }
-      .address-panel .row-action { width: 100%; padding: 9px 12px; }
-      .address-status { min-width: 0; }
+      .direct-rtsp-form, .direct-rtsp-source { grid-template-columns: 1fr; }
+      .direct-rtsp-credentials { align-items: stretch; flex-direction: column; }
+      .direct-rtsp-actions { align-items: stretch; flex-direction: column; }
+      .direct-rtsp-actions .row-action { width: 100%; }
       .camera-list-surface { overflow: visible; }
       .toolbar { align-items: stretch; flex-direction: column; padding: 10px; }
       .toolbar-controls { display: block; width: 100%; }
@@ -770,7 +770,7 @@
     </header>
     <main id="dashboard-view">
       <div class="dashboard-actions">
-        <button class="header-secondary" id="show-add-address" type="button" aria-controls="manual-card" aria-expanded="false">Add camera</button>
+        <button class="header-secondary" id="show-add-rtsp" type="button" aria-controls="manual-card" aria-expanded="false">Add RTSP camera</button>
         <button id="scan" type="button" aria-controls="scan-card" aria-expanded="false">Scan network</button>
       </div>
       <section class="dashboard-inline-card" id="scan-card" aria-labelledby="scan-card-title" hidden>
@@ -817,14 +817,29 @@
       </section>
       <section class="dashboard-inline-card" id="manual-card" aria-labelledby="manual-card-title" hidden>
         <div class="dashboard-inline-card-header">
-          <h2 id="manual-card-title">Add camera manually</h2>
-          <button class="dashboard-inline-card-collapse" id="manual-card-collapse" type="button" aria-label="Collapse manual camera form">&#8722;</button>
+          <h2 id="manual-card-title">Add RTSP camera</h2>
+          <button class="dashboard-inline-card-collapse" id="manual-card-collapse" type="button" aria-label="Collapse RTSP camera form">&#8722;</button>
         </div>
         <div class="dashboard-inline-card-body">
-          <form class="address-panel" id="address-panel">
-            <label class="setup-field">Camera IP or complete RTSP URL<input id="address-input" inputmode="url" autocomplete="off" maxlength="2048" placeholder="192.168.1.25 or rtsp://user:password@192.168.1.25:554/path"></label>
-            <button class="row-action" type="submit">Continue</button>
-            <span class="address-status" id="address-status"></span>
+          <form class="direct-rtsp-form" id="direct-rtsp-form">
+            <label class="setup-field direct-rtsp-camera-name">Camera name<input id="direct-camera-name" autocomplete="off" maxlength="160" placeholder="Driveway"></label>
+            <div class="direct-rtsp-source">
+              <label class="setup-field">Stream name<input id="direct-rtsp-label-1" autocomplete="off" maxlength="80" value="Main stream"></label>
+              <label class="setup-field">RTSP URL<input id="direct-rtsp-url-1" inputmode="url" autocomplete="off" maxlength="2048" placeholder="rtsp://camera.local:554/live/main"></label>
+            </div>
+            <div class="direct-rtsp-source" id="direct-rtsp-source-2" hidden>
+              <label class="setup-field">Stream name<input id="direct-rtsp-label-2" autocomplete="off" maxlength="80" value="Sub stream"></label>
+              <label class="setup-field">RTSP URL<input id="direct-rtsp-url-2" inputmode="url" autocomplete="off" maxlength="2048" placeholder="rtsp://camera.local:554/live/sub"></label>
+            </div>
+            <div class="direct-rtsp-credentials">
+              <label class="setup-field">Username<input id="direct-rtsp-username" autocomplete="username" maxlength="128"></label>
+              <label class="setup-field">Password<span class="password-control"><input id="direct-rtsp-password" type="password" autocomplete="current-password" maxlength="512"><button class="password-toggle" id="direct-rtsp-password-toggle" type="button" aria-label="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.75"></circle></svg></button></span></label>
+            </div>
+            <div class="direct-rtsp-actions">
+              <button class="secondary-action" id="direct-rtsp-add-source" type="button">+ Add second stream</button>
+              <button class="row-action" id="direct-rtsp-submit" type="submit">Validate and adopt</button>
+              <span class="direct-rtsp-status" id="direct-rtsp-status" role="status" aria-live="polite"></span>
+            </div>
           </form>
         </div>
       </section>
@@ -854,7 +869,7 @@
             <tbody id="camera-rows"></tbody>
           </table>
         </div>
-        <div class="empty" id="empty">Scan the network to find cameras.</div>
+        <div class="empty" id="empty">Scan the network or add an RTSP camera.</div>
       </section>
     </main>
     <main class="incidents-page" id="incidents-view" hidden>
@@ -942,7 +957,7 @@
   <script>
     const scanButton = document.querySelector("#scan");
     const scanStartButton = document.querySelector("#scan-start");
-    const showAddAddress = document.querySelector("#show-add-address");
+    const showAddRtsp = document.querySelector("#show-add-rtsp");
     const scanCard = document.querySelector("#scan-card");
     const scanCardCollapse = document.querySelector("#scan-card-collapse");
     const manualCard = document.querySelector("#manual-card");
@@ -957,9 +972,19 @@
     const frigateTargets = document.querySelector("#frigate-targets");
     const addFrigate = document.querySelector("#add-frigate");
     const incidentCount = document.querySelector("#incident-count");
-    const addressPanel = document.querySelector("#address-panel");
-    const addressInput = document.querySelector("#address-input");
-    const addressStatus = document.querySelector("#address-status");
+    const directRtspForm = document.querySelector("#direct-rtsp-form");
+    const directCameraName = document.querySelector("#direct-camera-name");
+    const directRtspLabel1 = document.querySelector("#direct-rtsp-label-1");
+    const directRtspUrl1 = document.querySelector("#direct-rtsp-url-1");
+    const directRtspSource2 = document.querySelector("#direct-rtsp-source-2");
+    const directRtspLabel2 = document.querySelector("#direct-rtsp-label-2");
+    const directRtspUrl2 = document.querySelector("#direct-rtsp-url-2");
+    const directRtspUsername = document.querySelector("#direct-rtsp-username");
+    const directRtspPassword = document.querySelector("#direct-rtsp-password");
+    const directRtspPasswordToggle = document.querySelector("#direct-rtsp-password-toggle");
+    const directRtspAddSource = document.querySelector("#direct-rtsp-add-source");
+    const directRtspSubmit = document.querySelector("#direct-rtsp-submit");
+    const directRtspStatus = document.querySelector("#direct-rtsp-status");
     const stateLabel = document.querySelector("#state");
     const stateDot = document.querySelector("#dot");
     const scanRunStatus = document.querySelector("#scan-run-status");
@@ -1030,7 +1055,6 @@
     let mediaAccessFailed = false;
     let mediaHost = null;
     let activeFrigateChooserState = null;
-    let pendingManualRtsp = null;
     let notificationSettings = null;
     let notificationPollTimer = null;
     let frigateIntegrations = [];
@@ -1419,21 +1443,23 @@
       return phases[data.phase] || "Scanning network";
     }
 
-    function manualCameraTarget(value) {
-      const entered = value.trim();
-      if (!entered) throw new Error("Enter a private camera IP or complete RTSP URL.");
-      if (!/^rtsp:\/\//i.test(entered)) return {address: entered, draft: null};
+    function directRtspSource(input) {
+      const entered = input.value.trim();
+      if (!entered) throw new Error("Enter a complete RTSP URL.");
+      if (!/^rtsp:\/\//i.test(entered)) {
+        if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(entered)) {
+          throw new Error("Enter a complete RTSP URL. To find a camera by IP, use Scan network.");
+        }
+        throw new Error("RTSP stream URLs must start with rtsp://.");
+      }
       let source;
       try {
         source = new URL(entered);
       } catch (_) {
         throw new Error("Enter a valid RTSP URL.");
       }
-      if (source.protocol.toLowerCase() !== "rtsp:" || !source.hostname) {
-        throw new Error("The stream URL must start with rtsp:// and include a camera IP.");
-      }
-      if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(source.hostname)) {
-        throw new Error("Manual RTSP discovery currently requires a private IPv4 camera address.");
+      if (source.protocol.toLowerCase() !== "rtsp:" || !source.hostname || source.hash) {
+        throw new Error("Enter a complete RTSP URL without a fragment.");
       }
       let username = "";
       let password = "";
@@ -1445,40 +1471,20 @@
       }
       source.username = "";
       source.password = "";
-      return {
-        address: source.hostname,
-        draft: {address: source.hostname, source: source.toString(), username, password}
-      };
+      input.value = source.toString();
+      return {url: input.value, username, password, host: source.hostname.toLowerCase().replace(/\.$/, "")};
     }
 
-    function applyPendingManualRtsp(data) {
-      if (!pendingManualRtsp || data.status !== "complete") return;
-      const device = devices.find(candidate => candidate.ip === pendingManualRtsp.address);
-      if (!device) {
-        setText(addressStatus, "No RTSP camera responded at that address. Check the URL and try again.");
-        pendingManualRtsp = null;
-        return;
+    function extractDirectRtspCredentials(input) {
+      if (!input.value.trim() || !/^rtsp:\/\//i.test(input.value.trim())) return;
+      try {
+        const source = directRtspSource(input);
+        if (source.username && !directRtspUsername.value) directRtspUsername.value = source.username;
+        if (source.password && !directRtspPassword.value) directRtspPassword.value = source.password;
+        setText(directRtspStatus, "");
+      } catch (error) {
+        setText(directRtspStatus, error.message);
       }
-      if (device.adoption) {
-        setText(addressStatus, "That camera is already adopted. Open its details to manage streams.");
-        pendingManualRtsp = null;
-        return;
-      }
-      credentialDrafts.set(device.candidate_uuid, {
-        displayName: device.display_name || device.ip,
-        username: pendingManualRtsp.username,
-        password: pendingManualRtsp.password,
-        visible: false,
-        manual: true,
-        sources: [pendingManualRtsp.source]
-      });
-      inspections.set(device.candidate_uuid, {status: "not_onvif"});
-      pendingManualRtsp = null;
-      closeManualCard(false);
-      addressInput.value = "";
-      setText(addressStatus, "");
-      renderRows();
-      openCameraDetails(device);
     }
 
     function addText(parent, tag, className, value) {
@@ -2308,9 +2314,14 @@
       if (device.rtsp?.length) addText(protocols, "span", "protocol-badge", "RTSP");
 
       const metadata = addText(summary, "div", "camera-summary-meta", "");
-      addText(metadata, "span", "mono", device.ip || "IP unavailable");
-      addText(metadata, "span", "mono", device.mac || "MAC unavailable");
-      if (device.onvif?.model) addText(metadata, "span", "", device.onvif.model);
+      if (device.camera_origin === "direct") {
+        addText(metadata, "span", "mono", device.ip || "Host unavailable");
+        addText(metadata, "span", "", "Direct RTSP source");
+      } else {
+        addText(metadata, "span", "mono", device.ip || "IP unavailable");
+        addText(metadata, "span", "mono", device.mac || "MAC unavailable");
+        if (device.onvif?.model) addText(metadata, "span", "", device.onvif.model);
+      }
 
       if (device.onvif?.service_urls?.length) {
         const connection = addText(summary, "details", "connection-details", "");
@@ -2662,7 +2673,7 @@
       if (!device?.adoption?.camera_uuid) return;
       const current = availabilityResults.get(device.adoption.camera_uuid);
       void loadCameraAvailability(device, current?.window || "24h", true);
-      void loadCameraIdentityHistory(device, true);
+      if (device.camera_origin !== "direct") void loadCameraIdentityHistory(device, true);
     }
 
     function matchesSearch(device, query) {
@@ -3256,7 +3267,7 @@
           addCredentialRepair(credentials, device, adoption);
         }
         addAvailability(wrapper, device, adoption);
-        addIdentityHistory(wrapper, adoption);
+        if (device.camera_origin !== "direct") addIdentityHistory(wrapper, adoption);
         if (adoption.frigate?.length) {
           const count = adoption.frigate.length;
           const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
@@ -3768,7 +3779,7 @@
       openAppModal("camera", title, content, trigger, "wide");
       if (device.adoption?.camera_uuid) {
         loadCameraAvailability(device);
-        loadCameraIdentityHistory(device);
+        if (device.camera_origin !== "direct") loadCameraIdentityHistory(device);
       }
     }
 
@@ -3855,7 +3866,9 @@
           closeCameraActionMenu(false);
           showConfirmation({
             title: `Unadopt ${device.display_name || "camera"}?`,
-            message: "CamAdmiral will stop monitoring this camera and remove its saved credentials, streams, availability and identity history, incidents, and managed Frigate configuration. The camera will remain in the discovered device list.",
+            message: device.camera_origin === "direct"
+              ? "CamAdmiral will remove this RTSP camera, its saved credentials, streams, availability, incidents, and managed Frigate configuration."
+              : "CamAdmiral will stop monitoring this camera and remove its saved credentials, streams, availability and identity history, incidents, and managed Frigate configuration. The camera will remain in the discovered device list.",
             actionLabel: "Unadopt",
             trigger,
             onConfirm: async () => {
@@ -3955,6 +3968,7 @@
         const identityStack = addText(identity, "div", "cell-stack", "");
         addClippedText(identityStack, "div", "camera-name", device.display_name || device.ip);
         const identityMeta = [
+          device.camera_origin === "direct" ? "Direct RTSP" : null,
           device.onvif?.model && device.onvif.model !== device.display_name ? device.onvif.model : null,
           device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null
         ].filter(Boolean).join(" · ");
@@ -3994,10 +4008,10 @@
         }
         const connectivity = addCell(row);
         const connectivityCell = addText(connectivity, "div", "connectivity-cell", "");
-        [
-          ["IP", device.ip || "-", false],
-          ["MAC", device.mac || "-", false]
-        ].forEach(([label, value, available]) => {
+        const connectivityValues = device.camera_origin === "direct"
+          ? [["HOST", device.ip || "-", false]]
+          : [["IP", device.ip || "-", false], ["MAC", device.mac || "-", false]];
+        connectivityValues.forEach(([label, value, available]) => {
           const line = addText(connectivityCell, "div", "connectivity-line", "");
           addText(line, "span", "connectivity-label", label);
           addClippedText(line, "span", `connectivity-value${available ? " available" : ""}`, value);
@@ -4107,7 +4121,6 @@
           renderRows();
         }
       }
-      applyPendingManualRtsp(data);
     }
 
     async function refresh() {
@@ -4140,8 +4153,8 @@
     function closeManualCard(restoreFocus = true) {
       if (manualCard.hidden) return;
       manualCard.hidden = true;
-      showAddAddress.setAttribute("aria-expanded", "false");
-      if (restoreFocus) showAddAddress.focus();
+      showAddRtsp.setAttribute("aria-expanded", "false");
+      if (restoreFocus) showAddRtsp.focus();
     }
 
     scanButton.addEventListener("click", () => {
@@ -4216,45 +4229,91 @@
       scanNetworkInput.focus();
     });
 
-    showAddAddress.addEventListener("click", () => {
+    showAddRtsp.addEventListener("click", () => {
       if (!manualCard.hidden) {
         closeManualCard();
         return;
       }
       closeScanCard(false);
       manualCard.hidden = false;
-      showAddAddress.setAttribute("aria-expanded", "true");
-      addressInput.focus();
+      showAddRtsp.setAttribute("aria-expanded", "true");
+      directCameraName.focus();
     });
     manualCardCollapse.addEventListener("click", () => closeManualCard());
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
-    addressPanel.addEventListener("submit", async event => {
+    directRtspAddSource.addEventListener("click", () => {
+      const adding = directRtspSource2.hidden;
+      directRtspSource2.hidden = !adding;
+      setText(directRtspAddSource, adding ? "Remove second stream" : "+ Add second stream");
+      if (adding) directRtspUrl2.focus();
+      else directRtspUrl2.value = "";
+    });
+    directRtspPasswordToggle.addEventListener("click", () => {
+      const reveal = directRtspPassword.type === "password";
+      directRtspPassword.type = reveal ? "text" : "password";
+      directRtspPasswordToggle.classList.toggle("visible", reveal);
+      directRtspPasswordToggle.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+    });
+    directRtspUrl1.addEventListener("change", () => extractDirectRtspCredentials(directRtspUrl1));
+    directRtspUrl2.addEventListener("change", () => extractDirectRtspCredentials(directRtspUrl2));
+    directRtspForm.addEventListener("submit", async event => {
       event.preventDefault();
-      if (busy) return;
-      let target;
-      try {
-        target = manualCameraTarget(addressInput.value);
-      } catch (error) {
-        setText(addressStatus, error.message);
+      const displayName = directCameraName.value.trim();
+      if (!displayName) {
+        setText(directRtspStatus, "Enter a camera name.");
+        directCameraName.focus();
         return;
       }
-      pendingManualRtsp = target.draft;
-      if (target.draft) addressInput.value = target.draft.source;
-      setText(addressStatus, "Probing...");
+      let parsedSources;
       try {
-        const response = await fetch("/internal/discovery/address", {
+        parsedSources = [directRtspSource(directRtspUrl1)];
+        if (!directRtspSource2.hidden) parsedSources.push(directRtspSource(directRtspUrl2));
+      } catch (error) {
+        setText(directRtspStatus, error.message);
+        return;
+      }
+      const embeddedCredentials = parsedSources.filter(source => source.username || source.password);
+      if (embeddedCredentials.length) {
+        const first = embeddedCredentials[0];
+        if (embeddedCredentials.some(source => source.username !== first.username || source.password !== first.password)) {
+          setText(directRtspStatus, "Both streams must use the same username and password.");
+          return;
+        }
+        if (!directRtspUsername.value) directRtspUsername.value = first.username;
+        if (!directRtspPassword.value) directRtspPassword.value = first.password;
+      }
+      directRtspSubmit.disabled = true;
+      setText(directRtspStatus, "Testing video and adding camera...");
+      try {
+        const sources = parsedSources.map((source, index) => ({
+          label: (index ? directRtspLabel2 : directRtspLabel1).value.trim(),
+          url: source.url
+        }));
+        const response = await fetch("/internal/cameras/rtsp", {
           method: "POST",
-          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "scan-address"},
-          body: JSON.stringify({address: target.address})
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "create-direct-rtsp-camera"},
+          body: JSON.stringify({
+            display_name: displayName,
+            username: directRtspUsername.value.trim(),
+            password: directRtspPassword.value,
+            sources
+          })
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.message || result.detail || "Address could not be probed.");
-        if (!target.draft) setText(addressStatus, "");
-        render(result);
-        if (!target.draft) closeManualCard(false);
+        if (!response.ok) throw new Error(result.message || result.detail || "RTSP camera could not be added.");
+        directRtspForm.reset();
+        directRtspLabel1.value = "Main stream";
+        directRtspLabel2.value = "Sub stream";
+        directRtspSource2.hidden = true;
+        setText(directRtspAddSource, "+ Add second stream");
+        setText(directRtspStatus, "");
+        closeManualCard(false);
+        lastResultId = null;
+        await refresh();
       } catch (error) {
-        pendingManualRtsp = null;
-        setText(addressStatus, error.message);
+        setText(directRtspStatus, error.message);
+      } finally {
+        directRtspSubmit.disabled = false;
       }
     });
 

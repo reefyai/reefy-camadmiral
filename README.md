@@ -1,7 +1,8 @@
 # CamAdmiral
 
-CamAdmiral discovers ONVIF and RTSP cameras, validates their streams, and exposes stable
-downstream streams for consumers such as Frigate.
+CamAdmiral discovers ONVIF and RTSP cameras, connects directly to RTSP sources that cannot be
+discovered, validates their streams, and exposes stable downstream streams for consumers such
+as Frigate.
 
 ![CamAdmiral solution architecture](docs/images/camadmiral-solution.png)
 
@@ -44,8 +45,6 @@ use ONVIF multicast plus addresses already learned in the host ARP table, avoidi
 unbounded sweep. Results are merged by IP and MAC. Adopted cameras are retained when absent,
 marked offline, and recovered after IP changes using ONVIF identity or a unique MAC.
 
-If automatic discovery misses a camera, **Add camera** accepts its IP address or complete
-RTSP URL and probes only that address. The camera must be on a connected private LAN.
 Timestamped protocol logs are available in the collapsed technical-log section of the scan
 dialog. Per-subnet status shows which networks are queued, scanning, complete, or unavailable.
 
@@ -65,6 +64,15 @@ CamAdmiral does not change the camera configuration. It only reads camera capabi
 consumes its media streams.
 
 ![CamAdmiral camera adoption dialog](docs/images/camadmiral-adopt-camera.png)
+
+### Add an RTSP camera manually
+
+CamAdmiral can add a camera directly from an RTSP URL when it cannot be discovered on the network.
+Enter a camera name, RTSP URL, and optional credentials. You can also add a second stream for the
+same camera. CamAdmiral validates the streams and provides stable downstream URLs for Frigate and
+other consumers.
+
+![CamAdmiral manual RTSP camera form](docs/images/camadmiral-add-rtsp-camera.png)
 
 ## Live view
 
@@ -95,6 +103,9 @@ ONVIF identity or, when needed, a unique MAC address.
 In the example above, the camera moved through three IP addresses. CamAdmiral restored its streams
 after each change, while Frigate and other consumers kept the same RTSP URLs and reconnected
 automatically after a brief interruption.
+
+This identity-based address recovery applies to cameras adopted through network discovery. Direct
+RTSP cameras use the exact IP address or DNS hostname supplied by the operator as described above.
 
 ## Latency
 
@@ -153,8 +164,8 @@ git pull
 
 You do not need to stop CamAdmiral first. The launcher pulls the replacement image before
 stopping the existing container, then recreates only the container. Credentials,
-configuration, adopted cameras, history, and other state remain in the `camadmiral-data`
-volume. If the image pull fails, the existing container is left untouched.
+configuration, discovered and direct RTSP cameras, history, and other state remain in the
+`camadmiral-data` volume. If the image pull fails, the existing container is left untouched.
 
 ### Build and run from source
 
