@@ -28,10 +28,13 @@ class DiscoveryUiTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_manual_camera_entry_accepts_ip_or_rtsp_url(self) -> None:
-        self.assertIn("Add camera manually", self.html)
-        self.assertIn("Camera IP or complete RTSP URL", self.html)
-        self.assertIn("manualCameraTarget", self.html)
+    def test_direct_rtsp_camera_entry_is_separate_from_network_discovery(self) -> None:
+        self.assertIn("Add RTSP camera", self.html)
+        self.assertIn("Camera name", self.html)
+        self.assertIn("Validate and adopt", self.html)
+        self.assertIn("directRtspSource", self.html)
+        self.assertIn('fetch("/internal/cameras/rtsp"', self.html)
+        self.assertNotIn('fetch("/internal/discovery/address"', self.html)
 
     def test_header_and_browser_tab_use_the_app_icon(self) -> None:
         self.assertIn('<link rel="icon" type="image/png" href="/app-icon.png">', self.html)
@@ -46,7 +49,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('class="dashboard-controls"', self.html)
         self.assertNotIn('class="scan-status"', self.html)
         self.assertNotIn('<h2 class="dashboard-title">Cameras</h2>', self.html)
-        self.assertIn('id="show-add-address" type="button" aria-controls="manual-card" aria-expanded="false">Add camera</button>', self.html)
+        self.assertIn('id="show-add-rtsp" type="button" aria-controls="manual-card" aria-expanded="false">Add RTSP camera</button>', self.html)
         self.assertIn('<button id="scan" type="button" aria-controls="scan-card" aria-expanded="false">Scan network</button>', self.html)
         self.assertIn('<button id="scan-start" type="button">Scan network</button>', self.html)
         self.assertEqual(self.html.count('id="error"'), 1)
@@ -60,7 +63,7 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('complete: "Scan complete"', self.html)
         self.assertIn(".primary-nav a[aria-current=\"page\"]", self.html)
         self.assertIn("justify-content: flex-end; gap: 8px; margin-bottom: 16px", self.html)
-        self.assertIn("width: 120px; min-height: 38px", self.html)
+        self.assertIn("width: 140px; min-height: 38px", self.html)
         self.assertIn('id="scan-network-list"', self.html)
         self.assertIn('id="scan-network-input"', self.html)
         self.assertIn('id="scan-network-add-toggle"', self.html)
@@ -119,7 +122,26 @@ class DiscoveryUiTests(unittest.TestCase):
     def test_pasted_rtsp_credentials_are_removed_from_visible_source(self) -> None:
         self.assertIn('source.username = ""', self.html)
         self.assertIn('source.password = ""', self.html)
-        self.assertIn("addressInput.value = target.draft.source", self.html)
+        self.assertIn("input.value = source.toString()", self.html)
+        self.assertIn("directRtspUsername.value = source.username", self.html)
+        self.assertIn("directRtspPassword.value = source.password", self.html)
+
+    def test_direct_rtsp_password_toggle_is_centered_in_the_input(self) -> None:
+        self.assertIn(
+            'Password<span class="password-control"><input id="direct-rtsp-password"',
+            self.html,
+        )
+        self.assertIn(
+            'id="direct-rtsp-password-toggle" type="button" aria-label="Show password"><svg',
+            self.html,
+        )
+        self.assertNotIn(".direct-rtsp-password .password-toggle", self.html)
+
+    def test_direct_rtsp_rows_hide_discovery_only_controls(self) -> None:
+        self.assertIn('device.camera_origin === "direct" ? "Direct RTSP"', self.html)
+        self.assertIn('if (device.camera_origin !== "direct") addIdentityHistory', self.html)
+        self.assertIn('device.camera_origin === "direct"\n              ? "CamAdmiral will remove this RTSP camera', self.html)
+        self.assertIn('? [["HOST", device.ip || "-", false]]', self.html)
 
     def test_discovery_has_no_persistent_ignore_controls(self) -> None:
         self.assertNotIn('id="show-ignored"', self.html)
