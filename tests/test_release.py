@@ -208,6 +208,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("touchTargets: scan.height >= 44 && add.height >= 44", browser)
         self.assertIn("equalSize: Math.abs(scan.width - add.width) < 1", browser)
         self.assertIn('get_by_role("heading", name="Scan network")', browser)
+
         self.assertIn('expect(page.locator("#scan-start")).to_be_visible()', browser)
         self.assertIn('expect(page.locator("#scan-log")).to_be_visible()', browser)
         self.assertIn("assert_mobile_settings(page)", browser)
@@ -237,6 +238,26 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('data-camera-filter="blocked"', browser)
         self.assertIn('get_by_role("button", name="Unblock")', browser)
         self.assertIn("python -m playwright install --with-deps webkit", gate)
+
+    def test_e2e_covers_direct_rtsp_camera_isolation(self) -> None:
+        compose = (ROOT / "e2e" / "compose.yaml").read_text()
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        browser = (ROOT / "e2e" / "ui.py").read_text()
+        scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
+
+        self.assertIn("rtsp-bridge:", compose)
+        self.assertIn('ui_scenario("direct-rtsp")', runner)
+        self.assertIn('scenario("direct-rtsp-created")', runner)
+        self.assertIn('scenario("direct-rtsp-frigate")', runner)
+        self.assertIn('scenario("direct-rtsp-after-restart")', runner)
+        self.assertIn('scenario("direct-rtsp-dns-move")', runner)
+        self.assertIn('scenario("direct-rtsp-path-failure")', runner)
+        self.assertIn('scenario("direct-rtsp-path-recovery")', runner)
+        self.assertIn("assert_direct_rtsp_camera_flow", browser)
+        self.assertIn("Direct RTSP camera exposes discovery identity history", browser)
+        self.assertIn("Network scan changed direct RTSP camera identities", scenarios)
+        self.assertIn("Direct entrance stream decoded video from the wrong source", scenarios)
+        self.assertIn("Unadopt removed the sibling direct RTSP camera from Frigate", scenarios)
 
     def test_e2e_scans_every_connected_private_subnet(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()

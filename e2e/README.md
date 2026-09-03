@@ -15,6 +15,10 @@ The isolated Docker Compose lab covers:
   RTSP discovery within a bounded custom CIDR
 - explicit IP discovery and adoption through a synthetic ONVIF camera
 - unauthenticated and authenticated RTSP adoption
+- two direct RTSP cameras added through the real browser from distinct paths on one DNS
+  endpoint, including exact-duplicate rejection, decoded source verification, scan and restart
+  persistence, independent Frigate resources, recovery when the DNS endpoint moves to another
+  private address, isolated path failure, and isolated unadopt cleanup
 - incorrect camera-credential rejection
 - empirical H.264 metadata and automatic recording/detection role selection
 - periodic cache-only camera thumbnails, snapshots, and authenticated stable downstream RTSP URLs

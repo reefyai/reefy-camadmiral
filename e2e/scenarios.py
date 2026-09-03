@@ -48,6 +48,7 @@ IDENTITY_STATE_PATH = Path("/state/identity-recovery.json")
 IDENTITY_FRAME_TELEMETRY_PATH = Path("/state/identity-consumer-frames.jsonl")
 IDENTITY_CONTROL_CONFIG_PATH = Path("/state/identity-control.json")
 IDENTITY_CONTROL_STATUS_PATH = Path("/state/identity-control-status.json")
+DIRECT_RTSP_STATE_PATH = Path("/state/direct-rtsp.json")
 OPEN_NAME = "Synthetic open camera"
 AUTH_NAME = "Synthetic authenticated camera"
 ONVIF_NAME = "Synthetic ONVIF camera"
@@ -62,6 +63,8 @@ ONVIF_REPLACEMENT_MAC = "02:00:00:00:00:16"
 ONVIF_MOVED_MAIN_SIZE = (960, 540)
 ONVIF_MOVED_SUB_SIZE = (480, 270)
 OPEN_SECOND_MOVED_IP = "172.30.0.17"
+DIRECT_ENTRANCE_NAME = "Synthetic bridge entrance"
+DIRECT_LOADING_NAME = "Synthetic bridge loading"
 ADMIN_PASSWORD = os.environ.get("CAMADMIRAL_E2E_ADMIN_PASSWORD", "")
 
 
@@ -641,6 +644,337 @@ def assert_shared_upstream(stream: dict[str, object]) -> None:
             except subprocess.TimeoutExpired:
                 client.kill()
                 client.wait(timeout=3)
+
+
+def _direct_rtsp_cameras() -> tuple[dict[str, object], dict[str, object]]:
+    directory = consumer_directory()
+    return (
+        camera_by_name(directory, DIRECT_ENTRANCE_NAME),
+        camera_by_name(directory, DIRECT_LOADING_NAME),
+    )
+
+
+def _assert_direct_rtsp_media(
+    entrance: dict[str, object],
+    loading: dict[str, object],
+) -> None:
+    if entrance.get("state") != "online" or loading.get("state") != "online":
+        raise ScenarioFailure("Direct RTSP cameras are not both online")
+    entrance_streams = entrance.get("streams") or []
+    loading_streams = loading.get("streams") or []
+    if len(entrance_streams) != 1 or len(loading_streams) != 1:
+        raise ScenarioFailure("Direct RTSP cameras did not retain independent streams")
+    entrance_video = probe_stream(entrance_streams[0])
+    loading_video = probe_stream(loading_streams[0])
+    if (entrance_video.get("width"), entrance_video.get("height")) != (1280, 720):
+        raise ScenarioFailure("Direct entrance stream decoded video from the wrong source")
+    if (loading_video.get("width"), loading_video.get("height")) != (960, 540):
+        raise ScenarioFailure("Direct loading stream decoded video from the wrong source")
+
+
+def _wait_for_direct_rtsp_frigate_video(
+    expected_keys: set[str],
+    description: str,
+) -> None:
+    last_stats: dict[str, object] = {}
+
+    def processing() -> bool:
+        nonlocal last_stats
+        try:
+            stats = _frigate_api_json("/api/stats")
+        except Exception as exc:
+            last_stats = {"api_error": type(exc).__name__}
+            return False
+        cameras = stats.get("cameras") or {}
+        last_stats = {
+            key: {
+                field: (cameras.get(key) or {}).get(field)
+                for field in ("camera_fps", "process_fps", "capture_pid", "ffmpeg_pid")
+            }
+            for key in expected_keys
+        }
+        return all(
+            float((cameras.get(key) or {}).get("camera_fps") or 0) > 0
+            for key in expected_keys
+        )
+
+    try:
+        wait_for(description, processing, timeout=180, interval=2)
+    except ScenarioFailure as exc:
+        try:
+            runtime = _frigate_api_json("/api/go2rtc/streams")
+        except Exception as runtime_exc:
+            runtime_summary: dict[str, object] = {
+                "api_error": type(runtime_exc).__name__,
+            }
+        else:
+            runtime_summary = {
+                alias: {
+                    "producers": len(stream.get("producers") or []),
+                    "consumers": len(stream.get("consumers") or []),
+                }
+                for alias, stream in runtime.items()
+                if any(alias.startswith(key) for key in expected_keys)
+                and isinstance(stream, dict)
+            }
+        raise ScenarioFailure(
+            f"{exc}; stats={last_stats}; runtime={runtime_summary}"
+        ) from exc
+
+
+def direct_rtsp_created() -> None:
+    wait_for_health()
+    wait_for_camera_sources(
+        "shared RTSP bridge source readiness",
+        {
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/entrance": (1280, 720),
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/loading": (960, 540),
+        },
+    )
+    entrance, loading = wait_for(
+        "direct RTSP cameras created through the browser",
+        lambda: _direct_rtsp_cameras(),
+        timeout=120,
+    )
+    if entrance["id"] == loading["id"]:
+        raise ScenarioFailure("Direct RTSP paths were merged into one camera")
+    if entrance["streams"][0]["id"] == loading["streams"][0]["id"]:
+        raise ScenarioFailure("Direct RTSP paths share a stream identity")
+    _assert_direct_rtsp_media(entrance, loading)
+
+    direct_devices = [
+        device
+        for device in discovery().get("devices", [])
+        if device.get("camera_origin") == "direct"
+    ]
+    if {device.get("display_name") for device in direct_devices} != {
+        DIRECT_ENTRANCE_NAME,
+        DIRECT_LOADING_NAME,
+    }:
+        raise ScenarioFailure("Direct RTSP cameras are missing from dashboard discovery state")
+    for device in direct_devices:
+        adoption = device.get("adoption") or {}
+        history = request_json(
+            f'/internal/cameras/{urllib.parse.quote(str(adoption["camera_uuid"]), safe="")}/identity-history'
+        )
+        if history.get("periods"):
+            raise ScenarioFailure("Direct RTSP camera created discovery identity history")
+
+    before = directory_signature(consumer_directory())
+    scan = request_json(
+        "/internal/discovery/scan",
+        method="POST",
+        headers={"X-CamAdmiral-Action": "scan"},
+        expected=202,
+    )
+    scan_id = scan.get("scan_id")
+    wait_for(
+        "network scan alongside direct RTSP cameras",
+        lambda: (
+            (state := discovery()).get("scan_id") == scan_id
+            and state.get("status") not in {"queued", "running"}
+            and state
+        ),
+        timeout=120,
+    )
+    after = directory_signature(consumer_directory())
+    if before != after:
+        raise ScenarioFailure("Network scan changed direct RTSP camera identities")
+    entrance, loading = _direct_rtsp_cameras()
+    _assert_direct_rtsp_media(entrance, loading)
+    state = {
+        "signature": after,
+        "entrance_camera_uuid": entrance["id"],
+        "loading_camera_uuid": loading["id"],
+        "entrance_stream_uuid": entrance["streams"][0]["id"],
+        "loading_stream_uuid": loading["streams"][0]["id"],
+    }
+    DIRECT_RTSP_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    DIRECT_RTSP_STATE_PATH.chmod(0o600)
+    print("direct-rtsp-created: two paths on one DNS endpoint stayed independent across a scan")
+
+
+def direct_rtsp_frigate() -> None:
+    state = json.loads(DIRECT_RTSP_STATE_PATH.read_text(encoding="utf-8"))
+
+    def integration_connected() -> bool:
+        configured = request_json("/internal/frigate-targets").get("targets", [])
+        if any(target.get("api_url") == FRIGATE_API_URL for target in configured):
+            return True
+        status, _body, _headers = request(
+            "/internal/frigate-targets",
+            method="POST",
+            payload={"name": "Synthetic Frigate", "api_url": FRIGATE_API_URL},
+            headers={"X-CamAdmiral-Action": "add-frigate-target"},
+            timeout=10,
+        )
+        return status == 201
+
+    wait_for("direct RTSP Frigate integration", integration_connected, timeout=180, interval=2)
+    target = next(
+        target
+        for target in request_json("/internal/frigate-targets").get("targets", [])
+        if target.get("api_url") == FRIGATE_API_URL
+    )
+    raw_target_id = str(target["target_id"])
+    target_id = urllib.parse.quote(raw_target_id, safe="")
+    for camera_uuid in (state["entrance_camera_uuid"], state["loading_camera_uuid"]):
+        camera_id = str(camera_uuid)
+        selected = request_json(
+            f"/internal/frigate-targets/{target_id}/cameras/{urllib.parse.quote(camera_id, safe='')}",
+            method="POST",
+            headers={"X-CamAdmiral-Action": "sync-frigate-camera"},
+            expected=202,
+            timeout=30,
+        )
+        if selected.get("selected") is not True:
+            raise ScenarioFailure("Direct RTSP camera was not selected for Frigate")
+
+        def binding_completed() -> dict[str, object] | None:
+            for device in discovery().get("devices", []):
+                adoption = device.get("adoption") or {}
+                if str(adoption.get("camera_uuid")) != camera_id:
+                    continue
+                for binding in adoption.get("frigate", []):
+                    if str(binding.get("target_id")) != raw_target_id:
+                        continue
+                    if binding.get("status") in {"applied", "error"}:
+                        return binding
+            return None
+
+        binding = wait_for(
+            f"direct RTSP Frigate synchronization for {camera_id}",
+            binding_completed,
+            timeout=180,
+            interval=1,
+        )
+        if binding.get("status") != "applied":
+            raise ScenarioFailure(
+                "Direct RTSP Frigate synchronization failed with "
+                f"{binding.get('error_code') or 'unknown error'}"
+            )
+
+    expected_keys = {
+        _frigate_camera_key(str(state["entrance_camera_uuid"])),
+        _frigate_camera_key(str(state["loading_camera_uuid"])),
+    }
+    wait_for(
+        "direct RTSP Frigate camera configuration",
+        lambda: expected_keys.issubset((frigate_saved_config().get("cameras") or {}).keys()),
+        timeout=180,
+        interval=2,
+    )
+    _wait_for_direct_rtsp_frigate_video(
+        expected_keys,
+        "Frigate video before direct RTSP recovery tests",
+    )
+    print("direct-rtsp-frigate: both logical cameras received independent Frigate resources")
+
+
+def direct_rtsp_after_restart() -> None:
+    wait_for_health()
+    state = json.loads(DIRECT_RTSP_STATE_PATH.read_text(encoding="utf-8"))
+    if directory_signature(consumer_directory()) != state["signature"]:
+        raise ScenarioFailure("CamAdmiral restart changed direct RTSP identities or URLs")
+    entrance, loading = _direct_rtsp_cameras()
+    _assert_direct_rtsp_media(entrance, loading)
+    print("direct-rtsp-restart: stable camera, stream, and downstream identities survived restart")
+
+
+def direct_rtsp_dns_move() -> None:
+    wait_for_health()
+    state = json.loads(DIRECT_RTSP_STATE_PATH.read_text(encoding="utf-8"))
+    wait_for_camera_sources(
+        "moved shared RTSP bridge source readiness",
+        {
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/entrance": (1280, 720),
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/loading": (960, 540),
+        },
+    )
+
+    def recovered() -> tuple[dict[str, object], dict[str, object]] | None:
+        cameras = _direct_rtsp_cameras()
+        return cameras if all(camera.get("state") == "online" for camera in cameras) else None
+
+    entrance, loading = wait_for(
+        "direct RTSP cameras after their DNS endpoint moved",
+        recovered,
+        timeout=120,
+        interval=2,
+    )
+    if directory_signature(consumer_directory()) != state["signature"]:
+        raise ScenarioFailure("DNS endpoint move changed direct RTSP identities or stable URLs")
+    _assert_direct_rtsp_media(entrance, loading)
+
+    print("direct-rtsp-dns-move: stable URLs resumed from the bridge's new private address")
+
+
+def direct_rtsp_path_failure() -> None:
+    def isolated_failure() -> bool:
+        entrance, loading = _direct_rtsp_cameras()
+        return entrance.get("state") in {"degraded", "offline"} and loading.get("state") == "online"
+
+    wait_for("one direct RTSP path to fail independently", isolated_failure, timeout=90, interval=2)
+    _entrance, loading = _direct_rtsp_cameras()
+    probe_stream(loading["streams"][0])
+    print("direct-rtsp-path-failure: unavailable source affected only its logical camera")
+
+
+def direct_rtsp_path_recovery() -> None:
+    state = json.loads(DIRECT_RTSP_STATE_PATH.read_text(encoding="utf-8"))
+    wait_for_camera_sources(
+        "restored shared RTSP bridge source readiness",
+        {
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/entrance": (1280, 720),
+            "rtsp://operator:synthetic-bridge-secret@rtsp-bridge:8554/loading": (960, 540),
+        },
+    )
+    wait_for(
+        "failed direct RTSP path recovery",
+        lambda: all(camera.get("state") == "online" for camera in _direct_rtsp_cameras()),
+        timeout=120,
+        interval=2,
+    )
+
+    entrance_uuid = urllib.parse.quote(str(state["entrance_camera_uuid"]), safe="")
+    request_json(
+        f"/internal/cameras/{entrance_uuid}",
+        method="DELETE",
+        headers={"X-CamAdmiral-Action": "unadopt-camera"},
+    )
+
+    def entrance_removed() -> dict[str, object] | None:
+        current = consumer_directory()
+        if any(
+            camera.get("name") == DIRECT_ENTRANCE_NAME
+            for camera in current.get("cameras", [])
+        ):
+            return None
+        return current
+
+    directory = wait_for(
+        "only one direct RTSP camera after unadopt",
+        entrance_removed,
+        timeout=120,
+    )
+    loading = camera_by_name(directory, DIRECT_LOADING_NAME)
+    if loading["id"] != state["loading_camera_uuid"]:
+        raise ScenarioFailure("Unadopting one direct RTSP camera changed its sibling identity")
+    wait_for(
+        "sibling direct RTSP media after unadopt",
+        lambda: probe_stream(loading["streams"][0]),
+        timeout=120,
+    )
+    saved_cameras = wait_for(
+        "Frigate saved configuration after direct RTSP unadopt",
+        lambda: frigate_saved_config().get("cameras") or None,
+        timeout=60,
+    )
+    if _frigate_camera_key(str(state["entrance_camera_uuid"])) in saved_cameras:
+        raise ScenarioFailure("Unadopt left the direct RTSP camera in Frigate")
+    if _frigate_camera_key(str(state["loading_camera_uuid"])) not in saved_cameras:
+        raise ScenarioFailure("Unadopt removed the sibling direct RTSP camera from Frigate")
+    print("direct-rtsp-isolation: path failure and unadopt affected only one logical camera")
 
 
 def baseline() -> None:
@@ -2002,12 +2336,32 @@ def frigate_unadopt() -> None:
 
     wait_for("completed Frigate camera sync before unadopt", synced, timeout=120, interval=1)
 
-    removed = request_json(
-        f"/internal/cameras/{urllib.parse.quote(camera_uuid, safe='')}",
-        method="DELETE",
-        headers={"X-CamAdmiral-Action": "unadopt-camera"},
-        timeout=120,
-    )
+    unadopt_path = f"/internal/cameras/{urllib.parse.quote(camera_uuid, safe='')}"
+    deadline = time.monotonic() + 30
+    while True:
+        status, body, _response_headers = request(
+            unadopt_path,
+            method="DELETE",
+            headers={"X-CamAdmiral-Action": "unadopt-camera"},
+            timeout=120,
+        )
+        try:
+            removed = json.loads(body)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ScenarioFailure(
+                f"{unadopt_path} returned invalid JSON with HTTP {status}"
+            ) from exc
+        if status == 200:
+            break
+        if (
+            status == 409
+            and removed.get("status") == "sync_busy"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.5)
+            continue
+        message = removed.get("message") or removed.get("detail") or removed.get("status")
+        raise ScenarioFailure(f"{unadopt_path} returned HTTP {status}: {message}")
     if removed.get("status") != "unadopted":
         raise ScenarioFailure(f"Camera unadopt failed: {removed}")
     if removed.get("restart_recommended") is not True:
@@ -3007,12 +3361,28 @@ def identity_recovery() -> None:
             )
     assert_snapshot(camera_uuid)
 
-    saved = frigate_saved_config()
     camera_key = str(before["frigate_camera_key"])
-    saved_camera = (saved.get("cameras") or {}).get(camera_key)
-    saved_streams = (saved.get("go2rtc") or {}).get("streams") or {}
     expected_streams = before["frigate_streams"]
     expected_camera = before["frigate_camera"]
+
+    def recovered_frigate_config() -> dict[str, object] | None:
+        saved_config = frigate_saved_config()
+        camera_config = (saved_config.get("cameras") or {}).get(camera_key)
+        if not isinstance(camera_config, dict) or camera_config.get("detect") != {
+            "width": ONVIF_MOVED_SUB_SIZE[0],
+            "height": ONVIF_MOVED_SUB_SIZE[1],
+        }:
+            return None
+        return saved_config
+
+    saved = wait_for(
+        "Frigate saved config after identity move",
+        recovered_frigate_config,
+        timeout=90,
+        interval=2,
+    )
+    saved_camera = (saved.get("cameras") or {}).get(camera_key)
+    saved_streams = (saved.get("go2rtc") or {}).get("streams") or {}
     if not isinstance(saved_camera, dict) or not isinstance(expected_camera, dict):
         raise ScenarioFailure("Automatic camera recovery lost the Frigate camera config")
     saved_camera_without_detect = {
@@ -3024,13 +3394,6 @@ def identity_recovery() -> None:
     if saved_camera_without_detect != expected_camera_without_detect:
         raise ScenarioFailure(
             "Automatic camera recovery changed stable Frigate camera settings"
-        )
-    if saved_camera.get("detect") != {
-        "width": ONVIF_MOVED_SUB_SIZE[0],
-        "height": ONVIF_MOVED_SUB_SIZE[1],
-    }:
-        raise ScenarioFailure(
-            "Automatic camera recovery did not update Frigate detection dimensions"
         )
     if {alias: saved_streams.get(alias) for alias in expected_streams} != expected_streams:
         raise ScenarioFailure("Automatic camera recovery changed Frigate stream URLs")
@@ -3364,6 +3727,12 @@ def identity_replacement() -> None:
 
 SCENARIOS = {
     "baseline": baseline,
+    "direct-rtsp-created": direct_rtsp_created,
+    "direct-rtsp-frigate": direct_rtsp_frigate,
+    "direct-rtsp-after-restart": direct_rtsp_after_restart,
+    "direct-rtsp-dns-move": direct_rtsp_dns_move,
+    "direct-rtsp-path-failure": direct_rtsp_path_failure,
+    "direct-rtsp-path-recovery": direct_rtsp_path_recovery,
     "multi-subnet-discovery": multi_subnet_discovery,
     "partial-subnet-preservation": partial_subnet_preservation,
     "large-subnet-multicast-discovery": large_subnet_multicast_discovery,

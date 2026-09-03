@@ -488,7 +488,7 @@ def main() -> int:
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
             "camera-onvif", "camera-secondary", "camera-onvif-large",
-            "camera-rtsp-large",
+            "camera-rtsp-large", "rtsp-bridge",
         )
         run(
             "exec", "-T", "camadmiral", "python", "/e2e/faults.py",
@@ -506,6 +506,26 @@ def main() -> int:
         )
         scenario("large-subnet-multicast-discovery")
         scenario("configured-routed-subnet-discovery")
+        ui_scenario("direct-rtsp")
+        scenario("direct-rtsp-created")
+        run("up", "--detach", "frigate", "frigate-api-proxy")
+        scenario("direct-rtsp-frigate")
+        run("restart", "camadmiral")
+        run("restart", "frigate-api-proxy")
+        scenario("direct-rtsp-after-restart")
+        run("stop", "rtsp-bridge")
+        run("rm", "--force", "rtsp-bridge")
+        run("up", "--detach", "rtsp-bridge-moved")
+        scenario("direct-rtsp-dns-move")
+        run("stop", "rtsp-bridge-moved")
+        run("rm", "--force", "rtsp-bridge-moved")
+        run("up", "--detach", "rtsp-bridge-faulted")
+        scenario("direct-rtsp-path-failure")
+        run("stop", "rtsp-bridge-faulted")
+        run("rm", "--force", "rtsp-bridge-faulted")
+        run("up", "--detach", "rtsp-bridge-moved")
+        scenario("direct-rtsp-path-recovery")
+        run("stop", "frigate-api-proxy", "frigate")
         run("down", "--volumes", "--remove-orphans")
         run(
             "up", "--detach", "camadmiral", "camera-open", "camera-auth",
@@ -714,6 +734,15 @@ def main() -> int:
         if logs:
             print("Recent CamAdmiral logs:", file=sys.stderr)
             print(logs, file=sys.stderr)
+        try:
+            frigate_logs = run(
+                "logs", "--no-color", "--tail", "200", "frigate", capture=True
+            )
+        except (OSError, subprocess.CalledProcessError):
+            frigate_logs = ""
+        if frigate_logs:
+            print("Recent Frigate logs:", file=sys.stderr)
+            print(frigate_logs, file=sys.stderr)
         if keep:
             print("CAMADMIRAL_E2E_KEEP=1, leaving the isolated lab running", file=sys.stderr)
         return 1

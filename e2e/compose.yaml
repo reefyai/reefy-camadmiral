@@ -90,6 +90,55 @@ services:
     healthcheck:
       disable: true
 
+  rtsp-bridge:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/rtsp-bridge.yaml"]
+    volumes:
+      - ./fixtures/rtsp-bridge.yaml:/e2e/rtsp-bridge.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.18
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+
+  rtsp-bridge-moved:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/rtsp-bridge.yaml"]
+    volumes:
+      - ./fixtures/rtsp-bridge.yaml:/e2e/rtsp-bridge.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.19
+        aliases: [rtsp-bridge]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [moved]
+
+  rtsp-bridge-faulted:
+    image: camadmiral-e2e:local
+    entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/rtsp-bridge-loading-only.yaml"]
+    volumes:
+      - ./fixtures/rtsp-bridge-loading-only.yaml:/e2e/rtsp-bridge-loading-only.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.19
+        aliases: [rtsp-bridge]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+    profiles: [moved]
+
   latency-relay:
     image: camadmiral-e2e:local
     entrypoint: ["/usr/local/bin/go2rtc", "-config", "/e2e/latency-relay.yaml"]
