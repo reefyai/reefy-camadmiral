@@ -402,6 +402,10 @@ MIGRATIONS: tuple[str, ...] = (
     DROP TABLE camera_incidents_v22;
     PRAGMA foreign_keys = ON;
     """,
+    """
+    ALTER TABLE cameras ADD COLUMN camera_origin TEXT NOT NULL DEFAULT 'discovery'
+        CHECK(camera_origin IN ('discovery', 'direct'));
+    """,
 )
 
 
@@ -438,6 +442,26 @@ def _source_uri(row: sqlite3.Row) -> str:
             )
         )
     return str(row["uri"])
+
+
+def _rtsp_source_key(uri: str) -> tuple[str, str, int, str, str]:
+    parsed = urllib.parse.urlsplit(uri)
+    if parsed.scheme.lower() != "rtsp" or not parsed.hostname:
+        raise ValueError("RTSP source is invalid")
+    return (
+        "rtsp",
+        parsed.hostname.lower().rstrip("."),
+        parsed.port or 554,
+        parsed.path or "/",
+        parsed.query,
+    )
+
+
+class SourceAlreadyAssignedError(ValueError):
+    def __init__(self, camera_uuid: str, display_name: str):
+        super().__init__("That RTSP stream is already assigned to another camera.")
+        self.camera_uuid = camera_uuid
+        self.display_name = display_name
 
 
 class CameraRepository:
@@ -1216,7 +1240,7 @@ class CameraRepository:
         with self.connect() as connection:
             camera = connection.execute(
                 "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled, "
-                "stream_address_mode "
+                "stream_address_mode, camera_origin "
                 "FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
             ).fetchone()
@@ -1255,6 +1279,7 @@ class CameraRepository:
                 "camera_uuid": camera["camera_uuid"],
                 "candidate_uuid": camera["candidate_uuid"],
                 "display_name": camera["display_name"],
+                "camera_origin": str(camera["camera_origin"]),
                 "enabled": bool(camera["enabled"]),
                 "stream_address_mode": str(camera["stream_address_mode"]),
                 "adopted_at": camera["adopted_at"],
@@ -1618,7 +1643,8 @@ class CameraRepository:
     def camera(self, camera_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, enabled FROM cameras WHERE camera_uuid = ?",
+                "SELECT camera_uuid, candidate_uuid, display_name, enabled, camera_origin "
+                "FROM cameras WHERE camera_uuid = ?",
                 (camera_uuid,),
             ).fetchone()
         if row is None:
@@ -2063,11 +2089,33 @@ class CameraRepository:
         password: str,
         profiles: list[dict[str, Any]],
         roles: dict[str, str],
+        *,
+        camera_origin: str = "discovery",
+        reject_source_keys: set[tuple[str, str, int, str, str]] | None = None,
     ) -> dict[str, Any]:
+        if camera_origin not in {"discovery", "direct"}:
+            raise ValueError("Camera origin is invalid")
         candidate_uuid = str(candidate["candidate_uuid"])
         timestamp = _now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if reject_source_keys:
+                rows = connection.execute(
+                    "SELECT c.camera_uuid, c.display_name, p.uri, p.source_scheme, p.source_host, "
+                    "p.source_port, p.source_path, p.source_query "
+                    "FROM onvif_profiles p JOIN cameras c USING(camera_uuid) "
+                    "WHERE p.uri IS NOT NULL OR (p.source_scheme IS NOT NULL AND p.source_host IS NOT NULL)"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        source_key = _rtsp_source_key(_source_uri(row))
+                    except (TypeError, ValueError):
+                        continue
+                    if source_key in reject_source_keys:
+                        raise SourceAlreadyAssignedError(
+                            str(row["camera_uuid"]),
+                            str(row["display_name"]),
+                        )
             existing = connection.execute(
                 "SELECT camera_uuid, credential_uuid FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
@@ -2082,9 +2130,10 @@ class CameraRepository:
                 (credential_uuid, username, encrypted, timestamp, timestamp),
             )
             connection.execute(
-                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
-                "display_name=excluded.display_name, credential_uuid=excluded.credential_uuid, updated_at=excluded.updated_at",
+                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at, camera_origin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
+                "display_name=excluded.display_name, credential_uuid=excluded.credential_uuid, "
+                "updated_at=excluded.updated_at, camera_origin=excluded.camera_origin",
                 (
                     camera_uuid,
                     candidate_uuid,
@@ -2092,14 +2141,16 @@ class CameraRepository:
                     credential_uuid,
                     timestamp,
                     timestamp,
+                    camera_origin,
                 ),
             )
-            self._observe_camera_identity(
-                connection,
-                camera_uuid,
-                candidate,
-                timestamp,
-            )
+            if camera_origin == "discovery":
+                self._observe_camera_identity(
+                    connection,
+                    camera_uuid,
+                    candidate,
+                    timestamp,
+                )
             current_tokens = {str(profile["token"]) for profile in profiles}
             connection.execute("DELETE FROM consumer_bindings WHERE camera_uuid = ?", (camera_uuid,))
             if current_tokens:

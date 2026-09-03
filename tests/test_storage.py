@@ -1,11 +1,12 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from camadmiral.storage import MIGRATIONS, CameraRepository
+from camadmiral.storage import MIGRATIONS, CameraRepository, SourceAlreadyAssignedError
 from camadmiral.media import ProbeResult
 
 
@@ -30,6 +31,7 @@ class CameraRepositoryTests(unittest.TestCase):
 
         self.assertEqual(first["camera_uuid"], second["camera_uuid"])
         self.assertEqual(first["roles"], second["roles"])
+        self.assertEqual(second["camera_origin"], "discovery")
         self.assertEqual(second["role_tokens"], {"record": "main", "detect": "sub"})
         self.assertEqual(second["stream_address_mode"], "lan")
         self.assertTrue(
@@ -56,6 +58,283 @@ class CameraRepositoryTests(unittest.TestCase):
         refreshed = self.repository.adoption_for_candidate("candidate-1")
         self.assertIsNotNone(refreshed)
         self.assertIn("ready", {stream["probe_status"] for stream in refreshed["streams"]})
+
+    def test_direct_rtsp_cameras_on_one_endpoint_remain_independent(self) -> None:
+        first = self.repository.adopt(
+            {
+                "candidate_uuid": "direct-rtsp:one",
+                "display_name": "Synthetic entrance",
+                "ip": "camera-bridge.test",
+            },
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "entrance",
+                "name": "Main stream",
+                "uri": "rtsp://camera-bridge.test:8554/entrance",
+                "width": 1280,
+                "height": 720,
+                "encoding": "H264",
+                "fps": 15,
+                "bitrate_kbps": 0,
+                "source_kind": "manual_rtsp",
+            }],
+            {"record": "entrance", "detect": "entrance"},
+            camera_origin="direct",
+            reject_source_keys={
+                ("rtsp", "camera-bridge.test", 8554, "/entrance", "")
+            },
+        )
+        second = self.repository.adopt(
+            {
+                "candidate_uuid": "direct-rtsp:two",
+                "display_name": "Synthetic loading dock",
+                "ip": "camera-bridge.test",
+            },
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "loading",
+                "name": "Main stream",
+                "uri": "rtsp://camera-bridge.test:8554/loading?profile=main",
+                "width": 640,
+                "height": 360,
+                "encoding": "H264",
+                "fps": 10,
+                "bitrate_kbps": 0,
+                "source_kind": "manual_rtsp",
+            }],
+            {"record": "loading", "detect": "loading"},
+            camera_origin="direct",
+            reject_source_keys={
+                ("rtsp", "camera-bridge.test", 8554, "/loading", "profile=main")
+            },
+        )
+
+        self.assertEqual(first["camera_origin"], "direct")
+        self.assertEqual(second["camera_origin"], "direct")
+        self.assertNotEqual(first["camera_uuid"], second["camera_uuid"])
+        self.assertNotEqual(first["streams"][0]["stream_uuid"], second["streams"][0]["stream_uuid"])
+        self.assertEqual(self.repository.camera_identity_history(first["camera_uuid"]), [])
+
+    def test_direct_rtsp_exact_source_duplicate_is_atomic(self) -> None:
+        profile = {
+            "token": "primary",
+            "name": "Primary",
+            "uri": "rtsp://camera-bridge.test/live?channel=1",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+            "source_kind": "manual_rtsp",
+        }
+        key = ("rtsp", "camera-bridge.test", 554, "/live", "channel=1")
+        first = self.repository.adopt(
+            {"candidate_uuid": "direct-rtsp:first", "display_name": "First"},
+            "operator",
+            "synthetic-secret",
+            [profile],
+            {"record": "primary", "detect": "primary"},
+            camera_origin="direct",
+            reject_source_keys={key},
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "UPDATE onvif_profiles SET source_scheme=NULL, source_host=NULL, "
+                "source_port=NULL, source_path=NULL, source_query=NULL"
+            )
+            connection.commit()
+
+        with self.assertRaises(SourceAlreadyAssignedError) as raised:
+            self.repository.adopt(
+                {"candidate_uuid": "direct-rtsp:duplicate", "display_name": "Duplicate"},
+                "other",
+                "other-secret",
+                [{**profile, "uri": "rtsp://CAMERA-BRIDGE.TEST.:554/live?channel=1"}],
+                {"record": "primary", "detect": "primary"},
+                camera_origin="direct",
+                reject_source_keys={key},
+            )
+
+        self.assertEqual(raised.exception.camera_uuid, first["camera_uuid"])
+        self.assertIsNone(self.repository.adoption_for_candidate("direct-rtsp:duplicate"))
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM cameras").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT count(*) FROM camera_credentials").fetchone()[0], 1)
+
+    def test_direct_rtsp_cannot_reuse_a_discovered_camera_source(self) -> None:
+        profile = {
+            "token": "main",
+            "name": "Main",
+            "uri": "rtsp://192.168.50.20:8554/live",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+        }
+        discovered = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Existing camera"},
+            "operator",
+            "synthetic-secret",
+            [profile],
+            {"record": "main", "detect": "main"},
+        )
+
+        with self.assertRaises(SourceAlreadyAssignedError) as raised:
+            self.repository.adopt(
+                {"candidate_uuid": "direct-rtsp:duplicate", "display_name": "Duplicate"},
+                "operator",
+                "synthetic-secret",
+                [profile],
+                {"record": "main", "detect": "main"},
+                camera_origin="direct",
+                reject_source_keys={("rtsp", "192.168.50.20", 8554, "/live", "")},
+            )
+
+        self.assertEqual(raised.exception.camera_uuid, discovered["camera_uuid"])
+        self.assertIsNone(self.repository.adoption_for_candidate("direct-rtsp:duplicate"))
+
+    def test_concurrent_direct_rtsp_duplicate_creates_only_one_camera(self) -> None:
+        barrier = threading.Barrier(3)
+        outcomes: list[str] = []
+        lock = threading.Lock()
+        profile = {
+            "token": "primary",
+            "name": "Primary",
+            "uri": "rtsp://192.168.50.20:8554/live",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+            "source_kind": "manual_rtsp",
+        }
+        key = ("rtsp", "192.168.50.20", 8554, "/live", "")
+
+        def create(index: int) -> None:
+            repository = CameraRepository(self.database, b"k" * 32)
+            barrier.wait(timeout=5)
+            try:
+                repository.adopt(
+                    {
+                        "candidate_uuid": f"direct-rtsp:concurrent-{index}",
+                        "display_name": f"Concurrent {index}",
+                    },
+                    "operator",
+                    "synthetic-secret",
+                    [profile],
+                    {"record": "primary", "detect": "primary"},
+                    camera_origin="direct",
+                    reject_source_keys={key},
+                )
+            except SourceAlreadyAssignedError:
+                result = "duplicate"
+            else:
+                result = "created"
+            with lock:
+                outcomes.append(result)
+
+        workers = [threading.Thread(target=create, args=(index,)) for index in range(2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=10)
+
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(sorted(outcomes), ["created", "duplicate"])
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM cameras").fetchone()[0], 1)
+
+    def test_camera_origin_migration_preserves_existing_camera_contract(self) -> None:
+        candidate = {
+            "candidate_uuid": "candidate-pre-origin",
+            "display_name": "Existing synthetic camera",
+            "ip": "192.168.50.30",
+            "mac": "02:00:00:00:50:30",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-pre-origin"},
+        }
+        before = self.repository.adopt(
+            candidate,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main",
+                "name": "Main",
+                "uri": "rtsp://192.168.50.30/main",
+                "width": 1280,
+                "height": 720,
+                "encoding": "H264",
+                "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        self.repository.save_frigate_target(
+            "frigate-synthetic",
+            "Synthetic Frigate",
+            "http://192.168.50.40:5000",
+        )
+        self.repository.set_frigate_target_address_mode(
+            "frigate-synthetic",
+            "localhost",
+        )
+        self.repository.select_frigate_camera(
+            "frigate-synthetic",
+            before["camera_uuid"],
+            "localhost",
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, severity, "
+                "opened_at, last_observed_at) VALUES (?, ?, 'media_offline', 'warning', ?, ?)",
+                (
+                    "incident-synthetic-pre-origin",
+                    before["camera_uuid"],
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:01:00+00:00",
+                ),
+            )
+            connection.commit()
+        history_before = self.repository.camera_identity_history(before["camera_uuid"])
+        incidents_before = self.repository.incidents(status="all")
+        with self.repository.connect() as connection:
+            connection.execute("ALTER TABLE cameras DROP COLUMN camera_origin")
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?",
+                (len(MIGRATIONS),),
+            )
+            connection.commit()
+
+        self.repository.migrate()
+        after = self.repository.adoption_for_candidate("candidate-pre-origin")
+        self.assertEqual(after["camera_uuid"], before["camera_uuid"])
+        self.assertEqual(after["streams"][0]["stream_uuid"], before["streams"][0]["stream_uuid"])
+        self.assertEqual(after["streams"][0]["uri"], before["streams"][0]["uri"])
+        self.assertEqual(after["roles"], before["roles"])
+        self.assertEqual(after["camera_origin"], "discovery")
+        self.assertEqual(
+            self.repository.credentials_for_candidate("candidate-pre-origin"),
+            ("operator", "synthetic-secret"),
+        )
+        self.assertEqual(
+            self.repository.camera_identity_history(before["camera_uuid"]),
+            history_before,
+        )
+        self.assertEqual(self.repository.incidents(status="all"), incidents_before)
+        self.assertEqual(
+            self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
+            [before["camera_uuid"]],
+        )
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode(
+                "frigate-synthetic",
+                before["camera_uuid"],
+            ),
+            "localhost",
+        )
 
     def test_rtsp_access_password_is_stable_and_encrypted(self) -> None:
         first = self.repository.rtsp_access_password()

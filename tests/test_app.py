@@ -2934,6 +2934,210 @@ class RtspAdoptionTests(unittest.TestCase):
         self.assertIsNone(self.repository.saved_credentials)
 
 
+class DirectRtspCameraTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.repository = CameraRepository(
+            Path(self.temporary.name) / "camadmiral.db",
+            b"k" * 32,
+        )
+        self.repository.migrate()
+        self.interface = LanInterface(
+            "eth0",
+            ipaddress.IPv4Address("192.168.50.10"),
+            ipaddress.IPv4Network("192.168.50.0/24"),
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def payload(response) -> dict:
+        return json.loads(response.body)
+
+    def invoke(self, request: app_module.DirectRtspCameraRequest):
+        with (
+            patch.object(app_module, "_repository", return_value=self.repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.interface]),
+            patch.object(app_module, "_reconcile_media"),
+            patch.object(app_module, "_queue_frigate_reconciliation"),
+            patch.object(
+                app_module,
+                "probe_source",
+                return_value=ProbeResult("ready", 20, "h264", None, 1280, 720, 15),
+            ),
+        ):
+            return app_module.create_direct_rtsp_camera(
+                request,
+                "create-direct-rtsp-camera",
+            )
+
+    def test_two_paths_on_one_endpoint_create_independent_cameras(self) -> None:
+        first = self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Synthetic entrance",
+            username="operator",
+            password="synthetic-secret",
+            sources=[app_module.RtspSourceRequest(
+                label="Main",
+                url="rtsp://192.168.50.20:8554/entrance",
+            )],
+        ))
+        second = self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Synthetic loading dock",
+            username="operator",
+            password="synthetic-secret",
+            sources=[app_module.RtspSourceRequest(
+                label="Main",
+                url="rtsp://192.168.50.20:8554/loading",
+            )],
+        ))
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        first_adoption = self.payload(first)["adoption"]
+        second_adoption = self.payload(second)["adoption"]
+        self.assertEqual(first_adoption["camera_origin"], "direct")
+        self.assertNotEqual(first_adoption["camera_uuid"], second_adoption["camera_uuid"])
+        self.assertNotEqual(
+            first_adoption["streams"][0]["stream_key"],
+            second_adoption["streams"][0]["stream_key"],
+        )
+
+    def test_exact_normalized_duplicate_is_rejected_without_partial_camera(self) -> None:
+        self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Original",
+            sources=[app_module.RtspSourceRequest(url="rtsp://192.168.50.20/live")],
+        ))
+        duplicate = self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Duplicate",
+            sources=[app_module.RtspSourceRequest(url="RTSP://192.168.50.20:554/live")],
+        ))
+
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(self.payload(duplicate)["status"], "source_already_assigned")
+        self.assertEqual(len(self.repository.adoption_map()), 1)
+
+    def test_direct_camera_requires_complete_rtsp_url(self) -> None:
+        response = self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Synthetic camera",
+            sources=[app_module.RtspSourceRequest(url="192.168.50.20")],
+        ))
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("use Scan network", self.payload(response)["message"])
+        self.assertEqual(self.repository.adoption_map(), {})
+
+    def test_direct_camera_rejects_public_and_self_addresses(self) -> None:
+        for url in ("rtsp://203.0.113.20/live", "rtsp://192.168.50.10/live"):
+            with self.subTest(url=url):
+                response = self.invoke(app_module.DirectRtspCameraRequest(
+                    display_name="Synthetic camera",
+                    sources=[app_module.RtspSourceRequest(url=url)],
+                ))
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.repository.adoption_map(), {})
+
+    def test_direct_camera_rejects_credentials_fragments_and_non_rtsp_schemes(self) -> None:
+        urls = (
+            "rtsp://operator:secret@192.168.50.20/live",
+            "rtsp://192.168.50.20/live#track",
+            "rtsps://192.168.50.20/live",
+            "http://192.168.50.20/live",
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.invoke(app_module.DirectRtspCameraRequest(
+                    display_name="Synthetic camera",
+                    sources=[app_module.RtspSourceRequest(url=url)],
+                ))
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.repository.adoption_map(), {})
+
+    def test_direct_camera_requires_both_streams_to_use_same_host(self) -> None:
+        response = self.invoke(app_module.DirectRtspCameraRequest(
+            display_name="Synthetic camera",
+            sources=[
+                app_module.RtspSourceRequest(url="rtsp://192.168.50.20/main"),
+                app_module.RtspSourceRequest(url="rtsp://192.168.50.21/sub"),
+            ],
+        ))
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.payload(response)["status"], "different_hosts")
+        self.assertEqual(self.repository.adoption_map(), {})
+
+    def test_dns_hostname_rejects_any_public_resolution(self) -> None:
+        request = app_module.DirectRtspCameraRequest(
+            display_name="Synthetic camera",
+            sources=[app_module.RtspSourceRequest(url="rtsp://mixed.test/live")],
+        )
+        with patch.object(
+            app_module,
+            "_resolve_direct_rtsp_hostname",
+            return_value=[
+                ipaddress.IPv4Address("192.168.50.20"),
+                ipaddress.IPv4Address("203.0.113.20"),
+            ],
+        ):
+            response = self.invoke(request)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.repository.adoption_map(), {})
+
+    def test_dns_hostname_is_stored_and_rendered_as_direct_rtsp(self) -> None:
+        request = app_module.DirectRtspCameraRequest(
+            display_name="Synthetic bridge camera",
+            sources=[app_module.RtspSourceRequest(url="rtsp://CAMERA-BRIDGE.TEST.:8554/live")],
+        )
+        with patch.object(
+            app_module,
+            "_resolve_direct_rtsp_hostname",
+            return_value=[ipaddress.IPv4Address("192.168.50.20")],
+        ):
+            response = self.invoke(request)
+
+        adoption = self.payload(response)["adoption"]
+        self.assertEqual(adoption["streams"][0]["uri"], "rtsp://camera-bridge.test:8554/live")
+        with (
+            patch.object(app_module, "_repository", return_value=self.repository),
+            patch.object(app_module, "load_frigate_targets", return_value=[]),
+        ):
+            state = app_module._decorate_adoptions({"status": "complete", "devices": []})
+        self.assertEqual(len(state["devices"]), 1)
+        self.assertEqual(state["devices"][0]["camera_origin"], "direct")
+        self.assertEqual(state["devices"][0]["ip"], "camera-bridge.test")
+        self.assertIsNone(state["devices"][0]["onvif"])
+        self.assertEqual(self.repository.camera_identity_history(adoption["camera_uuid"]), [])
+
+    def test_unreadable_second_source_does_not_create_camera(self) -> None:
+        request = app_module.DirectRtspCameraRequest(
+            display_name="Synthetic camera",
+            sources=[
+                app_module.RtspSourceRequest(url="rtsp://192.168.50.20/main"),
+                app_module.RtspSourceRequest(url="rtsp://192.168.50.20/sub"),
+            ],
+        )
+        with (
+            patch.object(app_module, "_repository", return_value=self.repository),
+            patch.object(app_module, "private_lan_interfaces", return_value=[self.interface]),
+            patch.object(
+                app_module,
+                "probe_source",
+                side_effect=[
+                    ProbeResult("ready", 20, "h264", None, 1280, 720, 15),
+                    ProbeResult("unavailable", 20),
+                ],
+            ),
+        ):
+            response = app_module.create_direct_rtsp_camera(
+                request,
+                "create-direct-rtsp-camera",
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.repository.adoption_map(), {})
+
+
 class AdoptionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = FakeRepository()

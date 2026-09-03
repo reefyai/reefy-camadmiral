@@ -6,7 +6,9 @@ import json
 import hashlib
 import logging
 import os
+import re
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -27,6 +29,7 @@ from .config import SecretConfigurationError, database_path, read_secret_file, s
 from .crypto import load_master_key
 from .diagnostics import snapshot
 from .discovery import (
+    LanInterface,
     MAX_SCAN_HOSTS,
     custom_scan_subnet,
     normalize_private_scan_subnet,
@@ -65,7 +68,7 @@ from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
 from .inventory import inventory_summary
 from .recovery import recover_inventory_addresses
 from .scan_state import preserve_inventory
-from .storage import CameraRepository
+from .storage import CameraRepository, SourceAlreadyAssignedError
 
 app = FastAPI(
     title="CamAdmiral Discovery Preview",
@@ -110,6 +113,20 @@ RECOVERY_SCAN_PAUSED_UNTIL = 0.0
 MANUAL_SCAN_PRIORITY_WINDOW = 30.0
 FRIGATE_RECONCILE_INTERVAL = 30.0
 NOTIFICATION_INTERVAL = 5.0
+DIRECT_RTSP_DNS_TIMEOUT = max(
+    0.1,
+    float(os.environ.get("CAMADMIRAL_DIRECT_RTSP_DNS_TIMEOUT", "3")),
+)
+DIRECT_RTSP_DNS_RESOLVER = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="camadmiral-dns",
+)
+RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _admin_password() -> bytes | None:
@@ -149,6 +166,13 @@ class RtspAdoptionRequest(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
     sources: list[RtspSourceRequest] = Field(default_factory=list, max_length=2)
+
+
+class DirectRtspCameraRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=160)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=512)
+    sources: list[RtspSourceRequest] = Field(min_length=1, max_length=2)
 
 
 class CameraUpdateRequest(BaseModel):
@@ -317,6 +341,36 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         )
         for target in load_frigate_targets(repository)
     ]
+
+    def decorate_adoption(adoption: dict[str, object]) -> None:
+        camera_uuid = adoption.get("camera_uuid")
+        frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
+        adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
+        adoption["frigate"] = []
+        for target, selections_by_camera, bindings_by_camera in frigate_bindings:
+            binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
+            address_mode = (
+                str(target.address_mode)
+                if target.address_mode is not None
+                else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+            )
+            selected = str(adoption["camera_uuid"]) in selections_by_camera
+            target_status = {
+                "target_id": target.target_id,
+                "target": target.name,
+                "selected": selected,
+                "address_mode": address_mode,
+                "status": (
+                    binding["status"]
+                    if selected and binding is not None
+                    else "pending" if selected else "not_synced"
+                ),
+            }
+            if selected and binding is not None and binding.get("last_error_code"):
+                target_status["error_code"] = binding["last_error_code"]
+            adoption["frigate"].append(target_status)
+
+    matched_adoptions: set[str] = set()
     for device in state.get("devices", []):
         onvif = device.get("onvif") or {}
         onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower()
@@ -333,35 +387,38 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         candidate_uuid = device.get("candidate_uuid")
         if candidate_uuid in adoptions:
             adoption = adoptions[candidate_uuid]
-            camera_uuid = adoption.get("camera_uuid")
-            frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
-            adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
-            adoption["frigate"] = []
-            for target, selections_by_camera, bindings_by_camera in frigate_bindings:
-                binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
-                address_mode = (
-                    str(target.address_mode)
-                    if target.address_mode is not None
-                    else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
-                )
-                selected = str(adoption["camera_uuid"]) in selections_by_camera
-                target_status = {
-                    "target_id": target.target_id,
-                    "target": target.name,
-                    "selected": selected,
-                    "address_mode": address_mode,
-                    "status": (
-                        binding["status"]
-                        if selected and binding is not None
-                        else "pending" if selected else "not_synced"
-                    ),
-                }
-                if selected and binding is not None and binding.get("last_error_code"):
-                    target_status["error_code"] = binding["last_error_code"]
-                adoption["frigate"].append(target_status)
+            decorate_adoption(adoption)
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
-    devices = state.get("devices", [])
+            device["camera_origin"] = adoption.get("camera_origin", "discovery")
+            matched_adoptions.add(str(candidate_uuid))
+    devices = state.setdefault("devices", [])
+    for candidate_uuid, adoption in adoptions.items():
+        if candidate_uuid in matched_adoptions or adoption.get("camera_origin") != "direct":
+            continue
+        decorate_adoption(adoption)
+        streams = adoption.get("streams") or []
+        source_uri = str(streams[0].get("uri") or "") if streams else ""
+        try:
+            source = urllib.parse.urlsplit(source_uri)
+            source_host = source.hostname or ""
+            source_port = source.port or 554
+        except ValueError:
+            source_host = ""
+            source_port = 554
+        devices.append(
+            {
+                "candidate_uuid": candidate_uuid,
+                "display_name": adoption["display_name"],
+                "ip": source_host,
+                "mac": None,
+                "onvif": None,
+                "rtsp": [{"port": source_port, "verified": True}],
+                "status": "online",
+                "camera_origin": "direct",
+                "adoption": adoption,
+            }
+        )
     for blocked in blocked_records:
         if str(blocked["block_uuid"]) in visible_blocks:
             continue
@@ -2312,8 +2369,95 @@ def _stored_adoption_inspection(adoption: dict[str, object]) -> dict[str, object
 
 
 def _normalize_rtsp_url(candidate: dict[str, object], value: str) -> str:
+    normalized, _, host = _normalize_direct_rtsp_url(value, validate_host=False)
+    candidate_ip = str(candidate.get("ip") or "")
+    if host.lower() != candidate_ip.lower():
+        raise ValueError(f"The stream URL must use the discovered camera address {candidate_ip}.")
+    return normalized
+
+
+def _permitted_direct_ipv4(
+    address: ipaddress.IPv4Address,
+    interfaces: list[LanInterface],
+) -> bool:
+    if not any(address in network for network in RFC1918_NETWORKS):
+        return False
+    if (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        return False
+    for interface in interfaces:
+        if address in {
+            interface.address,
+            interface.network.network_address,
+            interface.network.broadcast_address,
+        }:
+            return False
+    return True
+
+
+def _resolve_direct_rtsp_hostname(host: str) -> list[ipaddress.IPv4Address]:
+    future = DIRECT_RTSP_DNS_RESOLVER.submit(
+        socket.getaddrinfo,
+        host,
+        None,
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    )
     try:
-        parsed = urllib.parse.urlsplit(value.strip())
+        answers = future.result(timeout=DIRECT_RTSP_DNS_TIMEOUT)
+    except TimeoutError as exc:
+        future.cancel()
+        raise ValueError("The RTSP hostname did not resolve in time.") from exc
+    except OSError as exc:
+        raise ValueError("The RTSP hostname could not be resolved.") from exc
+    addresses = sorted({ipaddress.IPv4Address(answer[4][0]) for answer in answers})
+    if not addresses:
+        raise ValueError("The RTSP hostname did not resolve to an IPv4 address.")
+    return addresses
+
+
+def _validate_direct_rtsp_host(host: str) -> None:
+    try:
+        interfaces = list(private_lan_interfaces())
+    except (OSError, RuntimeError, ValueError):
+        interfaces = []
+    try:
+        literal = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        if all(character in "0123456789." for character in host):
+            raise ValueError("Enter a valid RTSP hostname or private IPv4 address.")
+        if len(host) > 253 or any(
+            not DNS_LABEL.fullmatch(label) for label in host.split(".")
+        ):
+            raise ValueError("Enter a valid ASCII RTSP hostname.")
+        addresses = _resolve_direct_rtsp_hostname(host)
+        if any(not _permitted_direct_ipv4(address, interfaces) for address in addresses):
+            raise ValueError("The RTSP hostname must resolve only to private LAN addresses.")
+        return
+    if not _permitted_direct_ipv4(literal, interfaces):
+        raise ValueError("Only private LAN RTSP addresses can be added.")
+
+
+def _normalize_direct_rtsp_url(
+    value: str,
+    *,
+    validate_host: bool = True,
+) -> tuple[str, tuple[str, str, int, str, str], str]:
+    entered = value.strip()
+    if not entered:
+        raise ValueError("Enter a complete RTSP URL.")
+    if "://" not in entered:
+        raise ValueError("Enter a complete RTSP URL. To find a camera by IP, use Scan network.")
+    if "\\" in entered or any(
+        ord(character) < 32 or ord(character) == 127 for character in entered
+    ):
+        raise ValueError("Enter a valid RTSP URL.")
+    try:
+        parsed = urllib.parse.urlsplit(entered)
         port = parsed.port or 554
     except ValueError as exc:
         raise ValueError("Enter a valid RTSP URL.") from exc
@@ -2325,13 +2469,21 @@ def _normalize_rtsp_url(candidate: dict[str, object], value: str) -> str:
         raise ValueError("RTSP stream URLs cannot include a fragment.")
     if not 1 <= port <= 65535:
         raise ValueError("Enter a valid RTSP port.")
-    candidate_ip = str(candidate.get("ip") or "")
-    if parsed.hostname.lower() != candidate_ip.lower():
-        raise ValueError(f"The stream URL must use the discovered camera address {candidate_ip}.")
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    return urllib.parse.urlunsplit(("rtsp", host, parsed.path or "/", parsed.query, ""))
+    host = parsed.hostname.lower()
+    if host.endswith("."):
+        host = host[:-1]
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Enter a valid ASCII RTSP hostname.") from exc
+    if not host:
+        raise ValueError("Stream URLs must include a host.")
+    if validate_host:
+        _validate_direct_rtsp_host(host)
+    authority = host if parsed.port is None else f"{host}:{port}"
+    path = parsed.path or "/"
+    normalized = urllib.parse.urlunsplit(("rtsp", authority, path, parsed.query, ""))
+    return normalized, ("rtsp", host, port, path, parsed.query), host
 
 
 def _manual_profile(
@@ -2383,6 +2535,122 @@ def _probe_catalog_sources(
         username,
         password,
     )]
+
+
+@app.post("/internal/cameras/rtsp", include_in_schema=False)
+def create_direct_rtsp_camera(
+    request: DirectRtspCameraRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "create-direct-rtsp-camera":
+        raise HTTPException(status_code=400, detail="Missing direct RTSP camera action header")
+    display_name = request.display_name.strip()
+    if not display_name:
+        return _secured_json(
+            {"status": "invalid_name", "message": "Enter a camera name."},
+            status_code=422,
+        )
+    try:
+        normalized_sources = [
+            _normalize_direct_rtsp_url(source.url)
+            for source in request.sources
+        ]
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "invalid_source", "message": str(exc)},
+            status_code=422,
+        )
+    keys = [source[1] for source in normalized_sources]
+    hosts = {source[2] for source in normalized_sources}
+    if len(hosts) != 1:
+        return _secured_json(
+            {
+                "status": "different_hosts",
+                "message": "Both streams for one camera must use the same hostname or IP address.",
+            },
+            status_code=422,
+        )
+    if len(set(keys)) != len(keys):
+        return _secured_json(
+            {"status": "duplicate_source", "message": "Each RTSP stream URL must be different."},
+            status_code=422,
+        )
+    uris = [source[0] for source in normalized_sources]
+    username = request.username.strip()
+    results = _probe_exact_sources(uris, username, request.password)
+    rejected = [
+        {"position": position, "status": result.status}
+        for position, result in enumerate(results, start=1)
+        if result.status != "ready"
+    ]
+    if rejected:
+        authentication_failed = any(result.status == "auth_failed" for result in results)
+        return _secured_json(
+            {
+                "status": "credentials_required" if authentication_failed else "media_unavailable",
+                "message": (
+                    "Incorrect username or password. Check both fields and try again."
+                    if authentication_failed
+                    else "Video could not be read from every stream. Check the URLs and try again."
+                ),
+                "sources": rejected,
+            },
+            status_code=401 if authentication_failed else 422,
+        )
+    profiles = [
+        _manual_profile(source.label, uri, result, position)
+        for position, (source, uri, result) in enumerate(
+            zip(request.sources, uris, results),
+            start=1,
+        )
+    ]
+    roles = select_stream_roles(profiles)
+    candidate_uuid = f"direct-rtsp:{uuid.uuid4()}"
+    candidate = {
+        "candidate_uuid": candidate_uuid,
+        "display_name": display_name,
+        "ip": normalized_sources[0][2],
+    }
+    try:
+        repository = _repository(required=True)
+    except SecretConfigurationError:
+        return _secured_json(
+            {"status": "not_configured", "message": "Credential storage is not configured."},
+            status_code=503,
+        )
+    assert repository is not None
+    try:
+        adoption = repository.adopt(
+            candidate,
+            username,
+            request.password,
+            profiles,
+            roles,
+            camera_origin="direct",
+            reject_source_keys=set(keys),
+        )
+    except SourceAlreadyAssignedError as exc:
+        return _secured_json(
+            {
+                "status": "source_already_assigned",
+                "message": str(exc),
+                "camera_uuid": exc.camera_uuid,
+                "camera_name": exc.display_name,
+            },
+            status_code=409,
+        )
+    _reconcile_media()
+    _queue_frigate_reconciliation()
+    adoption = repository.adoption_for_candidate(candidate_uuid) or adoption
+    return _secured_json(
+        {
+            "status": "adopted",
+            "profiles": profiles,
+            "adoption": adoption,
+            "role_tokens": roles,
+        },
+        status_code=201,
+    )
 
 
 @app.get("/internal/discovery", include_in_schema=False)
