@@ -236,6 +236,15 @@ Documentation screenshots use synthetic device identities and TEST-NET addresses
 
 ## Frigate integration
 
+Use **Find Frigate** in Settings > Integrations to find local Frigate APIs on
+ports 5000, 8971, and 20000-20999. Choose a result to review its address and
+connect it. Already-added endpoints are marked; searching never adds an
+integration or syncs cameras automatically. Manual **Add Frigate** remains
+available for remote machines, custom ports, and URLs. Local discovery runs
+from CamAdmiral's network namespace, so bridge-networked containers may not
+see services on the host. Endpoints requiring authentication or HTTPS are
+not discovered by this local HTTP search.
+
 Open **Settings > Integrations** and add the HTTP or HTTPS URL for each Frigate API. The URL
 may use a loopback address, LAN address, DNS name, IPv6 address, or path-prefixed reverse
 proxy. CamAdmiral validates the required configuration and runtime stream capabilities

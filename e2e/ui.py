@@ -792,6 +792,40 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("link", name="Incidents")).to_have_attribute("aria-current", "page")
 
 
+def assert_local_frigate_discovery(page: Page) -> None:
+    page.goto(f"{BASE_URL}/settings/integrations", wait_until="domcontentloaded")
+    before = page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"]
+    with page.expect_response(lambda response: response.url.endswith("/internal/frigate-discovery"), timeout=20_000) as search:
+        page.get_by_role("button", name="Find Frigate", exact=True).click()
+    assert search.value.ok
+    found = search.value.json()["instances"]
+    assert any(item["api_url"] == "http://127.0.0.1:5000" for item in found)
+    assert any(item["api_url"] == "http://127.0.0.1:20017" for item in found)
+    assert page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"] == before
+    modal = page.locator("#app-modal")
+    row = modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017")
+    expect(row).to_be_visible()
+    row.get_by_role("button", name="Add", exact=True).click()
+    expect(page.get_by_label("Frigate API URL")).to_have_value("http://127.0.0.1:20017")
+    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/internal/frigate-targets")) as saved:
+        modal.get_by_role("button", name="Connect Frigate").click()
+    assert saved.value.status == 201
+    target = saved.value.json()["target"]
+    try:
+        assert not target.get("synced_camera_count", 0)
+        with page.expect_response(lambda response: response.url.endswith("/internal/frigate-discovery"), timeout=20_000):
+            page.get_by_role("button", name="Find Frigate", exact=True).click()
+        expect(modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017").get_by_role("button", name="Already added")).to_be_disabled()
+        assert modal.evaluate("el => el.getBoundingClientRect().right <= window.innerWidth + 1")
+        page.locator("#app-modal-close").click()
+    finally:
+        response = page.request.delete(
+            f"{BASE_URL}/internal/frigate-targets/{target['target_id']}",
+            headers={"X-CamAdmiral-Action": "remove-frigate-target"},
+        )
+        assert response.ok
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else None
@@ -819,6 +853,7 @@ def main() -> int:
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
             assert_camera_unadopt_block_and_restore(page)
+            assert_local_frigate_discovery(page)
             assert_mobile_settings(page)
         except Exception:
             page.screenshot(
