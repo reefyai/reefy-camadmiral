@@ -833,7 +833,7 @@ def assert_local_frigate_discovery(page: Page) -> None:
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else None
-    if mode not in {None, "identity-history", "direct-rtsp"}:
+    if mode not in {None, "identity-history", "direct-rtsp", "frigate-discovery"}:
         raise UiScenarioFailure(f"Unknown browser E2E scenario: {mode}")
     with sync_playwright() as playwright:
         browser = playwright.webkit.launch(headless=True)
@@ -854,10 +854,13 @@ def main() -> int:
                 assert_direct_rtsp_camera_flow(page)
                 print("CamAdmiral direct RTSP browser E2E passed")
                 return 0
+            if mode == "frigate-discovery":
+                assert_local_frigate_discovery(page)
+                print("CamAdmiral local Frigate discovery browser E2E passed")
+                return 0
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)
             assert_camera_unadopt_block_and_restore(page)
-            assert_local_frigate_discovery(page)
             assert_mobile_settings(page)
         except Exception:
             page.screenshot(
