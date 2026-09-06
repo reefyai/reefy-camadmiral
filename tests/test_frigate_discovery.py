@@ -58,6 +58,14 @@ class LocalDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(discovery, "PROBE_TIMEOUT", 0.03):
             self.assertIsNone(await asyncio.wait_for(discovery._probe(port), 0.5))
 
+    async def test_invalid_response_is_ignored_and_missing_version_is_allowed(self):
+        with patch.object(discovery, "_get", AsyncMock(return_value=b"not json")):
+            self.assertIsNone(await discovery._probe(5000))
+        schema = json.dumps({"paths": {path: {method: {}} for path, method in REQUIRED_CAPABILITIES.items()}}).encode()
+        with patch.object(discovery, "_get", AsyncMock(side_effect=[schema, OSError("offline")])):
+            found = await discovery._probe(5000)
+        self.assertEqual(found, {"api_url": "http://127.0.0.1:5000", "version": None})
+
     async def test_scan_deadline_cancels_workers_and_returns_partial_results(self):
         active = 0
         peak = 0

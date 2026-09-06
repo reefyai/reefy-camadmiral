@@ -801,7 +801,11 @@ def assert_local_frigate_discovery(page: Page) -> None:
     found = search.value.json()["instances"]
     assert any(item["api_url"] == "http://127.0.0.1:5000" for item in found)
     assert any(item["api_url"] == "http://127.0.0.1:20017" for item in found)
-    assert page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"] == before
+    after = page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"]
+    # Background checks can update health timestamps while discovery runs.
+    def saved_settings(targets):
+        return [{key: item[key] for key in ("target_id", "api_url", "name", "selected_cameras", "address_mode")} for item in targets]
+    assert saved_settings(after) == saved_settings(before)
     modal = page.locator("#app-modal")
     row = modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017")
     expect(row).to_be_visible()
@@ -812,7 +816,7 @@ def assert_local_frigate_discovery(page: Page) -> None:
     assert saved.value.status == 201
     target = saved.value.json()["target"]
     try:
-        assert not target.get("synced_camera_count", 0)
+        assert target["selected_cameras"] == 0
         with page.expect_response(lambda response: response.url.endswith("/internal/frigate-discovery"), timeout=20_000):
             page.get_by_role("button", name="Find Frigate", exact=True).click()
         expect(modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017").get_by_role("button", name="Already added")).to_be_disabled()
