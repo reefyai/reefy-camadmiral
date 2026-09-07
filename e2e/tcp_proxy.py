@@ -30,8 +30,9 @@ async def main() -> None:
     # interfaces lets the isolated test driver inspect the same Frigate API
     # while CamAdmiral continues to use its production-safe loopback URL.
     server = await asyncio.start_server(handle, "0.0.0.0", 5000)
-    async with server:
-        await server.serve_forever()
+    reefy_port = await asyncio.start_server(handle, "127.0.0.1", 20017)
+    async with server, reefy_port:
+        await asyncio.gather(server.serve_forever(), reefy_port.serve_forever())
 
 
 if __name__ == "__main__":

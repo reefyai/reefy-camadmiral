@@ -792,10 +792,48 @@ def assert_mobile_settings(page: Page) -> None:
     expect(page.get_by_role("link", name="Incidents")).to_have_attribute("aria-current", "page")
 
 
+def assert_local_frigate_discovery(page: Page) -> None:
+    page.goto(f"{BASE_URL}/settings/integrations", wait_until="domcontentloaded")
+    before = page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"]
+    with page.expect_response(lambda response: response.url.endswith("/internal/frigate-discovery"), timeout=20_000) as search:
+        page.get_by_role("button", name="Find Frigate", exact=True).click()
+    assert search.value.ok
+    found = search.value.json()["instances"]
+    assert any(item["api_url"] == "http://127.0.0.1:5000" for item in found)
+    assert any(item["api_url"] == "http://127.0.0.1:20017" for item in found)
+    after = page.request.get(f"{BASE_URL}/internal/frigate-targets").json()["targets"]
+    # Background checks can update health timestamps while discovery runs.
+    def saved_settings(targets):
+        return [{key: item[key] for key in ("target_id", "api_url", "name", "selected_cameras", "address_mode")} for item in targets]
+    assert saved_settings(after) == saved_settings(before)
+    modal = page.locator("#app-modal")
+    row = modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017")
+    expect(row).to_be_visible()
+    row.get_by_role("button", name="Add", exact=True).click()
+    expect(page.get_by_label("Frigate API URL")).to_have_value("http://127.0.0.1:20017")
+    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/internal/frigate-targets")) as saved:
+        modal.get_by_role("button", name="Connect Frigate").click()
+    assert saved.value.status == 201
+    target = saved.value.json()["target"]
+    try:
+        assert target["selected_cameras"] == 0
+        with page.expect_response(lambda response: response.url.endswith("/internal/frigate-discovery"), timeout=20_000):
+            page.get_by_role("button", name="Find Frigate", exact=True).click()
+        expect(modal.locator(".frigate-target").filter(has_text="http://127.0.0.1:20017").get_by_role("button", name="Already added")).to_be_disabled()
+        assert modal.evaluate("el => el.getBoundingClientRect().right <= window.innerWidth + 1")
+        page.locator("#app-modal-close").click()
+    finally:
+        response = page.request.delete(
+            f"{BASE_URL}/internal/frigate-targets/{target['target_id']}",
+            headers={"X-CamAdmiral-Action": "remove-frigate-target"},
+        )
+        assert response.ok
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else None
-    if mode not in {None, "identity-history", "direct-rtsp"}:
+    if mode not in {None, "identity-history", "direct-rtsp", "frigate-discovery"}:
         raise UiScenarioFailure(f"Unknown browser E2E scenario: {mode}")
     with sync_playwright() as playwright:
         browser = playwright.webkit.launch(headless=True)
@@ -815,6 +853,10 @@ def main() -> int:
             if mode == "direct-rtsp":
                 assert_direct_rtsp_camera_flow(page)
                 print("CamAdmiral direct RTSP browser E2E passed")
+                return 0
+            if mode == "frigate-discovery":
+                assert_local_frigate_discovery(page)
+                print("CamAdmiral local Frigate discovery browser E2E passed")
                 return 0
             assert_mobile_camera_actions(page)
             assert_downstream_password_masking(page)

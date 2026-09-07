@@ -905,7 +905,10 @@
             <h3 id="frigate-settings-title">Frigate integrations</h3>
             <p>Send adopted cameras to one or more Frigate instances.</p>
           </div>
-          <button class="row-action" id="add-frigate" type="button">Add Frigate</button>
+          <div class="settings-actions">
+            <button class="row-action" id="find-frigate" type="button">Find Frigate</button>
+            <button class="row-action" id="add-frigate" type="button">Add Frigate</button>
+          </div>
         </div>
         <div class="frigate-targets" id="frigate-targets"><div class="settings-copy">Loading Frigate integrations...</div></div>
       </section>
@@ -2184,11 +2187,49 @@
       }
     }
 
-    function openFrigateEditor(target = null, trigger = null) {
+    async function findFrigate(trigger) {
+      const content = document.createElement("div");
+      addText(content, "p", "settings-copy", "Finds reachable Frigate APIs on this machine. For another machine or a custom port, use Add Frigate.");
+      const status = addText(content, "p", "settings-status", "Searching local ports...");
+      status.setAttribute("role", "status");
+      const results = addText(content, "div", "frigate-targets", "");
+      trigger.disabled = true;
+      openAppModal("find-frigate", "Find Frigate", content, trigger);
+      try {
+        const response = await fetch("/internal/frigate-discovery", {
+          method: "POST", headers: {"X-CamAdmiral-Action": "find-frigate"}
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "Could not search for Frigate.");
+        const instances = data.instances || [];
+        setText(status, data.timed_out
+          ? "Search time limit reached. Showing instances found so far."
+          : instances.length ? `Found ${instances.length} Frigate instance${instances.length === 1 ? "" : "s"}.`
+          : "No compatible local Frigate APIs found. You can still add a URL manually.");
+        instances.forEach(instance => {
+          const row = addText(results, "div", "frigate-target", "");
+          const details = addText(row, "div", "frigate-target-main", "");
+          addText(details, "strong", "", instance.name);
+          addText(details, "div", "frigate-target-url", instance.api_url);
+          addText(details, "div", "settings-copy", instance.version ? `Frigate ${instance.version}` : "Version unavailable");
+          const button = addText(row, "button", "row-action", instance.already_added ? "Already added" : "Add");
+          button.type = "button";
+          button.disabled = Boolean(instance.already_added);
+          button.addEventListener("click", () => openFrigateEditor(null, trigger, instance));
+        });
+      } catch (error) {
+        setText(status, error.message);
+        status.className = "settings-status error";
+      } finally {
+        trigger.disabled = false;
+      }
+    }
+
+    function openFrigateEditor(target = null, trigger = null, suggested = null) {
       const form = addText(document.createElement("form"), "form", "settings-form", "");
       const nameField = addText(form, "label", "setup-field", "Name");
       const name = document.createElement("input");
-      name.value = target?.name || "Frigate";
+      name.value = target?.name || suggested?.name || "Frigate";
       name.maxLength = 120;
       name.required = true;
       name.autocomplete = "off";
@@ -2196,7 +2237,7 @@
       const urlField = addText(form, "label", "setup-field", "Frigate API URL");
       const url = document.createElement("input");
       url.type = "url";
-      url.value = target?.api_url || "http://127.0.0.1:5000";
+      url.value = target?.api_url || suggested?.api_url || "http://127.0.0.1:5000";
       url.placeholder = "http://frigate.local:5000";
       url.maxLength = 512;
       url.required = true;
@@ -4241,6 +4282,7 @@
     });
     manualCardCollapse.addEventListener("click", () => closeManualCard());
     addFrigate.addEventListener("click", () => openFrigateEditor(null, addFrigate));
+    document.querySelector("#find-frigate").addEventListener("click", event => findFrigate(event.currentTarget));
     directRtspAddSource.addEventListener("click", () => {
       const adding = directRtspSource2.hidden;
       directRtspSource2.hidden = !adding;

@@ -12,6 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_discovery_ui_runs_after_real_frigate_is_ready(self) -> None:
+        runner = (ROOT / "e2e" / "run.py").read_text()
+        self.assertIn('scenario("frigate")\n        ui_scenario("frigate-discovery")', runner)
+
+    def test_dev_branch_publish_does_not_move_latest(self) -> None:
+        publish = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn("github.ref_type == 'tag' || github.ref == 'refs/heads/main'", publish)
+        self.assertIn("&& 'ghcr.io/reefyai/reefy-camadmiral:latest' || ''", publish)
+
     def test_e2e_python_sources_compile(self) -> None:
         for source in (ROOT / "e2e").rglob("*.py"):
             compile(source.read_text(), str(source), "exec")

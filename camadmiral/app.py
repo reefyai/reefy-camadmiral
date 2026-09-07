@@ -25,6 +25,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from .auth import AdminAuthenticator
+from .frigate_discovery import discover_local_frigates
 from .config import SecretConfigurationError, database_path, read_secret_file, settings
 from .crypto import load_master_key
 from .diagnostics import snapshot
@@ -1327,6 +1328,25 @@ def _stored_frigate_target(repository: CameraRepository, target_id: str) -> tupl
         raise HTTPException(status_code=404, detail="Frigate target not found")
     target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
     return current, target
+
+
+_frigate_discovery_lock = threading.Lock()
+
+
+@app.post("/internal/frigate-discovery", include_in_schema=False)
+async def find_local_frigates(
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "find-frigate":
+        raise HTTPException(status_code=400, detail="Missing Frigate discovery action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not _frigate_discovery_lock.acquire(blocking=False):
+        return _secured_json({"message": "A Frigate search is already running."}, status_code=409)
+    try:
+        return _secured_json(await discover_local_frigates(repository.frigate_targets()))
+    finally:
+        _frigate_discovery_lock.release()
 
 
 @app.get("/internal/frigate-targets", include_in_schema=False)
