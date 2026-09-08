@@ -186,6 +186,13 @@ and go2rtc streams in CamAdmiral's reserved `camadmiral_` namespace. CamAdmiral 
 confirmation with the cleanup counts. Cameras and streams outside that namespace are never
 removed or changed by full sync.
 
+Removal disables recording and the camera, hides it from Frigate's live dashboard,
+and removes its managed stream aliases. A disabled configuration entry remains so
+Frigate can safely discard pending recording segments after a restart. That entry
+can still appear in configuration and administrative views. Full sync preserves
+these entries. Selecting the camera again restores its prior recording and dashboard
+settings and restarts Frigate to recreate its capture workers.
+
 Frigate integrations are operational settings stored in CamAdmiral's SQLite database.
 They are included in the `/var/lib/camadmiral` backup boundary and are managed exclusively
 through the web UI, not the YAML process configuration.

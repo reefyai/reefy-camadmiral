@@ -57,6 +57,39 @@ def remove():
     print('REMOVE: ' + json.dumps(result), flush=True)
 
 
+def verify_retirement():
+    from scenarios import request_json
+    state = json.loads(STATE.read_text())
+    key = state['removed_key']
+    config = frigate('/api/config')['cameras'][key]
+    assert config['enabled_in_config'] is False, config
+    assert config['ui']['dashboard'] is False, config
+    assert config['record']['enabled'] is False, config
+    stats = frigate('/api/stats').get('cameras', {}).get(key, {})
+    assert not any(stats.get(field) for field in ('pid', 'capture_pid', 'ffmpeg_pid', 'camera_fps', 'process_fps')), stats
+    target_route = state['route'].split('/cameras/')[0]
+    request_json(target_route + '/full-sync', method='POST', timeout=120,
+                 headers={'X-CamAdmiral-Action': 'full-sync-frigate-target'})
+    assert frigate('/api/config')['cameras'][key]['enabled'] is False
+    print('PASS: removed camera hidden from live dashboard, no capture workers, retained after full sync', flush=True)
+
+
+def reselect():
+    from scenarios import request_json, wait_for
+    state = json.loads(STATE.read_text())
+    selected = request_json(state['route'], method='POST', timeout=120,
+                            headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
+    assert selected.get('selected') is True, selected
+    key = state['removed_key']
+    def active():
+        config = frigate('/api/config')['cameras'][key]
+        return (config['enabled_in_config'] and config['ui']['dashboard']
+                and config['record']['enabled']
+                and frigate('/api/stats').get('cameras', {}).get(key, {}).get('camera_fps', 0) > 0)
+    wait_for('reselected camera capturing with recording restored', active, timeout=120)
+    print('PASS: camera reselected with inherited recording and dashboard settings restored', flush=True)
+
+
 def host():
     project = 'camadmiral-recording-e2e'
     artifacts = ROOT / 'e2e-artifacts' / 'recording-continuity'
@@ -130,6 +163,18 @@ print(json.dumps({'recordings': rows, 'files_exist': bool(files) and all(Path(r[
         if not passed:
             raise AssertionError('CONTINUOUS RECORDING STOPPED: remaining camera saved no fresh recording after removal/restart')
         print('PASS: remaining camera continues saving recordings after removal/restart', flush=True)
+        driver('verify-retirement')
+        reselected_at = time.time()
+        driver('reselect')
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            sample = inspect()
+            if len(sample['recordings']) == 2 and all(r[2] > reselected_at + 10 for r in sample['recordings']):
+                print('PASS: both cameras save new recordings after reselection', flush=True)
+                break
+            time.sleep(5)
+        else:
+            raise AssertionError('Reselected camera did not resume saved recordings')
     except Exception:
         failed = True
         raise
@@ -145,6 +190,10 @@ if __name__ == '__main__':
         setup()
     elif sys.argv[1:] == ['remove']:
         remove()
+    elif sys.argv[1:] == ['verify-retirement']:
+        verify_retirement()
+    elif sys.argv[1:] == ['reselect']:
+        reselect()
     elif not sys.argv[1:]:
         host()
     else:

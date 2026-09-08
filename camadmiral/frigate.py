@@ -308,6 +308,35 @@ def full_sync_preview(
     }
 
 
+def _is_retired_camera(camera: Any) -> bool:
+    return (
+        isinstance(camera, dict)
+        and camera.get("enabled") is False
+        and camera.get("record", {}).get("enabled") is False
+        and camera.get("ui", {}).get("dashboard") is False
+    )
+
+
+def _retire_camera(repository: Any, client: FrigateClient, camera_key: str) -> None:
+    saved = client.raw_config().get("cameras", {}).get(camera_key, {})
+    repository.remember_retired_frigate_camera(client.target.target_id, camera_key, {
+        "record": {"enabled": saved.get("record", {}).get("enabled", "")},
+        "ui": {"dashboard": saved.get("ui", {}).get("dashboard", "")},
+    })
+    # Keep the key in every process and across restart. Frigate can then drop
+    # pending segments without its unknown-camera KeyError poisoning all cameras.
+    client.set_config(
+        {"cameras": {camera_key: {"record": {"enabled": False}}}},
+        update_topic=f"config/cameras/{camera_key}/record",
+    )
+    client.set_config(
+        {"cameras": {camera_key: {"enabled": False, "ui": {"dashboard": False}}}},
+        update_topic=f"config/cameras/{camera_key}/enabled",
+    )
+    if not _is_retired_camera(client.raw_config().get("cameras", {}).get(camera_key)):
+        raise FrigateApiError("verification_failed", stage="disable_camera", resource=camera_key)
+
+
 def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
     saved_config = client.raw_config()
     runtime_streams = client.runtime_streams()
@@ -320,10 +349,12 @@ def _full_sync_state(repository: Any, client: FrigateClient) -> dict[str, Any]:
         or not isinstance(runtime_streams, dict)
     ):
         raise FrigateApiError("invalid_response")
+    retired = repository.retired_frigate_cameras(client.target.target_id)
     stale_cameras = sorted(
         name
         for name in configured_cameras
         if name.startswith(KEY_PREFIX) and name not in desired_cameras
+        and not (name in retired and _is_retired_camera(configured_cameras[name]))
     )
     stale_config_streams = {
         name
@@ -434,12 +465,14 @@ def frigate_restart_required(
         camera_key
         for camera_key in live_cameras
         if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+        and not _is_retired_camera(live_cameras.get(camera_key))
     }
     worker_stats = client.stats()
     stale_workers = {
         camera_key
         for camera_key in worker_stats
         if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+        and not _is_retired_camera(live_cameras.get(camera_key))
     }
     return bool(
         stale_live_cameras or stale_workers or state["stale_runtime_streams"]
@@ -464,24 +497,18 @@ def full_sync_frigate(
     desired_cameras = state["desired_cameras"]
     stale_config_streams = state["stale_config_streams"]
     stale_streams = state["stale_streams"]
+    live_cameras = client.config().get("cameras", {})
     stale_workers = {
         camera_key
         for camera_key in worker_stats
         if camera_key.startswith(KEY_PREFIX) and camera_key not in desired_cameras
+        and not _is_retired_camera(live_cameras.get(camera_key))
     }
     restart_recommended = bool(stale_cameras or stale_workers)
 
     for camera_key in stale_cameras:
         try:
-            # Frigate 0.17 shares one mutable camera configuration across
-            # several dynamic-update subscribers. Hot removal lets the first
-            # subscriber remove the camera and crashes the others with
-            # KeyError. Camera removal is therefore always persisted for the
-            # next operator-controlled restart instead of attempted live.
-            client.set_config(
-                {"cameras": {camera_key: ""}},
-                requires_restart=True,
-            )
+            _retire_camera(repository, client, camera_key)
         except FrigateApiError as exc:
             raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
 
@@ -625,12 +652,9 @@ def remove_frigate_camera(
 
     if camera_exists:
         try:
-            client.set_config(
-                {"cameras": {camera_key: ""}},
-                requires_restart=True,
-            )
+            _retire_camera(repository, client, camera_key)
         except FrigateApiError as exc:
-            raise exc.with_context(stage="remove_camera", resource=camera_key) from exc
+            raise exc.with_context(stage="disable_camera", resource=camera_key) from exc
     if configured_aliases:
         try:
             client.set_config(
@@ -668,7 +692,7 @@ def remove_frigate_camera(
         verified_runtime = client.runtime_streams()
     except FrigateApiError as exc:
         raise exc.with_context(stage="verify_cleanup") from exc
-    if camera_key in verified.get("cameras", {}):
+    if camera_exists and not _is_retired_camera(verified.get("cameras", {}).get(camera_key)):
         raise FrigateApiError("verification_failed", stage="verify_cleanup", resource=camera_key)
     verified_streams = verified.get("go2rtc", {}).get("streams", {})
     remaining = [name for name in stream_keys if name in verified_streams]
@@ -954,7 +978,13 @@ def reconcile_frigate(
         camera_running = desired["key"] in stats
         configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
         aliases_exist = any(alias in configured_streams for alias in desired["streams"])
-        if binding is None and (camera_exists or aliases_exist):
+        retired_restore = repository.retired_frigate_cameras(target.target_id).get(desired["key"])
+        if binding is None and retired_restore is None and (camera_exists or aliases_exist):
+            pending += 1
+            continue
+        if retired_restore is not None and not allow_restart:
+            # Re-enabling a cold disabled camera requires fresh capture workers.
+            # Preserve the retirement marker until a restart-capable sync occurs.
             pending += 1
             continue
         actual_matches = _actual_matches(
@@ -966,6 +996,7 @@ def reconcile_frigate(
         )
         if (
             binding is not None
+            and retired_restore is None
             and bool(binding.get("camera_enabled_applied", 1))
             and binding.get("applied_hash") == desired["desired_hash"]
             and actual_matches
@@ -980,7 +1011,7 @@ def reconcile_frigate(
                 )
             applied += 1
             continue
-        if camera_exists and actual_matches and not camera_running:
+        if camera_exists and actual_matches and not camera_running and retired_restore is None:
             # Frigate 0.17 camera add events are not idempotent. Re-publishing
             # an add for an existing camera starts another set of workers and
             # leaves the previous processes alive. Keep the binding pending and
@@ -1035,6 +1066,8 @@ def reconcile_frigate(
                         **camera_update,
                         "detect": {**camera_update["detect"], "fps": ""},
                     }
+            if retired_restore is not None:
+                camera_update = {**camera_update, **retired_restore, "enabled": True}
             restart_for_second_camera = _requires_frigate_017_second_camera_restart(
                 config,
                 camera_exists=camera_exists,
@@ -1055,7 +1088,7 @@ def reconcile_frigate(
             client.set_config({"go2rtc": {"streams": desired["streams"]}})
             for alias, sources in desired["streams"].items():
                 client.set_runtime_stream(alias, sources[0])
-            if restart_for_second_camera and allow_restart:
+            if (restart_for_second_camera or retired_restore is not None) and allow_restart:
                 client.restart()
                 time.sleep(FRIGATE_RESTART_SETTLE_SECONDS)
                 missing_workers = _wait_for_camera_workers(client, [desired["key"]])
@@ -1103,5 +1136,7 @@ def reconcile_frigate(
             verified_runtime,
             verified_stats,
         )
+        if retired_restore is not None:
+            repository.forget_retired_frigate_camera(target.target_id, desired["key"])
         applied += 1
     return {"applied": applied, "pending": pending}

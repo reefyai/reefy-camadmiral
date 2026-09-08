@@ -1467,8 +1467,8 @@ def frigate() -> None:
         raise ScenarioFailure("Frigate restarted while full sync removed stale resources")
     cleaned_config = frigate_saved_config()
     cleaned_cameras = cleaned_config.get("cameras", {})
-    if stale_camera in cleaned_cameras:
-        raise ScenarioFailure("Full sync left the stale CamAdmiral camera in Frigate")
+    if cleaned_cameras.get(stale_camera, {}).get("enabled") is not False:
+        raise ScenarioFailure("Full sync did not disable the stale camera")
     if operator_camera not in cleaned_cameras:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate camera")
     cleaned_streams = cleaned_config.get("go2rtc", {}).get("streams", {})
@@ -1573,8 +1573,9 @@ def frigate() -> None:
         r"[^a-zA-Z0-9_]", "_", str(second_camera_uuid)
     )
     saved_after_removal = frigate_saved_config()
-    if removed_key in saved_after_removal.get("cameras", {}):
-        raise ScenarioFailure("Deferred removal remained in saved Frigate config")
+    retired = saved_after_removal.get("cameras", {}).get(removed_key, {})
+    if retired.get("enabled") is not False or retired.get("record", {}).get("enabled") is not False:
+        raise ScenarioFailure("Removal did not retain a safely disabled camera")
     live_after_removal = frigate_json("/api/config").get("cameras", {})
     if removed_key not in live_after_removal:
         raise ScenarioFailure(
