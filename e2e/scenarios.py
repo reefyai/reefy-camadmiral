@@ -970,8 +970,13 @@ def direct_rtsp_path_recovery() -> None:
         lambda: frigate_saved_config().get("cameras") or None,
         timeout=60,
     )
-    if _frigate_camera_key(str(state["entrance_camera_uuid"])) in saved_cameras:
-        raise ScenarioFailure("Unadopt left the direct RTSP camera in Frigate")
+    retired = saved_cameras.get(_frigate_camera_key(str(state["entrance_camera_uuid"])), {})
+    if (
+        retired.get("enabled") is not False
+        or retired.get("record", {}).get("enabled") is not False
+        or retired.get("ui", {}).get("dashboard") is not False
+    ):
+        raise ScenarioFailure("Unadopt did not retain the direct RTSP camera disabled and hidden")
     if _frigate_camera_key(str(state["loading_camera_uuid"])) not in saved_cameras:
         raise ScenarioFailure("Unadopt removed the sibling direct RTSP camera from Frigate")
     print("direct-rtsp-isolation: path failure and unadopt affected only one logical camera")
@@ -2369,8 +2374,13 @@ def frigate_unadopt() -> None:
         raise ScenarioFailure("Frigate-backed unadopt did not recommend a restart")
 
     saved = frigate_saved_config()
-    if camera_key in saved.get("cameras", {}):
-        raise ScenarioFailure("Unadopt left the camera in saved Frigate configuration")
+    retired = saved.get("cameras", {}).get(camera_key, {})
+    if (
+        retired.get("enabled") is not False
+        or retired.get("record", {}).get("enabled") is not False
+        or retired.get("ui", {}).get("dashboard") is not False
+    ):
+        raise ScenarioFailure("Unadopt did not retain the camera disabled and hidden")
     remaining_streams = saved.get("go2rtc", {}).get("streams", {})
     if any(
         alias in remaining_streams
