@@ -107,3 +107,17 @@ docker compose -p camadmiral-recording-e2e \
 
 The release gate runs this regression after the main isolated E2E lab.
 No production recording behavior is changed.
+
+The first GitHub Actions reproduction confirmed the failure on unmodified
+Frigate 0.17.2. Both synthetic cameras saved two recordings before removal.
+After the managed camera was removed and Frigate restarted, the remaining
+camera still processed 5.1 frames/sec, but its recording count stayed at two
+throughout the 120-second observation window. The removed camera's pending
+cache segment remained, and Frigate logged 25 recording-cache maintenance
+errors naming that removed camera. The existing E2E suite passed in the same
+workflow run. This is one confirmed reproduction, not a repeatability study.
+
+The test remains a failing regression pending the fix discussion. Candidate
+fixes are to guard unknown camera keys in Frigate's recording maintainer, or
+to make CamAdmiral's removal sequence stop recording and verify cache drainage
+before deleting configuration. A fixed delay alone cannot establish drainage.
