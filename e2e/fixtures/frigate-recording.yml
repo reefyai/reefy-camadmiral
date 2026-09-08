@@ -1,0 +1,35 @@
+mqtt:
+  enabled: false
+
+detectors:
+  synthetic_cpu:
+    type: cpu
+
+detect:
+  fps: 5
+
+go2rtc:
+  streams:
+    operator_stream:
+      - rtsp://camera-open:8554/main
+
+cameras:
+  operator_camera:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/operator_stream
+          input_args: preset-rtsp-restream
+          roles: [record, detect]
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    live:
+      streams:
+        Main: operator_stream
+
+record:
+  enabled: true
+  continuous:
+    days: 1

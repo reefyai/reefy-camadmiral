@@ -118,6 +118,10 @@ jobs:
         if: needs.classify-changes.outputs.e2e == 'true'
         run: python3 e2e/run.py
 
+      - name: Verify recording continuity after camera removal
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python3 e2e/recording_continuity.py
+
       - name: Upload UI E2E failure screenshot
         if: failure()
         uses: actions/upload-artifact@v4
