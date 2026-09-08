@@ -94,3 +94,49 @@ docker compose --project-name camadmiral-e2e --file e2e/compose.yaml \
 Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay
 under `tests/`. They may use mocks to isolate a single behavior. Real synthetic
 media and multi-process failure workflows belong here.
+
+## Recording continuity regression
+
+Run `python3 e2e/recording_continuity.py` on a disposable Docker host. This
+focused regression uses a separate `camadmiral-recording-e2e` Compose project,
+but the same private subnets as the main lab. Do not run both labs together.
+
+The test enables continuous recording, requires two cameras to save actual
+recordings, removes the managed camera through CamAdmiral's HTTP API, and
+performs the operator restart. It then requires the remaining camera's saved
+recording timestamps to advance beyond the restart, with nonempty media files.
+It tests healthy behavior rather than treating the known failure as success.
+
+The override pins Frigate 0.17.2 and persists `/tmp/cache` across restarts.
+The usual lab's tmpfs cache would erase pending segments during a container
+restart and could hide this failure. No fake segments or application mocks
+are injected. Whether this sequence reliably exposes the pending-segment race
+must be established by running it; a passing run does not disprove that race.
+
+Evidence is written to `e2e-artifacts/recording-continuity/`. Set
+`CAMADMIRAL_E2E_KEEP=1` to retain the disposable lab after failure. To remove it:
+
+```bash
+docker compose -p camadmiral-recording-e2e \
+  -f e2e/compose.yaml -f e2e/recording-compose.yaml \
+  down --volumes --remove-orphans
+```
+
+The release gate runs this regression before the main isolated E2E lab.
+The regression also verifies that the removed camera is hidden from the live
+dashboard, has no capture processes after restart, survives full sync as a
+disabled entry, and resumes saving recordings when selected again.
+
+The first GitHub Actions reproduction confirmed the failure on unmodified
+Frigate 0.17.2. Both synthetic cameras saved two recordings before removal.
+After the managed camera was removed and Frigate restarted, the remaining
+camera still processed 5.1 frames/sec, but its recording count stayed at two
+throughout the 120-second observation window. The removed camera's pending
+cache segment remained, and Frigate logged 25 recording-cache maintenance
+errors naming that removed camera. The existing E2E suite passed in the same
+workflow run. This is one confirmed reproduction, not a repeatability study.
+
+The workaround retains the original camera key with the camera, recording,
+and dashboard visibility disabled. The recording-continuity assertion is unchanged;
+the test must now pass without modifying Frigate. CamAdmiral preserves overridden
+settings in its database for re-selection, including inherited configuration values.

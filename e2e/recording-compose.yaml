@@ -1,0 +1,11 @@
+# Persistent cache makes an operator restart preserve pending recording segments.
+# Frigate 0.17.2 matches the affected dependency; application code is unmodified.
+services:
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:0.17.2
+    tmpfs: !reset []
+    volumes:
+      - recording-cache:/tmp/cache
+      - ./fixtures/frigate-recording.yml:/e2e/frigate.yml:ro
+volumes:
+  recording-cache:

@@ -304,7 +304,7 @@ class CameraRepositoryTests(unittest.TestCase):
             connection.execute("ALTER TABLE cameras DROP COLUMN camera_origin")
             connection.execute(
                 "DELETE FROM schema_migrations WHERE version = ?",
-                (len(MIGRATIONS),),
+                (next(i for i, migration in enumerate(MIGRATIONS, 1) if "ADD COLUMN camera_origin" in migration),),
             )
             connection.commit()
 

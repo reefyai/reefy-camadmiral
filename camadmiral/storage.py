@@ -406,6 +406,15 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE cameras ADD COLUMN camera_origin TEXT NOT NULL DEFAULT 'discovery'
         CHECK(camera_origin IN ('discovery', 'direct'));
     """,
+    """
+    CREATE TABLE frigate_retired_cameras (
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        camera_key TEXT NOT NULL,
+        restore_json TEXT NOT NULL,
+        PRIMARY KEY(target_id, camera_key)
+    );
+    """,
+
 )
 
 
@@ -2058,6 +2067,31 @@ class CameraRepository:
                 (target_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def remember_retired_frigate_camera(self, target_id: str, camera_key: str, restore: dict) -> None:
+        # Save before touching Frigate; retries must preserve the original values.
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO frigate_retired_cameras VALUES (?, ?, ?)",
+                (target_id, camera_key, json.dumps(restore)),
+            )
+            connection.commit()
+
+    def retired_frigate_cameras(self, target_id: str) -> dict[str, dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT camera_key, restore_json FROM frigate_retired_cameras WHERE target_id = ?",
+                (target_id,),
+            ).fetchall()
+        return {row["camera_key"]: json.loads(row["restore_json"]) for row in rows}
+
+    def forget_retired_frigate_camera(self, target_id: str, camera_key: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM frigate_retired_cameras WHERE target_id = ? AND camera_key = ?",
+                (target_id, camera_key),
+            )
+            connection.commit()
 
     def remove_frigate_binding(self, target_id: str, camera_uuid: str) -> bool:
         with self.connect() as connection:

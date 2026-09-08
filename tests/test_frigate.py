@@ -538,29 +538,26 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertIn("operator_camera", self.client.current_config["cameras"])
         self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
         self.assertIn(stale_camera, self.client.current_config["cameras"])
-        self.assertNotIn(stale_camera, self.client.current_raw_paths["cameras"])
+        self.assertFalse(self.client.raw_config()["cameras"][stale_camera]["record"]["enabled"])
         self.assertTrue(stale_streams.isdisjoint(self.client.current_raw_paths["go2rtc"]["streams"]))
         self.assertTrue(stale_streams.issubset(self.client.current_runtime))
         self.assertEqual(self.client.runtime_deletes, [])
         self.assertIn(
-            ({"cameras": {stale_camera: ""}}, None),
+            ({"cameras": {stale_camera: {"record": {"enabled": False}}}}, f"config/cameras/{stale_camera}/record"),
             self.client.config_writes,
         )
         self.assertIn(
             ({"go2rtc": {"streams": {name: "" for name in stale_streams}}}, None),
             self.client.config_writes,
         )
-        self.assertIn(
-            {"cameras": {stale_camera: ""}},
-            self.client.restart_config_writes,
-        )
+        self.assertFalse(self.client.raw_config()["cameras"][stale_camera]["ui"]["dashboard"])
         self.assertIn(
             {"go2rtc": {"streams": {name: "" for name in stale_streams}}},
             self.client.restart_config_writes,
         )
         self.assertEqual(self.client.restart_calls, 0)
 
-    def test_full_sync_raw_saves_when_final_stale_camera_empties_section(self) -> None:
+    def test_full_sync_retains_disabled_entries_when_all_cameras_are_stale(self) -> None:
         reconcile_frigate(
             self.repository,
             self.target,
@@ -582,18 +579,12 @@ class FrigateReconciliationTests(unittest.TestCase):
         )
 
         self.assertEqual(result["removed_cameras"], 2)
-        self.assertEqual(len(self.client.raw_config_saves), 1)
-        self.assertEqual(yaml.safe_load(self.client.raw_config_saves[0])["cameras"], {})
-        incremental_removals = [
-            operation
-            for operation in self.client.operations
-            if operation[0] == "set_config" and "cameras" in operation[1]
-        ]
-        self.assertEqual(len(incremental_removals), 1)
-        self.assertEqual(
-            len(set(incremental_removals[0][1]["cameras"]) & {first_key, second_key}),
-            1,
-        )
+        self.assertEqual(self.client.raw_config_saves, [])
+        for key in (first_key, second_key):
+            saved = self.client.raw_config()["cameras"][key]
+            self.assertFalse(saved["enabled"])
+            self.assertFalse(saved["record"]["enabled"])
+            self.assertFalse(saved["ui"]["dashboard"])
 
     def test_full_sync_recommends_restart_without_interrupting_frigate(self) -> None:
         stale_camera = "camadmiral_stale_worker"
@@ -869,11 +860,11 @@ class FrigateReconciliationTests(unittest.TestCase):
             },
         )
         self.assertIn(key, self.client.current_config["cameras"])
-        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
+        self.assertFalse(self.client.raw_config()["cameras"][key]["enabled"])
         self.assertIn("operator_camera", self.client.current_config["cameras"])
         self.assertIn("operator_stream", self.client.current_raw_paths["go2rtc"]["streams"])
         self.assertEqual(self.client.runtime_deletes, [])
-        self.assertIn({"cameras": {key: ""}}, self.client.restart_config_writes)
+        self.assertFalse(self.client.raw_config()["cameras"][key]["record"]["enabled"])
         self.assertEqual(
             self.repository.selected_frigate_camera_uuids(self.target.target_id), []
         )
@@ -881,26 +872,53 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         )
 
-    def test_remove_final_selected_camera_raw_saves_empty_cameras_mapping(self) -> None:
-        reconcile_frigate(
-            self.repository,
-            self.target,
-            client_factory=lambda _target: self.client,
-        )
-
-        result = remove_frigate_camera(
-            self.repository,
-            self.target,
-            self.camera_uuid,
-            client_factory=lambda _target: self.client,
-        )
-
+    def test_retirement_survives_full_sync_and_reselection_restores_recording(self) -> None:
+        reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
         key = frigate_camera_key(self.camera_uuid)
-        self.assertEqual(result["removed_cameras"], 1)
-        self.assertEqual(len(self.client.raw_config_saves), 1)
-        self.assertEqual(yaml.safe_load(self.client.raw_config_saves[0])["cameras"], {})
-        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
-        self.assertNotIn({"cameras": {key: ""}}, self.client.restart_config_writes)
+        self.client.set_config({"cameras": {key: {"record": {"enabled": True}}}})
+        remove_frigate_camera(self.repository, self.target, self.camera_uuid,
+                              client_factory=lambda _: self.client)
+        saved = self.client.raw_config()["cameras"][key]
+        self.assertFalse(saved["enabled"])
+        self.assertFalse(saved["record"]["enabled"])
+        self.assertFalse(saved["ui"]["dashboard"])
+        self.assertEqual(full_sync_preview(self.repository, self.target,
+                         client_factory=lambda _: self.client)["stale_cameras"], [])
+        full_sync_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+        self.assertIn(key, self.client.raw_config()["cameras"])
+        self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
+        with patch("camadmiral.frigate.FRIGATE_RESTART_SETTLE_SECONDS", 0):
+            result = reconcile_frigate(self.repository, self.target,
+                                       client_factory=lambda _: self.client)
+        self.assertEqual(result["pending"], 0)
+        restored = self.client.raw_config()["cameras"][key]
+        self.assertTrue(restored["enabled"])
+        self.assertTrue(restored["record"]["enabled"])
+        self.assertNotIn("dashboard", restored.get("ui", {}))
+        self.assertEqual(self.repository.retired_frigate_cameras(self.target.target_id), {})
+
+    def test_retirement_retry_preserves_original_settings_after_partial_failure(self) -> None:
+        reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+        key = frigate_camera_key(self.camera_uuid)
+        self.client.set_config({"cameras": {key: {"record": {"enabled": True}}}})
+        write = self.client.set_config
+
+        def fail_disable(config_data, **kwargs):
+            if kwargs.get("update_topic") == f"config/cameras/{key}/enabled":
+                raise FrigateApiError("request_rejected")
+            return write(config_data, **kwargs)
+
+        with patch.object(self.client, "set_config", side_effect=fail_disable):
+            with self.assertRaises(FrigateApiError):
+                remove_frigate_camera(self.repository, self.target, self.camera_uuid,
+                                      client_factory=lambda _: self.client)
+        self.assertIn(self.camera_uuid,
+                      self.repository.selected_frigate_camera_uuids(self.target.target_id))
+        remove_frigate_camera(self.repository, self.target, self.camera_uuid,
+                              client_factory=lambda _: self.client)
+        restore = self.repository.retired_frigate_cameras(self.target.target_id)[key]
+        self.assertTrue(restore["record"]["enabled"])
+        self.assertEqual(restore["ui"]["dashboard"], "")
 
     def test_remove_selected_camera_never_restarts_for_stale_worker(self) -> None:
         reconcile_frigate(
@@ -923,7 +941,7 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(self.client.restart_calls, 0)
         self.assertIn(key, self.client.current_stats)
         self.assertIn(key, self.client.current_config["cameras"])
-        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
+        self.assertFalse(self.client.raw_config()["cameras"][key]["enabled"])
         self.assertNotIn(("restart",), self.client.operations)
 
     def test_remove_selected_camera_requires_restart_on_newer_frigate_too(self) -> None:
@@ -944,8 +962,8 @@ class FrigateReconciliationTests(unittest.TestCase):
         key = frigate_camera_key(self.camera_uuid)
         self.assertTrue(result["restart_recommended"])
         self.assertIn(key, self.client.current_config["cameras"])
-        self.assertNotIn(key, self.client.current_raw_paths["cameras"])
-        self.assertEqual(len(self.client.raw_config_saves), 1)
+        self.assertFalse(self.client.raw_config()["cameras"][key]["enabled"])
+        self.assertFalse(self.client.raw_config()["cameras"][key]["ui"]["dashboard"])
 
     def test_restart_required_clears_after_removed_runtime_resources_stop(self) -> None:
         reconcile_frigate(

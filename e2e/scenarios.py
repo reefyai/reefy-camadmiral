@@ -970,8 +970,13 @@ def direct_rtsp_path_recovery() -> None:
         lambda: frigate_saved_config().get("cameras") or None,
         timeout=60,
     )
-    if _frigate_camera_key(str(state["entrance_camera_uuid"])) in saved_cameras:
-        raise ScenarioFailure("Unadopt left the direct RTSP camera in Frigate")
+    retired = saved_cameras.get(_frigate_camera_key(str(state["entrance_camera_uuid"])), {})
+    if (
+        retired.get("enabled") is not False
+        or retired.get("record", {}).get("enabled") is not False
+        or retired.get("ui", {}).get("dashboard") is not False
+    ):
+        raise ScenarioFailure("Unadopt did not retain the direct RTSP camera disabled and hidden")
     if _frigate_camera_key(str(state["loading_camera_uuid"])) not in saved_cameras:
         raise ScenarioFailure("Unadopt removed the sibling direct RTSP camera from Frigate")
     print("direct-rtsp-isolation: path failure and unadopt affected only one logical camera")
@@ -2140,8 +2145,8 @@ def frigate() -> None:
         raise ScenarioFailure("Frigate restarted while full sync removed stale resources")
     cleaned_config = frigate_saved_config()
     cleaned_cameras = cleaned_config.get("cameras", {})
-    if stale_camera in cleaned_cameras:
-        raise ScenarioFailure("Full sync left the stale CamAdmiral camera in Frigate")
+    if cleaned_cameras.get(stale_camera, {}).get("enabled") is not False:
+        raise ScenarioFailure("Full sync did not disable the stale camera")
     if operator_camera not in cleaned_cameras:
         raise ScenarioFailure("Full sync removed an operator-owned Frigate camera")
     cleaned_streams = cleaned_config.get("go2rtc", {}).get("streams", {})
@@ -2197,8 +2202,9 @@ def frigate() -> None:
         r"[^a-zA-Z0-9_]", "_", str(second_camera_uuid)
     )
     saved_after_removal = frigate_saved_config()
-    if removed_key in saved_after_removal.get("cameras", {}):
-        raise ScenarioFailure("Deferred removal remained in saved Frigate config")
+    retired = saved_after_removal.get("cameras", {}).get(removed_key, {})
+    if retired.get("enabled") is not False or retired.get("record", {}).get("enabled") is not False:
+        raise ScenarioFailure("Removal did not retain a safely disabled camera")
     live_after_removal = frigate_json("/api/config").get("cameras", {})
     if removed_key not in live_after_removal:
         raise ScenarioFailure(
@@ -2225,9 +2231,16 @@ def frigate() -> None:
     if final_removed.get("selected") is not False:
         raise ScenarioFailure(f"Final Frigate camera removal failed: {final_removed}")
     saved_after_final_removal = frigate_saved_config()
-    if saved_after_final_removal.get("cameras") != {}:
+    retained_cameras = saved_after_final_removal.get("cameras", {})
+    final_key = _frigate_camera_key(str(first_camera_uuid))
+    if final_key not in retained_cameras or any(
+        camera.get("enabled") is not False
+        or camera.get("record", {}).get("enabled") is not False
+        or camera.get("ui", {}).get("dashboard") is not False
+        for camera in retained_cameras.values()
+    ):
         raise ScenarioFailure(
-            "Final Frigate camera removal did not preserve a valid empty cameras mapping"
+            "Final Frigate camera removal did not retain all cameras disabled and hidden"
         )
 
     print("frigate: final-camera removal persisted and operator restart is required")
@@ -2368,8 +2381,13 @@ def frigate_unadopt() -> None:
         raise ScenarioFailure("Frigate-backed unadopt did not recommend a restart")
 
     saved = frigate_saved_config()
-    if camera_key in saved.get("cameras", {}):
-        raise ScenarioFailure("Unadopt left the camera in saved Frigate configuration")
+    retired = saved.get("cameras", {}).get(camera_key, {})
+    if (
+        retired.get("enabled") is not False
+        or retired.get("record", {}).get("enabled") is not False
+        or retired.get("ui", {}).get("dashboard") is not False
+    ):
+        raise ScenarioFailure("Unadopt did not retain the camera disabled and hidden")
     remaining_streams = saved.get("go2rtc", {}).get("streams", {})
     if any(
         alias in remaining_streams

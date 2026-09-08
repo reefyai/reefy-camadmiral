@@ -25,6 +25,8 @@
       padding: 17px 0 24px; border-top: 1px solid rgba(148, 163, 184, .1);
       color: #60798e; font-size: 12px; text-align: center;
     }
+    .app-footer a { color: #8ea2b3; text-underline-offset: 3px; }
+    .app-footer a:hover, .app-footer a:focus-visible { color: #8ff8e8; }
     header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 28px 0 18px; }
     .app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
     .app-brand img {
@@ -913,7 +915,7 @@
         <div class="frigate-targets" id="frigate-targets"><div class="settings-copy">Loading Frigate integrations...</div></div>
       </section>
     </main>
-    <footer class="app-footer">CamAdmiral <span id="app-version" data-testid="app-version">0.0.0-dev</span></footer>
+    <footer class="app-footer">CamAdmiral <span id="app-version" data-testid="app-version">0.0.0-dev</span> <span aria-hidden="true">·</span> <a href="https://github.com/reefyai/reefy-camadmiral" target="_blank" rel="noopener noreferrer">Project homepage</a></footer>
   </div>
   <div class="modal-backdrop" id="app-modal" role="dialog" aria-modal="true" aria-labelledby="app-modal-title" hidden>
     <section class="modal-dialog wide" id="app-modal-dialog" role="document">

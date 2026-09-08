@@ -1,11 +1,15 @@
 {
   "slug": "camadmiral",
-  "version": "v2026.09.06-00",
+  "version": "v2026.09.08-00",
   "name": "CamAdmiral",
   "icon": "icon.png",
   "description": "Discover, adopt, monitor, and restream ONVIF and RTSP cameras",
-  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.06-00",
+  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.08-00",
   "releases": [
+    {
+      "version": "v2026.09.08-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.08-00"
+    },
     {
       "version": "v2026.09.06-00",
       "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.06-00"
@@ -218,7 +222,9 @@
   "default_port": 18080,
   "network_mode": "host",
   "read_only": true,
-  "cap_drop": ["ALL"],
+  "cap_drop": [
+    "ALL"
+  ],
   "tmpfs": [
     "/run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001",
     "/tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001"
@@ -227,11 +233,18 @@
     "data": {
       "mount": "/var/lib/camadmiral",
       "uid": 10001,
-      "backup": ["borgbase"]
+      "backup": [
+        "borgbase"
+      ]
     }
   },
   "mem_limit": "256m",
   "pids_limit": 192,
   "needs_llm": false,
-  "tags": ["camera", "onvif", "rtsp", "security"]
+  "tags": [
+    "camera",
+    "onvif",
+    "rtsp",
+    "security"
+  ]
 }
