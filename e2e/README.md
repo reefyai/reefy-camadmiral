@@ -122,7 +122,7 @@ docker compose -p camadmiral-recording-e2e \
   down --volumes --remove-orphans
 ```
 
-The release gate runs this regression after the main isolated E2E lab.
+The release gate runs this regression before the main isolated E2E lab.
 The regression also verifies that the removed camera is hidden from the live
 dashboard, has no capture processes after restart, survives full sync as a
 disabled entry, and resumes saving recordings when selected again.

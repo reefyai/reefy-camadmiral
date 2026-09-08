@@ -111,13 +111,13 @@ jobs:
       - name: Run unit and component tests
         run: python -m unittest discover -s tests -v
 
-      - name: Run isolated E2E lab
-        if: needs.classify-changes.outputs.e2e == 'true'
-        run: python3 e2e/run.py
-
       - name: Verify recording continuity after camera removal
         if: needs.classify-changes.outputs.e2e == 'true'
         run: python3 e2e/recording_continuity.py
+
+      - name: Run isolated E2E lab
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python3 e2e/run.py
 
       - name: Upload UI E2E failure screenshot
         if: failure()

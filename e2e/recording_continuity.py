@@ -38,7 +38,7 @@ def setup():
                  headers={'X-CamAdmiral-Action': 'add-frigate-target'})
     target = request_json('/internal/frigate-targets')['targets'][0]
     route = f"/internal/frigate-targets/{target['target_id']}/cameras/{camera['id']}"
-    selected = request_json(route, method='POST', timeout=120,
+    selected = request_json(route, method='POST', expected=202, timeout=120,
                             headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
     assert selected.get('selected') is True, selected
     key = 'camadmiral_' + re.sub(r'[^a-zA-Z0-9_]', '_', camera['id'])
@@ -77,7 +77,7 @@ def verify_retirement():
 def reselect():
     from scenarios import request_json, wait_for
     state = json.loads(STATE.read_text())
-    selected = request_json(state['route'], method='POST', timeout=120,
+    selected = request_json(state['route'], method='POST', expected=202, timeout=120,
                             headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
     assert selected.get('selected') is True, selected
     key = state['removed_key']
