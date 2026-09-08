@@ -2231,9 +2231,16 @@ def frigate() -> None:
     if final_removed.get("selected") is not False:
         raise ScenarioFailure(f"Final Frigate camera removal failed: {final_removed}")
     saved_after_final_removal = frigate_saved_config()
-    if saved_after_final_removal.get("cameras") != {}:
+    retained_cameras = saved_after_final_removal.get("cameras", {})
+    final_key = _frigate_camera_key(str(first_camera_uuid))
+    if final_key not in retained_cameras or any(
+        camera.get("enabled") is not False
+        or camera.get("record", {}).get("enabled") is not False
+        or camera.get("ui", {}).get("dashboard") is not False
+        for camera in retained_cameras.values()
+    ):
         raise ScenarioFailure(
-            "Final Frigate camera removal did not preserve a valid empty cameras mapping"
+            "Final Frigate camera removal did not retain all cameras disabled and hidden"
         )
 
     print("frigate: final-camera removal persisted and operator restart is required")
