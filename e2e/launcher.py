@@ -152,6 +152,24 @@ def run_launcher() -> None:
                 raise RuntimeError("Restart replaced the existing admin password")
             if not wait_for_health(password).get("version"):
                 raise RuntimeError("Restarted launcher did not become healthy")
+
+            updated = subprocess.run(
+                [str(script), "--update"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            updated_container = docker(
+                "inspect", "--format", "{{.Id}}", CONTAINER, capture=True
+            )
+            if updated_container == restarted_container:
+                raise RuntimeError("Update did not recreate the CamAdmiral container")
+            if f"Password: {password}" not in updated.stdout:
+                raise RuntimeError("Update replaced the existing admin password")
+            if not exists("volume", VOLUME):
+                raise RuntimeError("Update removed the CamAdmiral data volume")
+            if not wait_for_health(password).get("version"):
+                raise RuntimeError("Updated launcher did not become healthy")
     finally:
         if exists("container", CONTAINER):
             docker("rm", "--force", CONTAINER, check=False)

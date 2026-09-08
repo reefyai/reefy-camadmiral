@@ -7,10 +7,15 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import yaml
+
 from camadmiral.frigate import (
     FrigateApiError,
     FrigateClient,
     FrigateTarget,
+    _actual_mismatch,
+    _empty_top_level_mapping,
+    _wait_for_camera_state,
     desired_camera,
     frigate_camera_configuration,
     full_sync_frigate,
@@ -19,6 +24,7 @@ from camadmiral.frigate import (
     frigate_restart_required,
     load_frigate_targets,
     media_host_from_inventory,
+    media_host_for_mode,
     normalize_frigate_api_url,
     reconcile_frigate,
     remove_frigate_camera,
@@ -46,6 +52,7 @@ class FakeFrigateClient:
         self.retain_removed_camera_stats = False
         self.drop_add_events = 0
         self.operations = []
+        self.raw_config_saves = []
 
     def capabilities(self) -> None:
         self.capability_checks += 1
@@ -64,6 +71,19 @@ class FakeFrigateClient:
             self.current_raw_paths["go2rtc"]["streams"]
         )
         return raw_config
+
+    def raw_config_text(self):
+        return yaml.safe_dump(self.raw_config(), sort_keys=False)
+
+    def save_raw_config(self, raw_config):
+        self.operations.append(("save_raw_config",))
+        self.raw_config_saves.append(raw_config)
+        parsed = yaml.safe_load(raw_config)
+        self.current_raw_config = copy.deepcopy(parsed)
+        self.current_raw_paths["cameras"] = copy.deepcopy(parsed.get("cameras", {}))
+        self.current_raw_paths["go2rtc"]["streams"] = copy.deepcopy(
+            parsed.get("go2rtc", {}).get("streams", {})
+        )
 
     def runtime_streams(self):
         return self.current_runtime
@@ -158,6 +178,46 @@ class FakeFrigateClient:
 
 
 class FrigateTargetTests(unittest.TestCase):
+    def test_empty_top_level_mapping_keeps_inline_comment_valid(self) -> None:
+        raw_config = (
+            "mqtt:\n"
+            "  enabled: false\n"
+            "cameras:     # No cameras defined, UI wizard should be used\n"
+            "  camadmiral_synthetic:\n"
+            "    enabled: true\n"
+            "version: 0.17-0\n"
+        )
+
+        transformed = _empty_top_level_mapping(raw_config, "cameras")
+
+        self.assertIn(
+            "cameras: {} # No cameras defined, UI wizard should be used\n",
+            transformed,
+        )
+        self.assertNotIn("camadmiral_synthetic", transformed)
+        self.assertEqual(yaml.safe_load(transformed)["cameras"], {})
+
+    def test_raw_config_save_uses_plain_text_endpoint(self) -> None:
+        target = FrigateTarget(
+            "frigate-primary",
+            "Primary Frigate",
+            "http://127.0.0.1:20001",
+        )
+        client = FrigateClient(target)
+        raw_config = "cameras: {}\nversion: 0.17-0\n"
+        with patch.object(
+            client,
+            "_request",
+            return_value={"success": True, "message": "Config successfully saved"},
+        ) as request:
+            client.save_raw_config(raw_config)
+
+        request.assert_called_once_with(
+            "POST",
+            "/api/config/save?save_option=save",
+            raw_body=raw_config.encode("utf-8"),
+        )
+
     def test_restart_required_config_write_does_not_publish_update_topic(self) -> None:
         target = FrigateTarget(
             "frigate-primary",
@@ -267,13 +327,37 @@ class FrigateTargetTests(unittest.TestCase):
             io.BytesIO(response),
         )
 
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch.object(client._opener, "open", side_effect=error):
             with self.assertRaises(FrigateApiError) as raised:
                 client.runtime_streams()
 
         self.assertEqual(raised.exception.upstream_status, 400)
         self.assertIn("rtsp://***@192.0.2.20/live", raised.exception.upstream_detail)
         self.assertNotIn("synthetic-secret", raised.exception.upstream_detail)
+
+    def test_frigate_client_does_not_follow_redirects(self) -> None:
+        target = FrigateTarget(
+            "frigate-remote",
+            "Remote Frigate",
+            "https://frigate.example.test/proxy",
+        )
+        client = FrigateClient(target)
+        handler = next(
+            item
+            for item in client._opener.handlers
+            if item.__class__.__name__ == "_NoRedirectHandler"
+        )
+
+        self.assertIsNone(
+            handler.redirect_request(
+                Mock(),
+                Mock(),
+                302,
+                "Found",
+                {},
+                "https://redirect.example.test/",
+            )
+        )
 
     def test_all_configured_targets_are_loaded(self) -> None:
         repository = Mock()
@@ -290,14 +374,36 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertEqual(targets[0].api_url, "http://127.0.0.1:20001")
         repository.frigate_targets.assert_called_once_with()
 
-    def test_frigate_url_is_normalized_and_restricted_to_loopback(self) -> None:
+    def test_frigate_url_accepts_operator_selected_http_endpoints(self) -> None:
         self.assertEqual(
             normalize_frigate_api_url("http://127.0.0.1:20001/"),
             "http://127.0.0.1:20001",
         )
-        with self.assertRaises(FrigateApiError) as raised:
-            normalize_frigate_api_url("http://192.0.2.10:5000")
-        self.assertEqual(raised.exception.code, "invalid_target_url")
+        self.assertEqual(
+            normalize_frigate_api_url("http://192.0.2.10:5000"),
+            "http://192.0.2.10:5000",
+        )
+        self.assertEqual(
+            normalize_frigate_api_url("https://frigate.example.test/proxy/"),
+            "https://frigate.example.test/proxy",
+        )
+        self.assertEqual(
+            normalize_frigate_api_url("http://[2001:db8::10]:5000/"),
+            "http://[2001:db8::10]:5000",
+        )
+
+    def test_frigate_url_rejects_unsupported_or_secret_bearing_urls(self) -> None:
+        for value in (
+            "ftp://frigate.example.test/config",
+            "http://user:secret@frigate.example.test:5000",
+            "http://frigate.example.test:5000?target=other",
+            "http://frigate.example.test:5000/#section",
+            "http://frigate.example.test:70000",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(FrigateApiError) as raised:
+                    normalize_frigate_api_url(value)
+                self.assertEqual(raised.exception.code, "invalid_target_url")
 
     def test_media_host_comes_from_private_scanner_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -307,6 +413,20 @@ class FrigateTargetTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(media_host_from_inventory(path), "192.168.50.12")
+
+    def test_lan_mode_uses_current_interface_instead_of_stale_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text(
+                json.dumps({"network": {"address": "192.168.50.12"}}),
+                encoding="utf-8",
+            )
+            interface = Mock(address="192.168.50.44")
+            with patch("camadmiral.frigate.default_lan_interface", return_value=interface):
+                self.assertEqual(media_host_for_mode(path, "lan"), "192.168.50.44")
+
+    def test_localhost_mode_uses_hostname_literal(self) -> None:
+        self.assertEqual(media_host_for_mode(Path("unused"), "localhost"), "localhost")
 
 
 class FrigateReconciliationTests(unittest.TestCase):
@@ -436,6 +556,35 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.client.restart_config_writes,
         )
         self.assertEqual(self.client.restart_calls, 0)
+
+    def test_full_sync_retains_disabled_entries_when_all_cameras_are_stale(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        first_key = frigate_camera_key(self.camera_uuid)
+        second_key = "camadmiral_second_stale"
+        self.client.current_raw_paths["cameras"][second_key] = {
+            "ffmpeg": {"inputs": []}
+        }
+        self.client.current_raw_config["cameras"][second_key] = {"enabled": True}
+        self.repository.deselect_frigate_camera(self.target.target_id, self.camera_uuid)
+        self.client.operations.clear()
+
+        result = full_sync_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+
+        self.assertEqual(result["removed_cameras"], 2)
+        self.assertEqual(self.client.raw_config_saves, [])
+        for key in (first_key, second_key):
+            saved = self.client.raw_config()["cameras"][key]
+            self.assertFalse(saved["enabled"])
+            self.assertFalse(saved["record"]["enabled"])
+            self.assertFalse(saved["ui"]["dashboard"])
 
     def test_full_sync_recommends_restart_without_interrupting_frigate(self) -> None:
         stale_camera = "camadmiral_stale_worker"
@@ -880,6 +1029,179 @@ class FrigateReconciliationTests(unittest.TestCase):
             (len(self.client.config_writes), len(self.client.runtime_writes)),
             writes_after_first,
         )
+
+    def test_verification_reports_specific_configuration_mismatches(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+
+        fixtures = {
+            "camera_configuration_missing": lambda state: state[0]["cameras"].pop(
+                desired["key"]
+            ),
+            "camera_name_mismatch": lambda state: state[0]["cameras"][desired["key"]].__setitem__(
+                "friendly_name", "Different name"
+            ),
+            "detect_settings_mismatch": lambda state: state[0]["cameras"][desired["key"]][
+                "detect"
+            ].__setitem__("width", 1),
+            "live_streams_mismatch": lambda state: state[0]["cameras"][desired["key"]][
+                "live"
+            ].__setitem__("streams", {}),
+            "ffmpeg_inputs_mismatch": lambda state: state[1]["cameras"][desired["key"]][
+                "ffmpeg"
+            ].__setitem__("inputs", []),
+            "saved_stream_mismatch": lambda state: state[1]["go2rtc"]["streams"].pop(
+                next(iter(desired["streams"]))
+            ),
+            "runtime_stream_missing": lambda state: state[3].pop(
+                next(iter(desired["streams"]))
+            ),
+        }
+        base_state = (
+            self.client.config(),
+            self.client.raw_paths(),
+            self.client.raw_config(),
+            self.client.runtime_streams(),
+        )
+        for expected, mutate in fixtures.items():
+            with self.subTest(expected=expected):
+                state = copy.deepcopy(base_state)
+                mutate(state)
+                self.assertEqual(_actual_mismatch(desired, *state), expected)
+
+    def test_verification_retries_read_only_until_camera_process_appears(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+        expected_stats = self.client.current_stats
+        calls = {"stats": 0}
+
+        def delayed_stats():
+            calls["stats"] += 1
+            return {} if calls["stats"] < 3 else expected_stats
+
+        self.client.stats = delayed_stats
+        writes_before = (len(self.client.config_writes), len(self.client.runtime_writes))
+
+        _wait_for_camera_state(self.client, desired, timeout=1, poll_interval=0)
+
+        self.assertEqual(calls["stats"], 3)
+        self.assertEqual(
+            (len(self.client.config_writes), len(self.client.runtime_writes)),
+            writes_before,
+        )
+
+    def test_reconcile_retries_verification_without_repeating_writes(self) -> None:
+        original_stats = self.client.stats
+        verification_reads = {"count": 0}
+
+        def delayed_stats():
+            if not self.client.config_writes:
+                return original_stats()
+            verification_reads["count"] += 1
+            if verification_reads["count"] < 3:
+                return {}
+            return original_stats()
+
+        self.client.stats = delayed_stats
+
+        result = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+            verification_timeout=1,
+            verification_poll_interval=0,
+        )
+
+        key = frigate_camera_key(self.camera_uuid)
+        add_topics = [
+            topic
+            for _data, topic in self.client.config_writes
+            if topic and topic.endswith("/add")
+        ]
+        self.assertEqual(result, {"applied": 1, "pending": 0})
+        self.assertEqual(verification_reads["count"], 3)
+        self.assertEqual(add_topics, [f"config/cameras/{key}/add"])
+        self.assertEqual(len(self.client.config_writes), 2)
+        self.assertEqual(len(self.client.runtime_writes), 2)
+
+    def test_verification_timeout_keeps_the_specific_failure(self) -> None:
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=lambda _target: self.client,
+        )
+        camera = self.repository.consumer_inventory()[0]
+        desired = desired_camera(
+            camera,
+            self.repository.rtsp_access_password(),
+            "127.0.0.1",
+        )
+        assert desired is not None
+        self.client.current_runtime.pop(next(iter(desired["streams"])))
+
+        with self.assertRaisesRegex(FrigateApiError, "runtime_stream_missing"):
+            _wait_for_camera_state(self.client, desired, timeout=0, poll_interval=0)
+
+    def test_reconcile_uses_saved_address_mode_for_target(self) -> None:
+        self.repository.set_frigate_target_address_mode(
+            self.target.target_id, "localhost"
+        )
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=lambda mode: {"lan": "192.168.50.44", "localhost": "localhost"}[mode],
+            client_factory=lambda _target: self.client,
+        )
+
+        sources = [source for _name, source in self.client.runtime_writes]
+        self.assertTrue(sources)
+        self.assertTrue(all("@localhost:18554/" in source for source in sources))
+
+    def test_lan_address_change_rewrites_managed_streams(self) -> None:
+        factory = lambda _target: self.client
+        current_host = {"value": "192.168.50.12"}
+        resolver = lambda _mode: current_host["value"]
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=resolver,
+            client_factory=factory,
+        )
+        writes_before_change = len(self.client.runtime_writes)
+        current_host["value"] = "192.168.50.44"
+
+        reconcile_frigate(
+            self.repository,
+            self.target,
+            media_host_resolver=resolver,
+            client_factory=factory,
+        )
+
+        changed = self.client.runtime_writes[writes_before_change:]
+        self.assertEqual(len(changed), 2)
+        self.assertTrue(all("@192.168.50.44:18554/" in source for _name, source in changed))
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
@@ -939,10 +1261,20 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.client.drop_add_events = 1
         factory = lambda _target: self.client
 
-        first = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        first = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=factory,
+            verification_timeout=0,
+        )
         binding = self.repository.frigate_binding(self.target.target_id, self.camera_uuid)
         writes_after_first = (len(self.client.config_writes), len(self.client.runtime_writes))
-        second = reconcile_frigate(self.repository, self.target, client_factory=factory)
+        second = reconcile_frigate(
+            self.repository,
+            self.target,
+            client_factory=factory,
+            verification_timeout=0,
+        )
 
         self.assertEqual(first, {"applied": 0, "pending": 1})
         self.assertEqual(binding["status"], "error")

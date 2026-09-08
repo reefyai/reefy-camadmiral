@@ -1,11 +1,123 @@
 {
   "slug": "camadmiral",
-  "version": "v2026.08.23-04",
+  "version": "v2026.09.08-00",
   "name": "CamAdmiral",
   "icon": "icon.png",
   "description": "Discover, adopt, monitor, and restream ONVIF and RTSP cameras",
-  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.23-04",
+  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.08-00",
   "releases": [
+    {
+      "version": "v2026.09.08-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.08-00"
+    },
+    {
+      "version": "v2026.09.06-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.06-00"
+    },
+    {
+      "version": "v2026.09.03-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.03-02"
+    },
+    {
+      "version": "v2026.09.03-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.03-01"
+    },
+    {
+      "version": "v2026.09.03-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.03-00"
+    },
+    {
+      "version": "v2026.09.02-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.02-01"
+    },
+    {
+      "version": "v2026.09.02-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.09.02-00"
+    },
+    {
+      "version": "v2026.08.29-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.29-00"
+    },
+    {
+      "version": "v2026.08.28-04",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.28-04"
+    },
+    {
+      "version": "v2026.08.28-03",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.28-03"
+    },
+    {
+      "version": "v2026.08.28-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.28-02"
+    },
+    {
+      "version": "v2026.08.28-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.28-01"
+    },
+    {
+      "version": "v2026.08.28-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.28-00"
+    },
+    {
+      "version": "v2026.08.27-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.27-00"
+    },
+    {
+      "version": "v2026.08.26-09",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-09"
+    },
+    {
+      "version": "v2026.08.26-08",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-08"
+    },
+    {
+      "version": "v2026.08.26-07",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-07"
+    },
+    {
+      "version": "v2026.08.26-06",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-06"
+    },
+    {
+      "version": "v2026.08.26-05",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-05"
+    },
+    {
+      "version": "v2026.08.26-04",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-04"
+    },
+    {
+      "version": "v2026.08.26-03",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-03"
+    },
+    {
+      "version": "v2026.08.26-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-02"
+    },
+    {
+      "version": "v2026.08.26-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-01"
+    },
+    {
+      "version": "v2026.08.26-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.26-00"
+    },
+    {
+      "version": "v2026.08.25-03",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-03"
+    },
+    {
+      "version": "v2026.08.25-02",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-02"
+    },
+    {
+      "version": "v2026.08.25-01",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-01"
+    },
+    {
+      "version": "v2026.08.25-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.25-00"
+    },
     {
       "version": "v2026.08.23-04",
       "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.08.23-04"
@@ -110,7 +222,9 @@
   "default_port": 18080,
   "network_mode": "host",
   "read_only": true,
-  "cap_drop": ["ALL"],
+  "cap_drop": [
+    "ALL"
+  ],
   "tmpfs": [
     "/run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001",
     "/tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001"
@@ -119,11 +233,18 @@
     "data": {
       "mount": "/var/lib/camadmiral",
       "uid": 10001,
-      "backup": ["borgbase"]
+      "backup": [
+        "borgbase"
+      ]
     }
   },
   "mem_limit": "256m",
   "pids_limit": 192,
   "needs_llm": false,
-  "tags": ["camera", "onvif", "rtsp", "security"]
+  "tags": [
+    "camera",
+    "onvif",
+    "rtsp",
+    "security"
+  ]
 }

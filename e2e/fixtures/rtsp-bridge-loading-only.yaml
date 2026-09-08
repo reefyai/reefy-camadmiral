@@ -1,0 +1,13 @@
+api:
+  listen: "0.0.0.0:1984"
+
+rtsp:
+  listen: "0.0.0.0:8554"
+  username: "operator"
+  password: "synthetic-bridge-secret"
+
+webrtc:
+  listen: ""
+
+streams:
+  loading: "ffmpeg:virtual?video=smptebars&size=960x540&rate=9#video=h264"

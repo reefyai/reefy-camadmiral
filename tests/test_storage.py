@@ -1,9 +1,12 @@
+import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from camadmiral.storage import CameraRepository
+from camadmiral.storage import MIGRATIONS, CameraRepository, SourceAlreadyAssignedError
 from camadmiral.media import ProbeResult
 
 
@@ -28,7 +31,18 @@ class CameraRepositoryTests(unittest.TestCase):
 
         self.assertEqual(first["camera_uuid"], second["camera_uuid"])
         self.assertEqual(first["roles"], second["roles"])
+        self.assertEqual(second["camera_origin"], "discovery")
         self.assertEqual(second["role_tokens"], {"record": "main", "detect": "sub"})
+        self.assertEqual(second["stream_address_mode"], "lan")
+        self.assertTrue(
+            self.repository.set_camera_stream_address_mode(
+                second["camera_uuid"], "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-1")["stream_address_mode"],
+            "localhost",
+        )
         self.assertEqual(self.repository.credentials_for_candidate("candidate-1"), ("operator", "replacement-secret"))
         self.assertEqual(self.database.stat().st_mode & 0o777, 0o600)
         with self.repository.connect() as connection:
@@ -45,6 +59,283 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(refreshed)
         self.assertIn("ready", {stream["probe_status"] for stream in refreshed["streams"]})
 
+    def test_direct_rtsp_cameras_on_one_endpoint_remain_independent(self) -> None:
+        first = self.repository.adopt(
+            {
+                "candidate_uuid": "direct-rtsp:one",
+                "display_name": "Synthetic entrance",
+                "ip": "camera-bridge.test",
+            },
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "entrance",
+                "name": "Main stream",
+                "uri": "rtsp://camera-bridge.test:8554/entrance",
+                "width": 1280,
+                "height": 720,
+                "encoding": "H264",
+                "fps": 15,
+                "bitrate_kbps": 0,
+                "source_kind": "manual_rtsp",
+            }],
+            {"record": "entrance", "detect": "entrance"},
+            camera_origin="direct",
+            reject_source_keys={
+                ("rtsp", "camera-bridge.test", 8554, "/entrance", "")
+            },
+        )
+        second = self.repository.adopt(
+            {
+                "candidate_uuid": "direct-rtsp:two",
+                "display_name": "Synthetic loading dock",
+                "ip": "camera-bridge.test",
+            },
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "loading",
+                "name": "Main stream",
+                "uri": "rtsp://camera-bridge.test:8554/loading?profile=main",
+                "width": 640,
+                "height": 360,
+                "encoding": "H264",
+                "fps": 10,
+                "bitrate_kbps": 0,
+                "source_kind": "manual_rtsp",
+            }],
+            {"record": "loading", "detect": "loading"},
+            camera_origin="direct",
+            reject_source_keys={
+                ("rtsp", "camera-bridge.test", 8554, "/loading", "profile=main")
+            },
+        )
+
+        self.assertEqual(first["camera_origin"], "direct")
+        self.assertEqual(second["camera_origin"], "direct")
+        self.assertNotEqual(first["camera_uuid"], second["camera_uuid"])
+        self.assertNotEqual(first["streams"][0]["stream_uuid"], second["streams"][0]["stream_uuid"])
+        self.assertEqual(self.repository.camera_identity_history(first["camera_uuid"]), [])
+
+    def test_direct_rtsp_exact_source_duplicate_is_atomic(self) -> None:
+        profile = {
+            "token": "primary",
+            "name": "Primary",
+            "uri": "rtsp://camera-bridge.test/live?channel=1",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+            "source_kind": "manual_rtsp",
+        }
+        key = ("rtsp", "camera-bridge.test", 554, "/live", "channel=1")
+        first = self.repository.adopt(
+            {"candidate_uuid": "direct-rtsp:first", "display_name": "First"},
+            "operator",
+            "synthetic-secret",
+            [profile],
+            {"record": "primary", "detect": "primary"},
+            camera_origin="direct",
+            reject_source_keys={key},
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "UPDATE onvif_profiles SET source_scheme=NULL, source_host=NULL, "
+                "source_port=NULL, source_path=NULL, source_query=NULL"
+            )
+            connection.commit()
+
+        with self.assertRaises(SourceAlreadyAssignedError) as raised:
+            self.repository.adopt(
+                {"candidate_uuid": "direct-rtsp:duplicate", "display_name": "Duplicate"},
+                "other",
+                "other-secret",
+                [{**profile, "uri": "rtsp://CAMERA-BRIDGE.TEST.:554/live?channel=1"}],
+                {"record": "primary", "detect": "primary"},
+                camera_origin="direct",
+                reject_source_keys={key},
+            )
+
+        self.assertEqual(raised.exception.camera_uuid, first["camera_uuid"])
+        self.assertIsNone(self.repository.adoption_for_candidate("direct-rtsp:duplicate"))
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM cameras").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT count(*) FROM camera_credentials").fetchone()[0], 1)
+
+    def test_direct_rtsp_cannot_reuse_a_discovered_camera_source(self) -> None:
+        profile = {
+            "token": "main",
+            "name": "Main",
+            "uri": "rtsp://192.168.50.20:8554/live",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+        }
+        discovered = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Existing camera"},
+            "operator",
+            "synthetic-secret",
+            [profile],
+            {"record": "main", "detect": "main"},
+        )
+
+        with self.assertRaises(SourceAlreadyAssignedError) as raised:
+            self.repository.adopt(
+                {"candidate_uuid": "direct-rtsp:duplicate", "display_name": "Duplicate"},
+                "operator",
+                "synthetic-secret",
+                [profile],
+                {"record": "main", "detect": "main"},
+                camera_origin="direct",
+                reject_source_keys={("rtsp", "192.168.50.20", 8554, "/live", "")},
+            )
+
+        self.assertEqual(raised.exception.camera_uuid, discovered["camera_uuid"])
+        self.assertIsNone(self.repository.adoption_for_candidate("direct-rtsp:duplicate"))
+
+    def test_concurrent_direct_rtsp_duplicate_creates_only_one_camera(self) -> None:
+        barrier = threading.Barrier(3)
+        outcomes: list[str] = []
+        lock = threading.Lock()
+        profile = {
+            "token": "primary",
+            "name": "Primary",
+            "uri": "rtsp://192.168.50.20:8554/live",
+            "width": 1280,
+            "height": 720,
+            "encoding": "H264",
+            "fps": 15,
+            "bitrate_kbps": 0,
+            "source_kind": "manual_rtsp",
+        }
+        key = ("rtsp", "192.168.50.20", 8554, "/live", "")
+
+        def create(index: int) -> None:
+            repository = CameraRepository(self.database, b"k" * 32)
+            barrier.wait(timeout=5)
+            try:
+                repository.adopt(
+                    {
+                        "candidate_uuid": f"direct-rtsp:concurrent-{index}",
+                        "display_name": f"Concurrent {index}",
+                    },
+                    "operator",
+                    "synthetic-secret",
+                    [profile],
+                    {"record": "primary", "detect": "primary"},
+                    camera_origin="direct",
+                    reject_source_keys={key},
+                )
+            except SourceAlreadyAssignedError:
+                result = "duplicate"
+            else:
+                result = "created"
+            with lock:
+                outcomes.append(result)
+
+        workers = [threading.Thread(target=create, args=(index,)) for index in range(2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=10)
+
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(sorted(outcomes), ["created", "duplicate"])
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM cameras").fetchone()[0], 1)
+
+    def test_camera_origin_migration_preserves_existing_camera_contract(self) -> None:
+        candidate = {
+            "candidate_uuid": "candidate-pre-origin",
+            "display_name": "Existing synthetic camera",
+            "ip": "192.168.50.30",
+            "mac": "02:00:00:00:50:30",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-pre-origin"},
+        }
+        before = self.repository.adopt(
+            candidate,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main",
+                "name": "Main",
+                "uri": "rtsp://192.168.50.30/main",
+                "width": 1280,
+                "height": 720,
+                "encoding": "H264",
+                "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        self.repository.save_frigate_target(
+            "frigate-synthetic",
+            "Synthetic Frigate",
+            "http://192.168.50.40:5000",
+        )
+        self.repository.set_frigate_target_address_mode(
+            "frigate-synthetic",
+            "localhost",
+        )
+        self.repository.select_frigate_camera(
+            "frigate-synthetic",
+            before["camera_uuid"],
+            "localhost",
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, severity, "
+                "opened_at, last_observed_at) VALUES (?, ?, 'media_offline', 'warning', ?, ?)",
+                (
+                    "incident-synthetic-pre-origin",
+                    before["camera_uuid"],
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:01:00+00:00",
+                ),
+            )
+            connection.commit()
+        history_before = self.repository.camera_identity_history(before["camera_uuid"])
+        incidents_before = self.repository.incidents(status="all")
+        with self.repository.connect() as connection:
+            connection.execute("ALTER TABLE cameras DROP COLUMN camera_origin")
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?",
+                (next(i for i, migration in enumerate(MIGRATIONS, 1) if "ADD COLUMN camera_origin" in migration),),
+            )
+            connection.commit()
+
+        self.repository.migrate()
+        after = self.repository.adoption_for_candidate("candidate-pre-origin")
+        self.assertEqual(after["camera_uuid"], before["camera_uuid"])
+        self.assertEqual(after["streams"][0]["stream_uuid"], before["streams"][0]["stream_uuid"])
+        self.assertEqual(after["streams"][0]["uri"], before["streams"][0]["uri"])
+        self.assertEqual(after["roles"], before["roles"])
+        self.assertEqual(after["camera_origin"], "discovery")
+        self.assertEqual(
+            self.repository.credentials_for_candidate("candidate-pre-origin"),
+            ("operator", "synthetic-secret"),
+        )
+        self.assertEqual(
+            self.repository.camera_identity_history(before["camera_uuid"]),
+            history_before,
+        )
+        self.assertEqual(self.repository.incidents(status="all"), incidents_before)
+        self.assertEqual(
+            self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
+            [before["camera_uuid"]],
+        )
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode(
+                "frigate-synthetic",
+                before["camera_uuid"],
+            ),
+            "localhost",
+        )
+
     def test_rtsp_access_password_is_stable_and_encrypted(self) -> None:
         first = self.repository.rtsp_access_password()
         second = CameraRepository(self.database, b"k" * 32).rtsp_access_password()
@@ -56,6 +347,60 @@ class CameraRepositoryTests(unittest.TestCase):
                 "SELECT secret_ciphertext FROM service_secrets WHERE name = 'rtsp-access'"
             ).fetchone()[0]
         self.assertNotIn(first.encode(), ciphertext)
+
+    def test_discovery_network_settings_persist_custom_and_excluded_subnets(self) -> None:
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            },
+        )
+
+        self.repository.save_discovery_network_settings(
+            custom_subnets=["10.0.202.0/24"],
+            excluded_detected_subnets=["192.168.40.0/24"],
+            excluded_custom_subnets=["10.0.202.0/24"],
+        )
+
+        self.assertEqual(
+            CameraRepository(self.database, b"k" * 32).discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": ["192.168.40.0/24"],
+                "excluded_custom_subnets": ["10.0.202.0/24"],
+            },
+        )
+
+    def test_discovery_checkbox_migration_preserves_existing_custom_subnets(self) -> None:
+        with self.repository.connect() as connection:
+            connection.execute("DROP TABLE discovery_settings")
+            connection.execute(
+                "CREATE TABLE discovery_settings ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+                "custom_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]', "
+                "updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO discovery_settings VALUES (1, '[\"10.0.202.0/24\"]', '[]', 'now')"
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (18,)
+            )
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.discovery_network_settings(),
+            {
+                "custom_subnets": ["10.0.202.0/24"],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            },
+        )
 
     def test_frigate_targets_are_managed_in_sqlite(self) -> None:
         self.repository.save_frigate_target(
@@ -74,6 +419,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(target["selected_cameras"], 0)
         self.assertEqual(target["connection_status"], "connected")
         self.assertFalse(target["restart_recommended"])
+        self.assertEqual(target["address_mode"], "lan")
 
         self.repository.record_frigate_target_check(
             "frigate-synthetic",
@@ -98,6 +444,24 @@ class CameraRepositoryTests(unittest.TestCase):
         camera_uuid = adoption["camera_uuid"]
         self.assertTrue(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
+        self.assertEqual(
+            self.repository.frigate_camera_selections("frigate-synthetic"),
+            [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
+        )
+        self.assertTrue(
+            self.repository.set_frigate_target_address_mode(
+                "frigate-synthetic", "localhost"
+            )
+        )
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-synthetic", camera_uuid),
+            "localhost",
+        )
+        self.assertFalse(
+            self.repository.select_frigate_camera(
+                "frigate-synthetic", camera_uuid, "localhost"
+            )
+        )
         self.assertEqual(
             self.repository.selected_frigate_camera_uuids("frigate-synthetic"),
             [camera_uuid],
@@ -125,6 +489,211 @@ class CameraRepositoryTests(unittest.TestCase):
         self.repository.migrate()
 
         self.assertEqual(self.repository.selected_frigate_camera_uuids("frigate-existing"), [])
+
+    def test_frigate_address_mode_migration_defaults_existing_selections_to_lan(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.select_frigate_camera("frigate-existing", camera_uuid)
+        with self.repository.connect() as connection:
+            connection.execute("DELETE FROM schema_migrations WHERE version = 16")
+            connection.execute(
+                "CREATE TABLE old_selections AS "
+                "SELECT target_id, camera_uuid, selected_at FROM frigate_camera_selections"
+            )
+            connection.execute("DROP TABLE frigate_camera_selections")
+            connection.execute(
+                "CREATE TABLE frigate_camera_selections ("
+                "target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE, "
+                "camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE, "
+                "selected_at TEXT NOT NULL, PRIMARY KEY(target_id, camera_uuid))"
+            )
+            connection.execute(
+                "INSERT INTO frigate_camera_selections SELECT * FROM old_selections"
+            )
+            connection.execute("DROP TABLE old_selections")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.frigate_camera_address_mode("frigate-existing", camera_uuid),
+            "lan",
+        )
+
+    def test_stream_address_mode_migration_preserves_latest_frigate_choice(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-existing",
+            "Existing Frigate",
+            "http://127.0.0.1:20002",
+        )
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-existing", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        self.repository.set_frigate_target_address_mode(
+            "frigate-existing", "localhost"
+        )
+        self.repository.select_frigate_camera(
+            "frigate-existing", camera_uuid, "localhost"
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (19,)
+            )
+            connection.execute("ALTER TABLE cameras DROP COLUMN stream_address_mode")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertEqual(
+            self.repository.adoption_for_candidate("candidate-existing")["stream_address_mode"],
+            "localhost",
+        )
+
+    def test_target_address_migration_preserves_mixed_legacy_selections(self) -> None:
+        self.repository.save_frigate_target(
+            "frigate-mixed",
+            "Mixed Frigate",
+            "http://127.0.0.1:20003",
+        )
+        camera_uuids = []
+        for suffix in ("one", "two"):
+            adoption = self.repository.adopt(
+                {
+                    "candidate_uuid": f"candidate-{suffix}",
+                    "display_name": f"Synthetic {suffix}",
+                },
+                "operator",
+                "synthetic-secret",
+                [{
+                    "token": "main",
+                    "name": "Main",
+                    "uri": f"rtsp://192.0.2.30/{suffix}",
+                    "width": 1280,
+                    "height": 720,
+                    "encoding": "H264",
+                    "fps": 15,
+                    "bitrate_kbps": 0,
+                }],
+                {"record": "main", "detect": "main"},
+            )
+            camera_uuids.append(adoption["camera_uuid"])
+            self.repository.select_frigate_camera(
+                "frigate-mixed", adoption["camera_uuid"]
+            )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET address_mode = 'localhost' "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                ("frigate-mixed", camera_uuids[1]),
+            )
+            connection.execute("DELETE FROM schema_migrations WHERE version = 21")
+            connection.execute("ALTER TABLE frigate_targets DROP COLUMN address_mode")
+            connection.commit()
+
+        self.repository.migrate()
+
+        self.assertIsNone(
+            self.repository.frigate_target("frigate-mixed")["address_mode"]
+        )
+        self.assertEqual(
+            {
+                selection["address_mode"]
+                for selection in self.repository.frigate_camera_selections(
+                    "frigate-mixed"
+                )
+            },
+            {"lan", "localhost"},
+        )
+
+    def test_blocked_device_matches_only_stable_onvif_identity_or_mac(self) -> None:
+        candidate = {
+            "candidate_uuid": "candidate-blocked",
+            "display_name": "Synthetic false positive",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "URN:UUID:SYNTHETIC-20"},
+        }
+        blocked = self.repository.block_candidate(candidate)
+
+        self.assertEqual(blocked["onvif_identity"], "urn:uuid:synthetic-20")
+        self.assertEqual(blocked["mac"], "02:00:00:00:00:20")
+        self.assertIsNotNone(
+            self.repository.blocked_device_for_candidate(
+                {**candidate, "candidate_uuid": "moved", "ip": "192.0.2.99"}
+            )
+        )
+        self.assertIsNone(
+            self.repository.blocked_device_for_candidate(
+                {
+                    "candidate_uuid": "reused-address",
+                    "ip": "192.0.2.20",
+                    "mac": "02:00:00:00:00:99",
+                    "onvif": {"endpoint_reference": "urn:uuid:different"},
+                }
+            )
+        )
+        self.assertTrue(self.repository.unblock_device(blocked["block_uuid"]))
+        self.assertEqual(self.repository.blocked_devices(), [])
+
+    def test_block_requires_nonconflicting_stable_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no stable"):
+            self.repository.block_candidate(
+                {"candidate_uuid": "unstable", "display_name": "Unstable", "ip": "192.0.2.30"}
+            )
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            self.repository.block_candidate(
+                {
+                    "candidate_uuid": "conflict",
+                    "display_name": "Conflict",
+                    "mac": "02:00:00:00:00:30",
+                    "identity_conflict": True,
+                }
+            )
+
+    def test_unadopt_removes_camera_children_and_saved_credentials(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-remove", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.40/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+
+        self.assertTrue(self.repository.unadopt_camera(camera_uuid))
+        self.assertIsNone(self.repository.camera(camera_uuid))
+        self.assertIsNone(self.repository.adoption_for_candidate("candidate-remove"))
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM camera_credentials").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM managed_streams").fetchone()[0], 0)
 
     def test_incident_lifecycle_deduplicates_outage_and_notifies_recovery(self) -> None:
         adoption = self.repository.adopt(
@@ -175,6 +744,218 @@ class CameraRepositoryTests(unittest.TestCase):
         )
         self.assertNotIn("192.0.2.60", str(notifications))
         self.assertNotIn("synthetic-secret", str(notifications))
+
+    def test_incident_schema_migration_preserves_existing_rows_and_foreign_keys(self) -> None:
+        legacy_database = Path(self.temporary.name) / "legacy-incidents.db"
+        with sqlite3.connect(legacy_database) as connection:
+            connection.execute(
+                "CREATE TABLE schema_migrations "
+                "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            for version, migration in enumerate(MIGRATIONS[:22], start=1):
+                connection.executescript(migration)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (version, "2026-01-01T00:00:00+00:00"),
+                )
+            connection.execute(
+                "INSERT INTO camera_credentials(credential_uuid, username, "
+                "password_ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "credential-legacy",
+                    "operator",
+                    b"synthetic-ciphertext",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, "
+                "credential_uuid, adopted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "camera-legacy",
+                    "candidate-legacy",
+                    "Synthetic legacy camera",
+                    "credential-legacy",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, opened_at, "
+                "last_observed_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "incident-legacy",
+                    "camera-legacy",
+                    "media_offline",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO notification_outbox(outbox_uuid, incident_uuid, event_type, "
+                "payload_json, idempotency_key, status, next_attempt_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "outbox-legacy",
+                    "incident-legacy",
+                    "incident_opened",
+                    "{}",
+                    "incident-legacy:incident_opened",
+                    "pending",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        migrated = CameraRepository(legacy_database, b"k" * 32)
+        migrated.migrate()
+        with migrated.connect() as connection:
+            incident = connection.execute(
+                "SELECT kind, severity, details_json FROM camera_incidents "
+                "WHERE incident_uuid = 'incident-legacy'"
+            ).fetchone()
+            outbox = connection.execute(
+                "SELECT incident_uuid, event_type FROM notification_outbox "
+                "WHERE outbox_uuid = 'outbox-legacy'"
+            ).fetchone()
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(dict(incident), {
+            "kind": "media_offline",
+            "severity": "critical",
+            "details_json": "{}",
+        })
+        self.assertEqual(dict(outbox), {
+            "incident_uuid": "incident-legacy",
+            "event_type": "incident_opened",
+        })
+
+    def test_address_recovery_closes_health_and_address_incidents_independently(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-moved", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.70/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        camera_uuid = str(adoption["camera_uuid"])
+        stream_uuid = str(adoption["streams"][0]["stream_uuid"])
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        for _ in range(3):
+            self.repository.record_probe_results(
+                {stream_uuid: ProbeResult("unavailable", 10)}
+            )
+
+        address_incident = self.repository.open_camera_address_incident(
+            camera_uuid,
+            "192.0.2.70",
+            "192.0.2.71",
+            "onvif-endpoint",
+        )
+        opened = self.repository.incidents(status="open")
+        self.assertEqual(opened["open_count"], 2)
+        self.assertEqual(
+            {incident["kind"] for incident in opened["incidents"]},
+            {"media_offline", "camera_address_changed"},
+        )
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        health_recovered = self.repository.incidents(status="open")
+        self.assertEqual(health_recovered["open_count"], 1)
+        self.assertEqual(
+            health_recovered["incidents"][0]["kind"],
+            "camera_address_changed",
+        )
+
+        self.repository.resolve_camera_address_incident(address_incident)
+        resolved = self.repository.incidents(status="resolved")
+        self.assertEqual(resolved["open_count"], 0)
+        reasons = {
+            incident["kind"]: incident["resolution_reason"]
+            for incident in resolved["incidents"]
+        }
+        self.assertEqual(reasons["media_offline"], "recovered")
+        self.assertEqual(reasons["camera_address_changed"], "stream_recovered")
+
+    def test_relay_restart_event_is_queued_once_without_camera_secrets(self) -> None:
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token="synthetic-pairing-token",
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+        self.repository.complete_telegram_pairing(
+            chat_id="100200300",
+            chat_label="Synthetic operator",
+            update_offset=7,
+        )
+
+        outbox_uuid = self.repository.enqueue_relay_restart_notification(
+            reason="camera_address_recovery",
+            camera_count=2,
+        )
+
+        self.assertIsNotNone(outbox_uuid)
+        due = self.repository.due_notifications()
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["event_type"], "relay_restarted")
+        self.assertEqual(due[0]["payload"]["camera_count"], 2)
+        self.assertEqual(due[0]["payload"]["reason"], "camera_address_recovery")
+        self.assertNotIn("rtsp://", str(due))
+        self.assertNotIn("synthetic-bot-token-value", str(due))
+
+    def test_address_notifications_include_only_the_address_transition(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-address-alert", "display_name": "Synthetic camera"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.10/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token="synthetic-pairing-token",
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+        self.repository.complete_telegram_pairing(
+            chat_id="100200300",
+            chat_label="Synthetic operator",
+            update_offset=7,
+        )
+
+        incident_uuid = self.repository.open_camera_address_incident(
+            adoption["camera_uuid"],
+            "192.0.2.10",
+            "192.0.2.20",
+            "onvif-endpoint",
+        )
+        self.repository.resolve_camera_address_incident(incident_uuid)
+
+        due = self.repository.due_notifications()
+        self.assertEqual(
+            [item["event_type"] for item in due],
+            ["incident_opened", "incident_resolved"],
+        )
+        for item in due:
+            self.assertEqual(item["payload"]["previous_address"], "192.0.2.10")
+            self.assertEqual(item["payload"]["current_address"], "192.0.2.20")
+            self.assertIn("opened_at", item["payload"])
+            self.assertNotIn("synthetic-secret", str(item))
+            self.assertNotIn("rtsp://", str(item))
 
     def test_telegram_token_and_pairing_secret_are_encrypted_and_never_exposed(self) -> None:
         bot_token = "123456:synthetic-bot-token-value"
@@ -274,6 +1055,13 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(binding["last_error_code"], "target_unavailable")
         self.assertEqual(binding["applied_hash"], "desired-hash")
 
+        self.repository.mark_frigate_binding_pending(
+            "frigate-primary", adoption["camera_uuid"]
+        )
+        binding = self.repository.frigate_binding("frigate-primary", adoption["camera_uuid"])
+        self.assertEqual(binding["status"], "pending")
+        self.assertIsNone(binding["last_error_code"])
+
     def test_preview_prefers_healthy_detection_stream(self) -> None:
         candidate = {"candidate_uuid": "candidate-preview", "display_name": "Camera"}
         adoption = self.repository.adopt(
@@ -346,6 +1134,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertFalse(disabled["enabled"])
         self.assertEqual(len(disabled["streams"]), 1)
         self.assertEqual(self.repository.managed_stream_sources(), [])
+        self.assertEqual(self.repository.managed_stream_runtime_sources(), [])
         self.assertIsNone(self.repository.preview_stream_for_camera(adoption["camera_uuid"]))
         saved = self.repository.managed_stream_sources(
             include_disabled=True,
@@ -407,6 +1196,7 @@ class CameraRepositoryTests(unittest.TestCase):
             self.repository.managed_stream_sources(include_auth_failed=False),
             [],
         )
+        self.assertEqual(self.repository.managed_stream_runtime_sources(), [])
 
         replaced = self.repository.replace_camera_credentials(
             adoption["camera_uuid"],
@@ -427,6 +1217,7 @@ class CameraRepositoryTests(unittest.TestCase):
             len(self.repository.managed_stream_sources(include_auth_failed=False)),
             1,
         )
+        self.assertEqual(len(self.repository.managed_stream_runtime_sources()), 1)
 
     def test_consumer_inventory_excludes_upstream_urls_and_credentials(self) -> None:
         candidate = {"candidate_uuid": "candidate-consumer", "display_name": "Entrance"}
@@ -458,6 +1249,58 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn("private-source", serialized)
         self.assertNotIn("synthetic-secret", serialized)
         self.assertNotIn("operator", serialized)
+
+    def test_runtime_sources_are_role_bound_and_do_not_decrypt_credentials(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-runtime", "display_name": "Entrance"},
+            "operator",
+            "synthetic-secret",
+            [
+                {
+                    "token": "main",
+                    "name": "Main",
+                    "uri": "rtsp://192.0.2.20/main",
+                    "width": 1920,
+                    "height": 1080,
+                    "encoding": "H264",
+                    "fps": 20,
+                    "bitrate_kbps": 2048,
+                },
+                {
+                    "token": "extra",
+                    "name": "Extra",
+                    "uri": "rtsp://192.0.2.20/extra",
+                    "width": 640,
+                    "height": 360,
+                    "encoding": "H264",
+                    "fps": 10,
+                    "bitrate_kbps": 512,
+                },
+            ],
+            {"record": "main", "detect": "main"},
+        )
+        main = next(
+            stream for stream in adoption["streams"] if stream["profile_token"] == "main"
+        )
+
+        with patch(
+            "camadmiral.storage.decrypt_password",
+            side_effect=AssertionError("runtime inventory must not decrypt credentials"),
+        ):
+            sources = self.repository.managed_stream_runtime_sources()
+
+        self.assertEqual(
+            sources,
+            [
+                {
+                    "stream_uuid": main["stream_uuid"],
+                    "stream_key": main["stream_key"],
+                    "camera_uuid": adoption["camera_uuid"],
+                }
+            ],
+        )
+        self.assertNotIn("synthetic-secret", str(sources))
+        self.assertNotIn("operator", str(sources))
 
     def test_manual_rtsp_source_is_structured_and_reconciled_like_onvif(self) -> None:
         candidate = {
@@ -822,6 +1665,292 @@ class CameraRepositoryTests(unittest.TestCase):
                 "SELECT previous_address, current_address, evidence FROM camera_address_events"
             ).fetchone()
         self.assertEqual(tuple(event), ("192.168.1.20", "192.168.1.99", "unique-mac"))
+
+    def test_identity_history_keeps_one_current_period_and_closes_changes(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "URN:UUID:SYNTHETIC-CAMERA"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+
+        first = self.repository.camera_identity_history(camera_uuid)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(
+            {
+                "ip": first[0]["ip"],
+                "mac": first[0]["mac"],
+                "onvif_identity": first[0]["onvif_identity"],
+                "ended_at": first[0]["ended_at"],
+                "current": first[0]["current"],
+            },
+            {
+                "ip": "192.0.2.20",
+                "mac": "02:00:00:00:00:20",
+                "onvif_identity": "urn:uuid:synthetic-camera",
+                "ended_at": None,
+                "current": True,
+            },
+        )
+        self.assertFalse(
+            self.repository.observe_camera_identity(
+                camera_uuid,
+                {"candidate_uuid": "candidate-identity", "ip": "192.0.2.20"},
+            )
+        )
+
+        changed_at = "2099-01-02T03:04:05+00:00"
+        self.assertTrue(
+            self.repository.observe_camera_identity(
+                camera_uuid,
+                {
+                    **original,
+                    "ip": "192.0.2.99",
+                    "mac": "02:00:00:00:00:99",
+                },
+                observed_at=changed_at,
+            )
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "192.0.2.99")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:99")
+        self.assertEqual(history[0]["started_at"], changed_at)
+        self.assertTrue(history[0]["current"])
+        self.assertEqual(history[1]["ip"], "192.0.2.20")
+        self.assertEqual(history[1]["ended_at"], changed_at)
+        self.assertFalse(history[1]["current"])
+
+    def test_identity_history_initialization_does_not_advance_existing_period(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-initialized",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        changes = self.repository.initialize_camera_identities(
+            [(adoption["camera_uuid"], {**original, "ip": "192.0.2.99"})],
+            observed_at="2099-01-02T03:04:05+00:00",
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertEqual(changes, 0)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["ip"], "192.0.2.20")
+        self.assertTrue(history[0]["current"])
+
+    def test_identity_history_initializes_existing_camera_without_a_period(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-migrated-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        with self.repository.connect() as connection:
+            connection.execute(
+                "DELETE FROM camera_identity_periods WHERE camera_uuid = ?",
+                (adoption["camera_uuid"],),
+            )
+            connection.commit()
+
+        changes = self.repository.initialize_camera_identities(
+            [(adoption["camera_uuid"], original)],
+            observed_at="2099-01-02T03:04:05+00:00",
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["ip"], "192.0.2.20")
+        self.assertTrue(history[0]["current"])
+
+    def test_identity_history_keeps_unobserved_fields_unknown_after_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-partial-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        changed = self.repository.observe_camera_identity(
+            adoption["camera_uuid"],
+            {
+                "candidate_uuid": "candidate-partial-identity",
+                "ip": "192.0.2.99",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            },
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertTrue(changed)
+        self.assertEqual(history[0]["ip"], "192.0.2.99")
+        self.assertIsNone(history[0]["mac"])
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+
+    def test_identity_history_enriches_unknown_current_fields_without_new_period(self) -> None:
+        candidate = {
+            "candidate_uuid": "candidate-enriched-identity",
+            "display_name": "Synthetic camera",
+            "ip": "192.0.2.20",
+        }
+        adoption = self.repository.adopt(
+            candidate,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://192.0.2.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+
+        enriched = self.repository.observe_camera_identity(
+            adoption["camera_uuid"],
+            {
+                **candidate,
+                "mac": "02:00:00:00:00:20",
+                "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+            },
+        )
+        history = self.repository.camera_identity_history(adoption["camera_uuid"])
+
+        self.assertTrue(enriched)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:20")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+
+    def test_inventory_observation_records_same_ip_mac_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-same-ip-new-mac",
+            "display_name": "Synthetic camera",
+            "ip": "172.21.10.20",
+            "mac": "02:00:00:00:00:20",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://172.21.10.20/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        changed_at = "2099-01-02T03:04:05+00:00"
+
+        changes = self.repository.observe_inventory_identities(
+            [(camera_uuid, {**original, "mac": "02:00:00:00:00:21"})],
+            advance_existing_camera_uuids={camera_uuid},
+            observed_at=changed_at,
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "172.21.10.20")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:21")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera")
+        self.assertEqual(history[0]["started_at"], changed_at)
+        self.assertEqual(history[1]["mac"], "02:00:00:00:00:20")
+        self.assertEqual(history[1]["ended_at"], changed_at)
+
+    def test_inventory_observation_records_same_ip_onvif_change(self) -> None:
+        original = {
+            "candidate_uuid": "candidate-same-ip-new-onvif",
+            "display_name": "Synthetic camera",
+            "ip": "172.21.10.30",
+            "mac": "02:00:00:00:00:30",
+            "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera-old"},
+        }
+        adoption = self.repository.adopt(
+            original,
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "main", "name": "Main", "uri": "rtsp://172.21.10.30/main",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "main", "detect": "main"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+
+        changes = self.repository.observe_inventory_identities(
+            [(
+                camera_uuid,
+                {
+                    **original,
+                    "onvif": {"endpoint_reference": "urn:uuid:synthetic-camera-new"},
+                },
+            )],
+            advance_existing_camera_uuids={camera_uuid},
+        )
+        history = self.repository.camera_identity_history(camera_uuid)
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ip"], "172.21.10.30")
+        self.assertEqual(history[0]["mac"], "02:00:00:00:00:30")
+        self.assertEqual(history[0]["onvif_identity"], "urn:uuid:synthetic-camera-new")
+        self.assertEqual(history[1]["onvif_identity"], "urn:uuid:synthetic-camera-old")
+
+    def test_identity_history_returns_none_for_unknown_camera(self) -> None:
+        self.assertIsNone(self.repository.camera_identity_history("missing-camera"))
 
     def test_media_revisions_are_secret_free_and_keep_last_known_good(self) -> None:
         candidate = {"candidate_uuid": "candidate-revision", "display_name": "Camera"}

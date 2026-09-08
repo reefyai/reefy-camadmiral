@@ -6,7 +6,9 @@ import json
 import hashlib
 import logging
 import os
+import re
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -14,6 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -22,9 +25,18 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from .auth import AdminAuthenticator
+from .frigate_discovery import discover_local_frigates
 from .config import SecretConfigurationError, database_path, read_secret_file, settings
 from .crypto import load_master_key
 from .diagnostics import snapshot
+from .discovery import (
+    LanInterface,
+    MAX_SCAN_HOSTS,
+    custom_scan_subnet,
+    normalize_private_scan_subnet,
+    private_lan_interfaces,
+    routed_scan_interface,
+)
 from .frigate import (
     FrigateApiError,
     FrigateClient,
@@ -34,7 +46,7 @@ from .frigate import (
     full_sync_frigate,
     full_sync_preview as preview_frigate_full_sync,
     load_frigate_targets,
-    media_host_from_inventory,
+    media_host_for_mode,
     normalize_frigate_api_url,
     reconcile_frigate,
     remove_frigate_camera,
@@ -42,6 +54,7 @@ from .frigate import (
 from .media import (
     ProbeResult,
     RelayHealthMonitor,
+    RelayRuntimeActivityMonitor,
     SnapshotError,
     go2rtc_websocket_url,
     probe_source,
@@ -53,9 +66,10 @@ from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
 from .notifications import TelegramClient, TelegramError, notification_text, pairing_message
 from .roles import select_stream_roles
 from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
+from .inventory import inventory_summary
 from .recovery import recover_inventory_addresses
 from .scan_state import preserve_inventory
-from .storage import CameraRepository
+from .storage import CameraRepository, SourceAlreadyAssignedError
 
 app = FastAPI(
     title="CamAdmiral Discovery Preview",
@@ -70,12 +84,17 @@ SCAN_REQUEST = Path("/run/camadmiral/scan-request.json")
 SCAN_STATE = Path("/run/camadmiral/scan-state.json")
 INVENTORY = settings().storage.inventory
 REPOSITORY: CameraRepository | None = None
+REPOSITORY_LOCK = threading.Lock()
 MEDIA_LOCK = threading.Lock()
 FRIGATE_LOCK = threading.Lock()
+FRIGATE_CAMERA_JOBS_LOCK = threading.Lock()
+FRIGATE_CAMERA_JOBS: set[tuple[str, str]] = set()
 LOGGER = logging.getLogger(__name__)
 SCAN_REQUEST_LOCK = threading.Lock()
 RELAY_HEALTH_MONITOR = RelayHealthMonitor()
-HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "30")))
+RELAY_RUNTIME_ACTIVITY_MONITOR = RelayRuntimeActivityMonitor()
+RELAY_RUNTIME_POLL_FAILURE_ACTIVE = False
+HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "10")))
 RUNTIME_RECONCILE_INTERVAL = max(
     2.0,
     float(os.environ.get("CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL", "5")),
@@ -85,8 +104,30 @@ RECOVERY_SCAN_INTERVAL = max(
     float(os.environ.get("CAMADMIRAL_RECOVERY_SCAN_INTERVAL", "300")),
 )
 RECOVERY_SCAN_ATTEMPTS: dict[str, float] = {}
+RECOVERY_SCAN_ATTEMPT_COUNTS: dict[str, int] = {}
+RECOVERY_SCAN_FAST_RETRY_INTERVAL = 10.0
+# Cameras commonly take one or two minutes to finish rebooting. Keep the
+# targeted identity scan on its inexpensive fast cadence through that window
+# before returning to the normal background interval.
+RECOVERY_SCAN_FAST_RETRIES = 12
+RECOVERY_SCAN_PAUSED_UNTIL = 0.0
+MANUAL_SCAN_PRIORITY_WINDOW = 30.0
 FRIGATE_RECONCILE_INTERVAL = 30.0
 NOTIFICATION_INTERVAL = 5.0
+DIRECT_RTSP_DNS_TIMEOUT = max(
+    0.1,
+    float(os.environ.get("CAMADMIRAL_DIRECT_RTSP_DNS_TIMEOUT", "3")),
+)
+DIRECT_RTSP_DNS_RESOLVER = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="camadmiral-dns",
+)
+RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _admin_password() -> bytes | None:
@@ -128,12 +169,23 @@ class RtspAdoptionRequest(BaseModel):
     sources: list[RtspSourceRequest] = Field(default_factory=list, max_length=2)
 
 
+class DirectRtspCameraRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=160)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=512)
+    sources: list[RtspSourceRequest] = Field(min_length=1, max_length=2)
+
+
 class CameraUpdateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=160)
 
 
 class CameraEnabledRequest(BaseModel):
     enabled: bool
+
+
+class CameraStreamAddressRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"]
 
 
 class CameraCredentialRequest(BaseModel):
@@ -143,6 +195,11 @@ class CameraCredentialRequest(BaseModel):
 
 class ExplicitAddressRequest(BaseModel):
     address: str = Field(min_length=7, max_length=45)
+
+
+class DiscoveryNetworksRequest(BaseModel):
+    selected_subnets: list[str] = Field(default_factory=list, max_length=64)
+    custom_subnets: list[str] | None = Field(default=None, max_length=64)
 
 
 class NotificationSettingsRequest(BaseModel):
@@ -160,6 +217,14 @@ class FrigateTargetRequest(BaseModel):
 class FrigateTargetUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     api_url: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class FrigateCameraSyncRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"] = "lan"
+
+
+class FrigateTargetAddressRequest(BaseModel):
+    address_mode: Literal["lan", "localhost"]
 
 
 FACTORY_ONVIF_USERNAME = "admin"
@@ -187,14 +252,17 @@ def _repository(*, required: bool = False) -> CameraRepository | None:
     global REPOSITORY
     if REPOSITORY is not None:
         return REPOSITORY
-    try:
-        repository = CameraRepository(database_path(), load_master_key())
-        repository.migrate()
-    except SecretConfigurationError:
-        if required:
-            raise
-        return None
-    REPOSITORY = repository
+    with REPOSITORY_LOCK:
+        if REPOSITORY is not None:
+            return REPOSITORY
+        try:
+            repository = CameraRepository(database_path(), load_master_key())
+            repository.migrate()
+        except SecretConfigurationError:
+            if required:
+                raise
+            return None
+        REPOSITORY = repository
     return repository
 
 
@@ -248,10 +316,25 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     if repository is None:
         return state
     adoptions = repository.adoption_map()
+    blocked_records = repository.blocked_devices()
+    blocked_by_identity = {
+        str(record["onvif_identity"]): record
+        for record in blocked_records
+        if record.get("onvif_identity")
+    }
+    blocked_by_mac = {
+        str(record["mac"]): record
+        for record in blocked_records
+        if record.get("mac")
+    }
+    visible_blocks: set[str] = set()
     frigate_bindings = [
         (
             target,
-            set(repository.selected_frigate_camera_uuids(target.target_id)),
+            {
+                str(selection["camera_uuid"]): str(selection["address_mode"])
+                for selection in repository.frigate_camera_selections(target.target_id)
+            },
             {
                 str(binding["camera_uuid"]): binding
                 for binding in repository.frigate_bindings(target.target_id)
@@ -259,45 +342,119 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         )
         for target in load_frigate_targets(repository)
     ]
+
+    def decorate_adoption(adoption: dict[str, object]) -> None:
+        camera_uuid = adoption.get("camera_uuid")
+        frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
+        adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
+        adoption["frigate"] = []
+        for target, selections_by_camera, bindings_by_camera in frigate_bindings:
+            binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
+            address_mode = (
+                str(target.address_mode)
+                if target.address_mode is not None
+                else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+            )
+            selected = str(adoption["camera_uuid"]) in selections_by_camera
+            target_status = {
+                "target_id": target.target_id,
+                "target": target.name,
+                "selected": selected,
+                "address_mode": address_mode,
+                "status": (
+                    binding["status"]
+                    if selected and binding is not None
+                    else "pending" if selected else "not_synced"
+                ),
+            }
+            if selected and binding is not None and binding.get("last_error_code"):
+                target_status["error_code"] = binding["last_error_code"]
+            adoption["frigate"].append(target_status)
+
+    matched_adoptions: set[str] = set()
     for device in state.get("devices", []):
+        onvif = device.get("onvif") or {}
+        onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower()
+        mac = str(device.get("mac") or "").strip().lower()
+        identity_match = blocked_by_identity.get(onvif_identity) if onvif_identity else None
+        mac_match = blocked_by_mac.get(mac) if mac else None
+        blocked = identity_match or mac_match
+        if identity_match is not None and mac_match is not None and identity_match is not mac_match:
+            blocked = None
+        if blocked is not None:
+            device["blocked"] = True
+            device["block_uuid"] = blocked["block_uuid"]
+            visible_blocks.add(str(blocked["block_uuid"]))
         candidate_uuid = device.get("candidate_uuid")
         if candidate_uuid in adoptions:
             adoption = adoptions[candidate_uuid]
-            camera_uuid = adoption.get("camera_uuid")
-            frame = RELAY_HEALTH_MONITOR.cached_frame(str(camera_uuid)) if camera_uuid else None
-            adoption["thumbnail_captured_at"] = frame.captured_at if frame is not None else None
-            adoption["frigate"] = []
-            for target, selected_cameras, bindings_by_camera in frigate_bindings:
-                binding = bindings_by_camera.get(str(adoption["camera_uuid"]))
-                selected = str(adoption["camera_uuid"]) in selected_cameras
-                target_status = {
-                    "target_id": target.target_id,
-                    "target": target.name,
-                    "selected": selected,
-                    "status": (
-                        binding["status"]
-                        if selected and binding is not None
-                        else "pending" if selected else "not_synced"
-                    ),
-                }
-                if selected and binding is not None and binding.get("last_error_code"):
-                    target_status["error_code"] = binding["last_error_code"]
-                adoption["frigate"].append(target_status)
+            decorate_adoption(adoption)
             device["adoption"] = adoption
             device["display_name"] = adoption["display_name"]
-    devices = state.get("devices", [])
+            device["camera_origin"] = adoption.get("camera_origin", "discovery")
+            matched_adoptions.add(str(candidate_uuid))
+    devices = state.setdefault("devices", [])
+    for candidate_uuid, adoption in adoptions.items():
+        if candidate_uuid in matched_adoptions or adoption.get("camera_origin") != "direct":
+            continue
+        decorate_adoption(adoption)
+        streams = adoption.get("streams") or []
+        source_uri = str(streams[0].get("uri") or "") if streams else ""
+        try:
+            source = urllib.parse.urlsplit(source_uri)
+            source_host = source.hostname or ""
+            source_port = source.port or 554
+        except ValueError:
+            source_host = ""
+            source_port = 554
+        devices.append(
+            {
+                "candidate_uuid": candidate_uuid,
+                "display_name": adoption["display_name"],
+                "ip": source_host,
+                "mac": None,
+                "onvif": None,
+                "rtsp": [{"port": source_port, "verified": True}],
+                "status": "online",
+                "camera_origin": "direct",
+                "adoption": adoption,
+            }
+        )
+    for blocked in blocked_records:
+        if str(blocked["block_uuid"]) in visible_blocks:
+            continue
+        onvif_identity = blocked.get("onvif_identity")
+        devices.append(
+            {
+                "candidate_uuid": blocked.get("candidate_uuid") or f'blocked:{blocked["block_uuid"]}',
+                "display_name": blocked["display_name"],
+                "ip": blocked.get("last_ip"),
+                "mac": blocked.get("mac"),
+                "onvif": (
+                    {"endpoint_reference": onvif_identity, "service_urls": []}
+                    if onvif_identity
+                    else None
+                ),
+                "rtsp": [],
+                "status": "offline",
+                "blocked": True,
+                "block_uuid": blocked["block_uuid"],
+            }
+        )
     for device in devices:
         device["connectivity_status"] = _camera_connectivity_status(device)
+    visible_devices = [device for device in devices if not device.get("blocked")]
     summary = dict(state.get("summary") or {})
     summary.update(
         {
-            "devices": len(devices),
+            "devices": len(visible_devices),
             "online": sum(
-                device["connectivity_status"] == "online" for device in devices
+                device["connectivity_status"] == "online" for device in visible_devices
             ),
             "offline": sum(
-                device["connectivity_status"] == "offline" for device in devices
+                device["connectivity_status"] == "offline" for device in visible_devices
             ),
+            "blocked": len(blocked_records),
         }
     )
     state["summary"] = summary
@@ -318,27 +475,119 @@ def _reconcile_media(*, wait: bool = True) -> bool:
         MEDIA_LOCK.release()
 
 
+def _media_health_cycle() -> bool:
+    repository = _repository()
+    if repository is None:
+        return False
+    MEDIA_LOCK.acquire()
+    try:
+        _queue_targeted_recovery_scan(repository)
+        RELAY_HEALTH_MONITOR.probe(repository)
+        _queue_targeted_recovery_scan(repository)
+        _observe_inventory_identities(repository)
+        return True
+    except Exception as exc:
+        print(f"media: health probe failed ({type(exc).__name__})", flush=True)
+        return False
+    finally:
+        MEDIA_LOCK.release()
+
+
 def _media_health_loop() -> None:
+    delay = HEALTH_INTERVAL
     while True:
-        time.sleep(HEALTH_INTERVAL)
-        repository = _repository()
-        if repository is None or not MEDIA_LOCK.acquire(blocking=False):
-            continue
+        time.sleep(delay)
+        started = time.monotonic()
+        _media_health_cycle()
+        delay = max(0.1, HEALTH_INTERVAL - (time.monotonic() - started))
+
+
+def _targeted_recovery_cycle() -> bool:
+    global RELAY_RUNTIME_POLL_FAILURE_ACTIVE
+    repository = _repository()
+    if repository is None:
+        return False
+    try:
+        runtime_stalled_camera_uuids = RELAY_RUNTIME_ACTIVITY_MONITOR.poll(repository)
+    except Exception as exc:
+        RELAY_RUNTIME_ACTIVITY_MONITOR.reset()
+        if not RELAY_RUNTIME_POLL_FAILURE_ACTIVE:
+            print(
+                f"media: runtime activity poll failed ({type(exc).__name__})",
+                flush=True,
+            )
+        RELAY_RUNTIME_POLL_FAILURE_ACTIVE = True
+        return False
+    RELAY_RUNTIME_POLL_FAILURE_ACTIVE = False
+    if not runtime_stalled_camera_uuids:
+        return False
+    try:
+        return _queue_targeted_recovery_scan(
+            repository,
+            runtime_stalled_camera_uuids=runtime_stalled_camera_uuids,
+        )
+    except Exception as exc:
+        print(
+            f"media: recovery scan scheduling failed ({type(exc).__name__})",
+            flush=True,
+        )
+        return False
+
+
+def _targeted_recovery_loop() -> None:
+    while True:
+        time.sleep(1)
+        _targeted_recovery_cycle()
+
+
+def _observation_matches_saved_sources(
+    candidate: dict[str, object],
+    adoption: dict[str, object],
+) -> bool:
+    if candidate.get("identity_conflict"):
+        return False
+    try:
+        candidate_address = str(ipaddress.ip_address(str(candidate.get("ip") or "")))
+    except ValueError:
+        return False
+    streams = adoption.get("streams") or []
+    if not isinstance(streams, list) or not streams:
+        return False
+    source_hosts: list[str] = []
+    for stream in streams:
+        if not isinstance(stream, dict) or not stream.get("uri"):
+            return False
         try:
-            recovery_results = recover_inventory_addresses(repository, INVENTORY)
-            for result in recovery_results:
-                print(
-                    "media: address recovery "
-                    f"camera={result.camera_uuid} status={result.status} "
-                    f"from={result.previous_address} to={result.current_address}",
-                    flush=True,
-                )
-            RELAY_HEALTH_MONITOR.probe(repository)
-            _queue_targeted_recovery_scan(repository)
-        except Exception as exc:
-            print(f"media: health probe failed ({type(exc).__name__})", flush=True)
-        finally:
-            MEDIA_LOCK.release()
+            source_host = urllib.parse.urlsplit(str(stream["uri"])).hostname
+        except ValueError:
+            return False
+        if not source_host:
+            return False
+        try:
+            source_hosts.append(str(ipaddress.ip_address(source_host)))
+        except ValueError:
+            source_hosts.append(source_host.lower())
+    return all(source_host == candidate_address for source_host in source_hosts)
+
+
+def _observe_inventory_identities(repository: CameraRepository) -> None:
+    candidates = _inventory_candidates()
+    adoptions = repository.adoption_map()
+    observations = [
+        (str(adoptions[candidate_uuid]["camera_uuid"]), candidate)
+        for candidate_uuid, candidate in candidates.items()
+        if candidate_uuid in adoptions
+        and _observation_matches_saved_sources(candidate, adoptions[candidate_uuid])
+    ]
+    advance_existing = {
+        camera_uuid
+        for camera_uuid, candidate in observations
+        if candidate.get("status") == "online"
+    }
+    repository.observe_inventory_identities(
+        observations,
+        advance_existing_camera_uuids=advance_existing,
+    )
 
 
 def _media_runtime_reconciliation_loop() -> None:
@@ -348,10 +597,25 @@ def _media_runtime_reconciliation_loop() -> None:
         if repository is None or not MEDIA_LOCK.acquire(blocking=False):
             continue
         try:
-            if reconcile_runtime_drift(repository):
-                print("media: restored managed streams after runtime drift", flush=True)
-        except Exception:
-            pass
+            try:
+                recovery_results = recover_inventory_addresses(repository, INVENTORY)
+                for result in recovery_results:
+                    print(
+                        "media: address recovery "
+                        f"camera={result.camera_uuid} status={result.status} "
+                        f"from={result.previous_address} to={result.current_address}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"media: address recovery failed ({type(exc).__name__})",
+                    flush=True,
+                )
+            try:
+                if reconcile_runtime_drift(repository):
+                    print("media: restored managed streams after runtime drift", flush=True)
+            except Exception:
+                pass
         finally:
             MEDIA_LOCK.release()
 
@@ -364,12 +628,15 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
         targets = load_frigate_targets(repository)
         if not targets:
             return
-        media_host = media_host_from_inventory(INVENTORY)
         for target in targets:
             if not repository.selected_frigate_camera_uuids(target.target_id):
                 continue
             try:
-                reconcile_frigate(repository, target, media_host=media_host)
+                reconcile_frigate(
+                    repository,
+                    target,
+                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                )
             except FrigateApiError as exc:
                 repository.record_frigate_target_check(
                     target.target_id,
@@ -401,6 +668,80 @@ def _queue_frigate_reconciliation() -> None:
         name="frigate-reconcile-now",
         daemon=True,
     ).start()
+
+
+def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
+    job = (target_id, camera_uuid)
+    repository: CameraRepository | None = None
+    try:
+        repository = _repository()
+        if repository is None:
+            return
+        FRIGATE_LOCK.acquire()
+        try:
+            current = repository.frigate_target(target_id)
+            if current is None:
+                return
+            target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
+            try:
+                reconcile_frigate(
+                    repository,
+                    target,
+                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                    camera_uuid=camera_uuid,
+                )
+            except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
+                print(
+                    f"frigate[{target_id}]: camera synchronization deferred ({exc.code})",
+                    flush=True,
+                )
+            else:
+                repository.record_frigate_target_check(target_id, status="connected")
+        finally:
+            FRIGATE_LOCK.release()
+    except Exception as exc:
+        try:
+            if repository is not None and repository.frigate_binding(target_id, camera_uuid):
+                repository.complete_frigate_attempt(
+                    target_id,
+                    camera_uuid,
+                    status="error",
+                    error_code="verification_failed",
+                )
+        except Exception:
+            pass
+        print(
+            f"frigate[{target_id}]: camera synchronization failed ({type(exc).__name__})",
+            flush=True,
+        )
+    finally:
+        with FRIGATE_CAMERA_JOBS_LOCK:
+            FRIGATE_CAMERA_JOBS.discard(job)
+
+
+def _queue_frigate_camera_reconciliation(target_id: str, camera_uuid: str) -> bool:
+    job = (target_id, camera_uuid)
+    with FRIGATE_CAMERA_JOBS_LOCK:
+        if job in FRIGATE_CAMERA_JOBS:
+            return False
+        FRIGATE_CAMERA_JOBS.add(job)
+    try:
+        threading.Thread(
+            target=_sync_frigate_camera_job,
+            args=job,
+            name="frigate-camera-sync",
+            daemon=True,
+        ).start()
+    except Exception:
+        with FRIGATE_CAMERA_JOBS_LOCK:
+            FRIGATE_CAMERA_JOBS.discard(job)
+        raise
+    return True
 
 
 def _notification_settings_payload(repository: CameraRepository) -> dict[str, object]:
@@ -496,7 +837,14 @@ def _notification_loop() -> None:
             print(f"notifications: delivery deferred ({type(exc).__name__})", flush=True)
 
 
-def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
+def _queue_targeted_recovery_scan(
+    repository: CameraRepository,
+    *,
+    runtime_stalled_camera_uuids: set[str] | None = None,
+) -> bool:
+    now = time.monotonic()
+    if now < RECOVERY_SCAN_PAUSED_UNTIL:
+        return False
     if SCAN_REQUEST.exists():
         return False
     state = _read_scan_state()
@@ -511,35 +859,79 @@ def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
         for candidate in inventory.get("devices", [])
         if candidate.get("candidate_uuid")
     }
-    now = time.monotonic()
-    targets: list[dict[str, object]] = []
-    for candidate_uuid, adoption in sorted(repository.adoption_map().items()):
+    adoptions = repository.adoption_map()
+    for candidate_uuid in set(RECOVERY_SCAN_ATTEMPTS) - set(adoptions):
+        RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+        RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
+    if runtime_stalled_camera_uuids is None:
+        runtime_stalled_camera_uuids = (
+            RELAY_RUNTIME_ACTIVITY_MONITOR.stalled_camera_uuids
+        )
+    eligible_targets: list[tuple[bool, float, str, dict[str, object]]] = []
+    for candidate_uuid, adoption in sorted(adoptions.items()):
         if not adoption.get("enabled", True):
-            continue
-        streams = adoption.get("streams", [])
-        if not streams or not any(stream.get("health_status") == "offline" for stream in streams):
-            continue
-        if any(stream.get("health_status") == "auth_failed" for stream in streams):
-            continue
-        previous_attempt = RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid)
-        if previous_attempt is not None and now - previous_attempt < RECOVERY_SCAN_INTERVAL:
+            RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+            RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
             continue
         candidate = candidates.get(candidate_uuid) or {}
+        streams = adoption.get("streams", [])
+        candidate_offline = candidate.get("status") == "offline"
+        runtime_stalled = (
+            str(adoption.get("camera_uuid")) in runtime_stalled_camera_uuids
+        )
+        needs_recovery = bool(streams) and (
+            candidate_offline
+            or runtime_stalled
+            or any(
+                stream.get("health_status") in {"offline", "auth_failed"}
+                or stream.get("probe_status")
+                not in {None, "pending", "ready", "idle"}
+                for stream in streams
+            )
+        )
+        if not needs_recovery:
+            RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
+            RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
+            continue
+        previous_attempt = RECOVERY_SCAN_ATTEMPTS.get(candidate_uuid)
+        attempt_count = RECOVERY_SCAN_ATTEMPT_COUNTS.get(candidate_uuid, 0)
+        fast_retry = candidate_offline or runtime_stalled or any(
+            stream.get("health_status") == "offline"
+            or stream.get("probe_status") in {"unavailable", "timeout", "error"}
+            for stream in streams
+        )
+        retry_interval = (
+            RECOVERY_SCAN_FAST_RETRY_INTERVAL
+            if fast_retry and attempt_count <= RECOVERY_SCAN_FAST_RETRIES
+            else RECOVERY_SCAN_INTERVAL
+        )
+        if previous_attempt is not None and now - previous_attempt < retry_interval:
+            continue
+        if candidate.get("identity_conflict"):
+            continue
         onvif = candidate.get("onvif") or {}
         endpoint_reference = onvif.get("endpoint_reference")
         mac = candidate.get("mac")
         if not endpoint_reference and not mac:
             continue
-        targets.append(
-            {
-                "candidate_uuid": candidate_uuid,
-                "endpoint_reference": endpoint_reference,
-                "mac": mac,
-            }
+        eligible_targets.append(
+            (
+                previous_attempt is not None,
+                previous_attempt or 0.0,
+                candidate_uuid,
+                {
+                    "candidate_uuid": candidate_uuid,
+                    "endpoint_reference": endpoint_reference,
+                    "mac": mac,
+                },
+            )
         )
-        if len(targets) >= 16:
-            break
+    eligible_targets.sort(key=lambda item: item[:3])
+    targets = [item[3] for item in eligible_targets[:16]]
     if not targets:
+        return False
+    selected_subnets = _selected_discovery_subnets(repository)
+    if not selected_subnets:
         return False
     request = {
         "scan_id": str(uuid.uuid4()),
@@ -547,15 +939,26 @@ def _queue_targeted_recovery_scan(repository: CameraRepository) -> bool:
         "unix_time": time.time(),
         "mode": "targeted",
         "targets": targets,
+        "subnets": selected_subnets,
     }
     with SCAN_REQUEST_LOCK:
-        if SCAN_REQUEST.exists():
+        if now < RECOVERY_SCAN_PAUSED_UNTIL:
+            return False
+        state = _read_scan_state()
+        if (
+            state.get("status") in {"queued", "running"}
+            or SCAN_REQUEST.exists()
+        ):
             return False
         temporary = SCAN_REQUEST.with_suffix(".tmp")
         temporary.write_text(json.dumps(request), encoding="utf-8")
         temporary.replace(SCAN_REQUEST)
-    for target in targets:
-        RECOVERY_SCAN_ATTEMPTS[str(target["candidate_uuid"])] = now
+        for target in targets:
+            candidate_uuid = str(target["candidate_uuid"])
+            RECOVERY_SCAN_ATTEMPTS[candidate_uuid] = now
+            RECOVERY_SCAN_ATTEMPT_COUNTS[candidate_uuid] = (
+                RECOVERY_SCAN_ATTEMPT_COUNTS.get(candidate_uuid, 0) + 1
+            )
     return True
 
 
@@ -575,6 +978,11 @@ def start_media_reconciliation() -> None:
     threading.Thread(
         target=_media_health_loop,
         name="media-health",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_targeted_recovery_loop,
+        name="media-recovery-scheduler",
         daemon=True,
     ).start()
     threading.Thread(
@@ -849,6 +1257,16 @@ def camera_availability(camera_uuid: str, window: str = "24h") -> JSONResponse:
     return _secured_json(result)
 
 
+@app.get("/internal/cameras/{camera_uuid}/identity-history", include_in_schema=False)
+def camera_identity_history(camera_uuid: str) -> JSONResponse:
+    repository = _repository(required=True)
+    assert repository is not None
+    periods = repository.camera_identity_history(camera_uuid)
+    if periods is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    return _secured_json({"camera_uuid": camera_uuid, "periods": periods})
+
+
 @app.get("/internal/incidents", include_in_schema=False)
 def incidents(status: str = "open", limit: int = 50) -> JSONResponse:
     if status not in {"open", "resolved", "all"}:
@@ -875,7 +1293,7 @@ def notification_settings() -> JSONResponse:
 
 def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
     messages = {
-        "invalid_target_url": "Enter a loopback HTTP URL with a port, such as http://127.0.0.1:20001.",
+        "invalid_target_url": "Enter an HTTP or HTTPS Frigate API URL without embedded credentials, a query, or a fragment.",
         "target_unavailable": "CamAdmiral could not reach Frigate at that URL.",
         "authorization_required": "Frigate requires authorization on that endpoint.",
         "capability_unavailable": "This Frigate endpoint does not provide the required camera configuration API.",
@@ -910,6 +1328,25 @@ def _stored_frigate_target(repository: CameraRepository, target_id: str) -> tupl
         raise HTTPException(status_code=404, detail="Frigate target not found")
     target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
     return current, target
+
+
+_frigate_discovery_lock = threading.Lock()
+
+
+@app.post("/internal/frigate-discovery", include_in_schema=False)
+async def find_local_frigates(
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "find-frigate":
+        raise HTTPException(status_code=400, detail="Missing Frigate discovery action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not _frigate_discovery_lock.acquire(blocking=False):
+        return _secured_json({"message": "A Frigate search is already running."}, status_code=409)
+    try:
+        return _secured_json(await discover_local_frigates(repository.frigate_targets()))
+    finally:
+        _frigate_discovery_lock.release()
 
 
 @app.get("/internal/frigate-targets", include_in_schema=False)
@@ -1016,6 +1453,28 @@ def update_frigate_target(
     return _secured_json({"status": "updated", "target": repository.frigate_target(target_id)})
 
 
+@app.post("/internal/frigate-targets/{target_id}/address", include_in_schema=False)
+def set_frigate_target_address(
+    target_id: str,
+    request: FrigateTargetAddressRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-frigate-target-address":
+        raise HTTPException(status_code=400, detail="Missing Frigate address action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.frigate_target(target_id) is None:
+        raise HTTPException(status_code=404, detail="Frigate target not found")
+    repository.set_frigate_target_address_mode(target_id, request.address_mode)
+    return _secured_json(
+        {
+            "status": "updated",
+            "address_mode": request.address_mode,
+            "target": repository.frigate_target(target_id),
+        }
+    )
+
+
 @app.post("/internal/frigate-targets/{target_id}/test", include_in_schema=False)
 def test_frigate_target(
     target_id: str,
@@ -1085,7 +1544,7 @@ def apply_full_sync(
         result = full_sync_frigate(
             repository,
             target,
-            media_host=media_host_from_inventory(INVENTORY),
+            media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
         )
     except FrigateApiError as exc:
         LOGGER.warning(
@@ -1114,18 +1573,31 @@ def apply_full_sync(
     "/internal/frigate-targets/{target_id}/cameras/{camera_uuid}/config",
     include_in_schema=False,
 )
-def preview_frigate_camera_config(target_id: str, camera_uuid: str) -> JSONResponse:
+def preview_frigate_camera_config(
+    target_id: str,
+    camera_uuid: str,
+    address_mode: Literal["lan", "localhost"] | None = None,
+) -> JSONResponse:
     repository = _repository(required=True)
     assert repository is not None
-    _current, target = _stored_frigate_target(repository, target_id)
+    current, target = _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    selected_mode = repository.frigate_camera_address_mode(target_id, camera_uuid)
+    effective_mode = (
+        address_mode
+        or (
+            str(current["address_mode"])
+            if current.get("address_mode") is not None
+            else selected_mode or "lan"
+        )
+    )
     try:
         configuration = frigate_camera_configuration(
             repository,
             target,
             camera_uuid,
-            media_host=media_host_from_inventory(INVENTORY),
+            media_host=media_host_for_mode(INVENTORY, effective_mode),
         )
     except FrigateApiError as exc:
         return _frigate_target_error(exc)
@@ -1140,33 +1612,29 @@ def sync_frigate_camera(
     target_id: str,
     camera_uuid: str,
     x_camadmiral_action: str | None = Header(default=None),
+    request: FrigateCameraSyncRequest | None = None,
 ) -> JSONResponse:
     if x_camadmiral_action != "sync-frigate-camera":
         raise HTTPException(status_code=400, detail="Missing Frigate camera sync action header")
     repository = _repository(required=True)
     assert repository is not None
-    _current, target = _stored_frigate_target(repository, target_id)
+    current, _target = _stored_frigate_target(repository, target_id)
     if repository.camera(camera_uuid) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
-    if not FRIGATE_LOCK.acquire(blocking=False):
-        return _secured_json(
-            {"status": "sync_busy", "message": "Camera synchronization is already running."},
-            status_code=409,
-        )
-    try:
-        repository.select_frigate_camera(target_id, camera_uuid)
-        result = reconcile_frigate(
-            repository,
-            target,
-            media_host=media_host_from_inventory(INVENTORY),
-        )
-    except FrigateApiError as exc:
-        repository.record_frigate_target_check(target_id, status="error", error_code=exc.code)
-        return _frigate_target_error(exc)
-    finally:
-        FRIGATE_LOCK.release()
-    repository.record_frigate_target_check(target_id, status="connected")
-    return _secured_json({"status": "synchronized", "selected": True, **result})
+    address_mode = (
+        str(current["address_mode"])
+        if current.get("address_mode") is not None
+        else request.address_mode
+        if request is not None
+        else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
+    )
+    repository.select_frigate_camera(target_id, camera_uuid, address_mode)
+    repository.mark_frigate_binding_pending(target_id, camera_uuid)
+    queued = _queue_frigate_camera_reconciliation(target_id, camera_uuid)
+    return _secured_json(
+        {"status": "syncing", "selected": True, "queued": queued},
+        status_code=202,
+    )
 
 
 @app.delete(
@@ -1389,6 +1857,88 @@ def set_camera_enabled(
     )
 
 
+@app.delete("/internal/cameras/{camera_uuid}", include_in_schema=False)
+def unadopt_camera(
+    camera_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unadopt-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unadopt action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    camera = repository.camera(camera_uuid)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    candidate_uuid = str(camera.get("candidate_uuid") or "")
+    candidate_was_online = bool(
+        candidate_uuid and _candidate_is_currently_online(candidate_uuid)
+    )
+    targets = [
+        target
+        for target in load_frigate_targets(repository)
+        if camera_uuid in repository.selected_frigate_camera_uuids(target.target_id)
+    ]
+    if targets and not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json(
+            {"status": "sync_busy", "message": "Camera synchronization is already running."},
+            status_code=409,
+        )
+    restart_recommended = False
+    try:
+        for target in targets:
+            try:
+                result = remove_frigate_camera(repository, target, camera_uuid)
+            except FrigateApiError as exc:
+                repository.record_frigate_target_check(
+                    target.target_id,
+                    status="error",
+                    error_code=exc.code,
+                )
+                return _frigate_target_error(exc)
+            target_restart = bool(result.get("restart_recommended"))
+            restart_recommended = restart_recommended or target_restart
+            repository.record_frigate_target_check(
+                target.target_id,
+                status="connected",
+                restart_recommended=target_restart,
+            )
+    finally:
+        if targets:
+            FRIGATE_LOCK.release()
+    if not repository.unadopt_camera(camera_uuid):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    _reconcile_media()
+    if candidate_was_online:
+        _mark_discovery_candidate_online(candidate_uuid)
+    return _secured_json(
+        {
+            "status": "unadopted",
+            "camera_uuid": camera_uuid,
+            "restart_recommended": restart_recommended,
+        }
+    )
+
+
+@app.post("/internal/cameras/{camera_uuid}/stream-address", include_in_schema=False)
+def set_camera_stream_address(
+    camera_uuid: str,
+    request: CameraStreamAddressRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-camera-stream-address":
+        raise HTTPException(status_code=400, detail="Missing camera stream address action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.set_camera_stream_address_mode(camera_uuid, request.address_mode):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    return _secured_json(
+        {
+            "status": "updated",
+            "address_mode": request.address_mode,
+        }
+    )
+
+
 @app.post("/internal/cameras/{camera_uuid}/credentials", include_in_schema=False)
 def update_camera_credentials(
     camera_uuid: str,
@@ -1480,12 +2030,17 @@ def media_access(
             status_code=503,
         )
     assert repository is not None
+    try:
+        lan_host = media_host_for_mode(INVENTORY, "lan")
+    except FrigateApiError:
+        lan_host = None
     return _secured_json(
         {
             "status": "ok",
             "username": "camadmiral",
             "password": repository.rtsp_access_password(),
             "port": 18554,
+            "lan_host": lan_host,
         }
     )
 
@@ -1656,6 +2211,148 @@ def _read_scan_state() -> dict[str, object]:
     return preserve_inventory(state, inventory)
 
 
+def _candidate_is_currently_online(candidate_uuid: str) -> bool:
+    state = _decorate_adoptions(_read_scan_state())
+    return any(
+        device.get("candidate_uuid") == candidate_uuid
+        and device.get("connectivity_status") == "online"
+        for device in state.get("devices", [])
+    )
+
+
+def _mark_discovery_candidate_online(candidate_uuid: str) -> None:
+    """Keep a just-unadopted reachable candidate online until the next scan."""
+    observed_at = datetime.now(timezone.utc).isoformat()
+    with SCAN_REQUEST_LOCK:
+        for path in (INVENTORY, SCAN_STATE):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            devices = payload.get("devices")
+            if not isinstance(devices, list):
+                continue
+            changed = False
+            for device in devices:
+                if not isinstance(device, dict):
+                    continue
+                if device.get("candidate_uuid") != candidate_uuid:
+                    continue
+                device.update(
+                    {
+                        "status": "online",
+                        "last_seen": observed_at,
+                        "missed_scans": 0,
+                    }
+                )
+                changed = True
+            if not changed:
+                continue
+            payload["summary"] = inventory_summary(devices)
+            temporary = path.with_name(f"{path.name}.unadopt.tmp")
+            try:
+                temporary.write_text(json.dumps(payload), encoding="utf-8")
+                temporary.replace(path)
+            except OSError as exc:
+                LOGGER.warning(
+                    "Could not preserve candidate connectivity after unadopt: %s",
+                    exc,
+                )
+
+
+def _discovery_network_configuration(
+    repository: CameraRepository,
+) -> dict[str, object]:
+    settings_payload = repository.discovery_network_settings()
+    try:
+        connected = private_lan_interfaces()
+    except (OSError, RuntimeError, ValueError):
+        connected = []
+    connected_by_subnet = {
+        str(interface.network): interface
+        for interface in connected
+    }
+
+    excluded: set[str] = set()
+    for value in settings_payload.get("excluded_detected_subnets", []):
+        try:
+            excluded.add(str(normalize_private_scan_subnet(value)))
+        except ValueError:
+            continue
+    excluded_custom: set[str] = set()
+    for value in settings_payload.get("excluded_custom_subnets", []):
+        try:
+            excluded_custom.add(str(custom_scan_subnet(value)))
+        except ValueError:
+            continue
+    custom: list[str] = []
+    for value in settings_payload.get("custom_subnets", []):
+        try:
+            subnet = str(custom_scan_subnet(value))
+        except ValueError:
+            continue
+        if subnet not in custom:
+            custom.append(subnet)
+
+    networks: list[dict[str, object]] = []
+    for subnet, interface in connected_by_subnet.items():
+        networks.append(
+            {
+                **interface.as_dict(),
+                "cidr": subnet,
+                "selected": subnet not in excluded,
+                "source": "detected",
+                "routable": True,
+            }
+        )
+    for subnet in custom:
+        if subnet in connected_by_subnet:
+            continue
+        network = custom_scan_subnet(subnet)
+        row: dict[str, object] = {
+            "cidr": subnet,
+            "subnet": subnet,
+            "hosts": max(0, network.num_addresses - 2),
+            "selected": subnet not in excluded_custom,
+            "source": "custom",
+            "multicast": False,
+        }
+        try:
+            interface = routed_scan_interface(network, interfaces=connected)
+        except (OSError, RuntimeError, ValueError):
+            row.update(
+                {
+                    "interface": None,
+                    "address": None,
+                    "routable": False,
+                    "route_error": "No IPv4 route is currently available.",
+                }
+            )
+        else:
+            row.update(interface.as_dict())
+            row.update(
+                {
+                    "cidr": subnet,
+                    "selected": subnet not in excluded_custom,
+                    "routable": True,
+                }
+            )
+        networks.append(row)
+    return {
+        "networks": networks,
+        "max_custom_hosts": MAX_SCAN_HOSTS,
+    }
+
+
+def _selected_discovery_subnets(repository: CameraRepository) -> list[str]:
+    configuration = _discovery_network_configuration(repository)
+    return [
+        str(network["cidr"])
+        for network in configuration["networks"]
+        if network.get("selected")
+    ]
+
+
 def _find_candidate(candidate_uuid: str) -> dict[str, object] | None:
     try:
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
@@ -1692,8 +2389,95 @@ def _stored_adoption_inspection(adoption: dict[str, object]) -> dict[str, object
 
 
 def _normalize_rtsp_url(candidate: dict[str, object], value: str) -> str:
+    normalized, _, host = _normalize_direct_rtsp_url(value, validate_host=False)
+    candidate_ip = str(candidate.get("ip") or "")
+    if host.lower() != candidate_ip.lower():
+        raise ValueError(f"The stream URL must use the discovered camera address {candidate_ip}.")
+    return normalized
+
+
+def _permitted_direct_ipv4(
+    address: ipaddress.IPv4Address,
+    interfaces: list[LanInterface],
+) -> bool:
+    if not any(address in network for network in RFC1918_NETWORKS):
+        return False
+    if (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        return False
+    for interface in interfaces:
+        if address in {
+            interface.address,
+            interface.network.network_address,
+            interface.network.broadcast_address,
+        }:
+            return False
+    return True
+
+
+def _resolve_direct_rtsp_hostname(host: str) -> list[ipaddress.IPv4Address]:
+    future = DIRECT_RTSP_DNS_RESOLVER.submit(
+        socket.getaddrinfo,
+        host,
+        None,
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    )
     try:
-        parsed = urllib.parse.urlsplit(value.strip())
+        answers = future.result(timeout=DIRECT_RTSP_DNS_TIMEOUT)
+    except TimeoutError as exc:
+        future.cancel()
+        raise ValueError("The RTSP hostname did not resolve in time.") from exc
+    except OSError as exc:
+        raise ValueError("The RTSP hostname could not be resolved.") from exc
+    addresses = sorted({ipaddress.IPv4Address(answer[4][0]) for answer in answers})
+    if not addresses:
+        raise ValueError("The RTSP hostname did not resolve to an IPv4 address.")
+    return addresses
+
+
+def _validate_direct_rtsp_host(host: str) -> None:
+    try:
+        interfaces = list(private_lan_interfaces())
+    except (OSError, RuntimeError, ValueError):
+        interfaces = []
+    try:
+        literal = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        if all(character in "0123456789." for character in host):
+            raise ValueError("Enter a valid RTSP hostname or private IPv4 address.")
+        if len(host) > 253 or any(
+            not DNS_LABEL.fullmatch(label) for label in host.split(".")
+        ):
+            raise ValueError("Enter a valid ASCII RTSP hostname.")
+        addresses = _resolve_direct_rtsp_hostname(host)
+        if any(not _permitted_direct_ipv4(address, interfaces) for address in addresses):
+            raise ValueError("The RTSP hostname must resolve only to private LAN addresses.")
+        return
+    if not _permitted_direct_ipv4(literal, interfaces):
+        raise ValueError("Only private LAN RTSP addresses can be added.")
+
+
+def _normalize_direct_rtsp_url(
+    value: str,
+    *,
+    validate_host: bool = True,
+) -> tuple[str, tuple[str, str, int, str, str], str]:
+    entered = value.strip()
+    if not entered:
+        raise ValueError("Enter a complete RTSP URL.")
+    if "://" not in entered:
+        raise ValueError("Enter a complete RTSP URL. To find a camera by IP, use Scan network.")
+    if "\\" in entered or any(
+        ord(character) < 32 or ord(character) == 127 for character in entered
+    ):
+        raise ValueError("Enter a valid RTSP URL.")
+    try:
+        parsed = urllib.parse.urlsplit(entered)
         port = parsed.port or 554
     except ValueError as exc:
         raise ValueError("Enter a valid RTSP URL.") from exc
@@ -1705,13 +2489,21 @@ def _normalize_rtsp_url(candidate: dict[str, object], value: str) -> str:
         raise ValueError("RTSP stream URLs cannot include a fragment.")
     if not 1 <= port <= 65535:
         raise ValueError("Enter a valid RTSP port.")
-    candidate_ip = str(candidate.get("ip") or "")
-    if parsed.hostname.lower() != candidate_ip.lower():
-        raise ValueError(f"The stream URL must use the discovered camera address {candidate_ip}.")
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    return urllib.parse.urlunsplit(("rtsp", host, parsed.path or "/", parsed.query, ""))
+    host = parsed.hostname.lower()
+    if host.endswith("."):
+        host = host[:-1]
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Enter a valid ASCII RTSP hostname.") from exc
+    if not host:
+        raise ValueError("Stream URLs must include a host.")
+    if validate_host:
+        _validate_direct_rtsp_host(host)
+    authority = host if parsed.port is None else f"{host}:{port}"
+    path = parsed.path or "/"
+    normalized = urllib.parse.urlunsplit(("rtsp", authority, path, parsed.query, ""))
+    return normalized, ("rtsp", host, port, path, parsed.query), host
 
 
 def _manual_profile(
@@ -1765,24 +2557,223 @@ def _probe_catalog_sources(
     )]
 
 
+@app.post("/internal/cameras/rtsp", include_in_schema=False)
+def create_direct_rtsp_camera(
+    request: DirectRtspCameraRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "create-direct-rtsp-camera":
+        raise HTTPException(status_code=400, detail="Missing direct RTSP camera action header")
+    display_name = request.display_name.strip()
+    if not display_name:
+        return _secured_json(
+            {"status": "invalid_name", "message": "Enter a camera name."},
+            status_code=422,
+        )
+    try:
+        normalized_sources = [
+            _normalize_direct_rtsp_url(source.url)
+            for source in request.sources
+        ]
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "invalid_source", "message": str(exc)},
+            status_code=422,
+        )
+    keys = [source[1] for source in normalized_sources]
+    hosts = {source[2] for source in normalized_sources}
+    if len(hosts) != 1:
+        return _secured_json(
+            {
+                "status": "different_hosts",
+                "message": "Both streams for one camera must use the same hostname or IP address.",
+            },
+            status_code=422,
+        )
+    if len(set(keys)) != len(keys):
+        return _secured_json(
+            {"status": "duplicate_source", "message": "Each RTSP stream URL must be different."},
+            status_code=422,
+        )
+    uris = [source[0] for source in normalized_sources]
+    username = request.username.strip()
+    results = _probe_exact_sources(uris, username, request.password)
+    rejected = [
+        {"position": position, "status": result.status}
+        for position, result in enumerate(results, start=1)
+        if result.status != "ready"
+    ]
+    if rejected:
+        authentication_failed = any(result.status == "auth_failed" for result in results)
+        return _secured_json(
+            {
+                "status": "credentials_required" if authentication_failed else "media_unavailable",
+                "message": (
+                    "Incorrect username or password. Check both fields and try again."
+                    if authentication_failed
+                    else "Video could not be read from every stream. Check the URLs and try again."
+                ),
+                "sources": rejected,
+            },
+            status_code=401 if authentication_failed else 422,
+        )
+    profiles = [
+        _manual_profile(source.label, uri, result, position)
+        for position, (source, uri, result) in enumerate(
+            zip(request.sources, uris, results),
+            start=1,
+        )
+    ]
+    roles = select_stream_roles(profiles)
+    candidate_uuid = f"direct-rtsp:{uuid.uuid4()}"
+    candidate = {
+        "candidate_uuid": candidate_uuid,
+        "display_name": display_name,
+        "ip": normalized_sources[0][2],
+    }
+    try:
+        repository = _repository(required=True)
+    except SecretConfigurationError:
+        return _secured_json(
+            {"status": "not_configured", "message": "Credential storage is not configured."},
+            status_code=503,
+        )
+    assert repository is not None
+    try:
+        adoption = repository.adopt(
+            candidate,
+            username,
+            request.password,
+            profiles,
+            roles,
+            camera_origin="direct",
+            reject_source_keys=set(keys),
+        )
+    except SourceAlreadyAssignedError as exc:
+        return _secured_json(
+            {
+                "status": "source_already_assigned",
+                "message": str(exc),
+                "camera_uuid": exc.camera_uuid,
+                "camera_name": exc.display_name,
+            },
+            status_code=409,
+        )
+    _reconcile_media()
+    _queue_frigate_reconciliation()
+    adoption = repository.adoption_for_candidate(candidate_uuid) or adoption
+    return _secured_json(
+        {
+            "status": "adopted",
+            "profiles": profiles,
+            "adoption": adoption,
+            "role_tokens": roles,
+        },
+        status_code=201,
+    )
+
+
 @app.get("/internal/discovery", include_in_schema=False)
 def discovery_state() -> JSONResponse:
     return _secured_json(_decorate_adoptions(_read_scan_state()))
+
+
+@app.get("/internal/discovery/networks", include_in_schema=False)
+def discovery_networks() -> JSONResponse:
+    repository = _repository(required=True)
+    return _secured_json(_discovery_network_configuration(repository))
+
+
+@app.put("/internal/discovery/networks", include_in_schema=False)
+def update_discovery_networks(
+    request: DiscoveryNetworksRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "save-discovery-networks":
+        raise HTTPException(status_code=400, detail="Missing network settings action header")
+    repository = _repository(required=True)
+    try:
+        connected = private_lan_interfaces()
+    except (OSError, RuntimeError, ValueError):
+        connected = []
+    detected = {str(interface.network) for interface in connected}
+    selected: list[str] = []
+    try:
+        for value in request.selected_subnets:
+            subnet = str(normalize_private_scan_subnet(value))
+            if subnet not in detected:
+                custom_scan_subnet(subnet)
+            if subnet not in selected:
+                selected.append(subnet)
+        custom_values = (
+            request.custom_subnets
+            if request.custom_subnets is not None
+            else [subnet for subnet in selected if subnet not in detected]
+        )
+        custom: list[str] = []
+        for value in custom_values:
+            subnet = str(custom_scan_subnet(value))
+            if subnet not in detected and subnet not in custom:
+                custom.append(subnet)
+        for subnet in selected:
+            if subnet not in detected and subnet not in custom:
+                custom.append(subnet)
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "invalid_subnet", "message": str(exc)},
+            status_code=422,
+        )
+
+    existing = repository.discovery_network_settings()
+    prior_excluded: set[str] = set()
+    for value in existing.get("excluded_detected_subnets", []):
+        try:
+            prior_excluded.add(str(normalize_private_scan_subnet(value)))
+        except ValueError:
+            continue
+    excluded = [
+        subnet
+        for subnet in prior_excluded
+        if subnet not in detected and subnet not in selected
+    ]
+    excluded.extend(subnet for subnet in detected if subnet not in selected)
+    repository.save_discovery_network_settings(
+        custom_subnets=custom,
+        excluded_detected_subnets=sorted(set(excluded), key=ipaddress.ip_network),
+        excluded_custom_subnets=[subnet for subnet in custom if subnet not in selected],
+    )
+    return _secured_json(_discovery_network_configuration(repository))
 
 
 @app.post("/internal/discovery/scan", include_in_schema=False)
 def start_discovery(
     x_camadmiral_action: str | None = Header(default=None),
 ) -> JSONResponse:
+    global RECOVERY_SCAN_PAUSED_UNTIL
     if x_camadmiral_action != "scan":
         raise HTTPException(status_code=400, detail="Missing scan action header")
+    repository = _repository(required=True)
+    selected_subnets = _selected_discovery_subnets(repository)
+    if not selected_subnets:
+        return _secured_json(
+            {
+                "status": "no_networks",
+                "message": "Select and save at least one IPv4 subnet before scanning.",
+            },
+            status_code=422,
+        )
     with SCAN_REQUEST_LOCK:
         state = _read_scan_state()
         if state.get("status") in {"queued", "running"} or SCAN_REQUEST.exists():
+            RECOVERY_SCAN_PAUSED_UNTIL = max(
+                RECOVERY_SCAN_PAUSED_UNTIL,
+                time.monotonic() + MANUAL_SCAN_PRIORITY_WINDOW,
+            )
             return _secured_json(_decorate_adoptions(state), status_code=409)
         scan_id = str(uuid.uuid4())
         request = {
             "scan_id": scan_id,
+            "subnets": selected_subnets,
             "requested_at": datetime.now(timezone.utc).isoformat(),
             "unix_time": time.time(),
         }
@@ -1790,6 +2781,10 @@ def start_discovery(
         temporary.write_text(json.dumps(request), encoding="utf-8")
         temporary.replace(SCAN_REQUEST)
     queued = {"status": "queued", "phase": "queued", **request}
+    queued["networks"] = [
+        {"subnet": subnet, "status": "queued", "scanners": {}}
+        for subnet in selected_subnets
+    ]
     if state.get("devices"):
         queued.update(
             {
@@ -1797,6 +2792,7 @@ def start_discovery(
                 "devices": state.get("devices"),
                 "summary": state.get("summary"),
                 "network": state.get("network"),
+                "networks": queued["networks"],
                 "duration_ms": state.get("duration_ms"),
                 "completed_at": state.get("completed_at"),
                 "raw_log": state.get("raw_log", []),
@@ -1851,6 +2847,47 @@ def add_discovery_address(
             }
         )
     return _secured_json(_decorate_adoptions(queued), status_code=202)
+
+
+@app.post("/internal/discovery/{candidate_uuid}/block", include_in_schema=False)
+def block_candidate(
+    candidate_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "block-camera":
+        raise HTTPException(status_code=400, detail="Missing camera block action header")
+    candidate = _find_candidate(candidate_uuid)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Camera candidate not found")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.adoption_for_candidate(candidate_uuid) is not None:
+        return _secured_json(
+            {"status": "adopted", "message": "Unadopt this camera before blocking it."},
+            status_code=409,
+        )
+    try:
+        blocked = repository.block_candidate(candidate)
+    except ValueError as exc:
+        return _secured_json(
+            {"status": "unstable_identity", "message": str(exc)},
+            status_code=422,
+        )
+    return _secured_json({"status": "blocked", "device": blocked})
+
+
+@app.delete("/internal/discovery/blocked/{block_uuid}", include_in_schema=False)
+def unblock_candidate(
+    block_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "unblock-camera":
+        raise HTTPException(status_code=400, detail="Missing camera unblock action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.unblock_device(block_uuid):
+        raise HTTPException(status_code=404, detail="Blocked device not found")
+    return _secured_json({"status": "unblocked"})
 
 
 @app.post("/internal/discovery/{candidate_uuid}/inspect", include_in_schema=False)

@@ -205,6 +205,7 @@ class RelayHealthMonitor:
         active_ids = {str(source["stream_uuid"]) for source in sources}
         results: dict[str, ProbeResult] = {}
         auth_failures: dict[str, ProbeResult] = {}
+        diagnostic_sources: dict[str, dict[str, str]] = {}
         for source in sources:
             stream_uuid = str(source["stream_uuid"])
             stream = runtime.get(source["stream_key"])
@@ -256,15 +257,30 @@ class RelayHealthMonitor:
                 failures = self._failure_samples.get(stream_uuid, 0) + 1
                 self._failure_samples[stream_uuid] = failures
                 if failures == 2:
-                    diagnostic = probe_source(
+                    diagnostic_sources.setdefault(str(source["camera_uuid"]), source)
+            else:
+                self._failure_samples.pop(stream_uuid, None)
+        if diagnostic_sources:
+            with ThreadPoolExecutor(
+                max_workers=min(PROBE_WORKERS, len(diagnostic_sources))
+            ) as executor:
+                diagnostics = {
+                    executor.submit(
+                        probe_source,
                         source["uri"],
                         source["username"],
                         source["password"],
-                    )
+                    ): camera_uuid
+                    for camera_uuid, source in diagnostic_sources.items()
+                }
+                for future in as_completed(diagnostics):
+                    camera_uuid = diagnostics[future]
+                    try:
+                        diagnostic = future.result()
+                    except Exception:
+                        continue
                     if diagnostic.status == "auth_failed":
-                        auth_failures[str(source["camera_uuid"])] = diagnostic
-            else:
-                self._failure_samples.pop(stream_uuid, None)
+                        auth_failures[camera_uuid] = diagnostic
         for stream_uuid in set(self._video_samples) - active_ids:
             self._video_samples.pop(stream_uuid, None)
         for stream_uuid in set(self._failure_samples) - active_ids:
@@ -286,6 +302,72 @@ class RelayHealthMonitor:
         return results
 
 
+class RelayRuntimeActivityMonitor:
+    """Detect stalled relays without running camera or snapshot probes."""
+
+    def __init__(self, *, stall_threshold: float = 5.0) -> None:
+        self._stall_threshold = max(0.0, stall_threshold)
+        self._samples: dict[str, tuple[str, int, float]] = {}
+        self._stalled_camera_uuids: set[str] = set()
+
+    @property
+    def stalled_camera_uuids(self) -> set[str]:
+        return set(self._stalled_camera_uuids)
+
+    def reset(self) -> None:
+        self._samples.clear()
+        self._stalled_camera_uuids.clear()
+
+    def poll(self, repository: Any) -> set[str]:
+        sources = repository.managed_stream_runtime_sources()
+        if not sources:
+            self.reset()
+            return set()
+        try:
+            runtime = json.loads(_request("GET", "/api/streams"))
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("go2rtc returned invalid stream state") from exc
+        if not isinstance(runtime, dict):
+            raise RuntimeError("go2rtc returned invalid stream state")
+
+        now = time.monotonic()
+        active_stream_uuids: set[str] = set()
+        stalled_camera_uuids: set[str] = set()
+        for source in sources:
+            stream = runtime.get(source["stream_key"])
+            consumers = stream.get("consumers") if isinstance(stream, dict) else None
+            if not consumers:
+                continue
+
+            stream_uuid = str(source["stream_uuid"])
+            camera_uuid = str(source["camera_uuid"])
+            active_stream_uuids.add(stream_uuid)
+            current = RelayHealthMonitor._active_video_sample(stream)
+            previous = self._samples.get(stream_uuid)
+            if current is not None and (
+                previous is None
+                or current[1] > previous[1]
+                or (previous[0] != current[0] and current[1] > 0)
+            ):
+                last_advanced_at = now
+            else:
+                last_advanced_at = previous[2] if previous is not None else now
+
+            producer_id, packets = (
+                current
+                if current is not None
+                else previous[:2] if previous is not None else ("", 0)
+            )
+            self._samples[stream_uuid] = (producer_id, packets, last_advanced_at)
+            if now - last_advanced_at >= self._stall_threshold:
+                stalled_camera_uuids.add(camera_uuid)
+
+        for stream_uuid in set(self._samples) - active_stream_uuids:
+            self._samples.pop(stream_uuid, None)
+        self._stalled_camera_uuids = stalled_camera_uuids
+        return set(stalled_camera_uuids)
+
+
 def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     parsed = urllib.parse.urlsplit(uri)
     if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.hostname:
@@ -301,10 +383,16 @@ def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     return urllib.parse.urlunsplit(parsed._replace(netloc=host, fragment=""))
 
 
-def _request(method: str, path: str, query: dict[str, str] | None = None) -> bytes:
+def _request(
+    method: str,
+    path: str,
+    query: dict[str, str] | None = None,
+    *,
+    body: bytes | None = None,
+) -> bytes:
     encoded = urllib.parse.urlencode(query or {})
     url = f"{GO2RTC_URL}{path}" + (f"?{encoded}" if encoded else "")
-    request = urllib.request.Request(url, method=method)
+    request = urllib.request.Request(url, data=body, method=method)
     with urllib.request.urlopen(request, timeout=3) as response:
         return response.read()
 
@@ -435,13 +523,32 @@ def go2rtc_websocket_url(stream_key: str) -> str:
 
 def replace_streams(sources: list[dict[str, str]]) -> None:
     wait_for_go2rtc()
+    persisted: dict[str, list[str]] = {}
     for source in sources:
-        try:
-            _request("DELETE", "/api/streams", {"src": source["stream_key"]})
-        except (urllib.error.URLError, TimeoutError, OSError):
-            pass
         uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
-        _request("PUT", "/api/streams", {"name": source["stream_key"], "src": uri})
+        persisted[source["stream_key"]] = [uri]
+    if not persisted:
+        return
+
+    # This PATCH writes only go2rtc's configuration file. It does not mutate an
+    # existing producer. Restarting the stock binary then creates fresh stream
+    # and producer objects, closes existing sessions, and lets clients reconnect
+    # through their unchanged downstream URLs.
+    body = json.dumps(
+        {"streams": persisted},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    _request("PATCH", "/api/config", body=body)
+    try:
+        _request("POST", "/api/restart")
+    except urllib.error.HTTPError:
+        raise
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        # The restart can replace the process before the HTTP response flushes.
+        pass
+    time.sleep(0.1)
+    wait_for_go2rtc(attempts=50, delay=0.1)
 
 
 def _fps(value: str | None) -> float:

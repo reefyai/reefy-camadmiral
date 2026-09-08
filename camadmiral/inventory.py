@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from collections import Counter, defaultdict
 from typing import Any, Iterable
@@ -15,6 +16,17 @@ def _stable_keys(device: dict[str, Any]) -> list[str]:
     if endpoint_reference:
         keys.append(f"onvif:{endpoint_reference}")
     return keys
+
+
+def _onvif_key(device: dict[str, Any]) -> str | None:
+    onvif = device.get("onvif") or {}
+    endpoint_reference = str(onvif.get("endpoint_reference") or "").strip().lower()
+    return f"onvif:{endpoint_reference}" if endpoint_reference else None
+
+
+def _mac_key(device: dict[str, Any]) -> str | None:
+    mac = str(device.get("mac") or "").strip().lower()
+    return f"mac:{mac}" if mac else None
 
 
 def annotate_identity_conflicts(devices: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,14 +116,17 @@ def reconcile_inventory(
     reconciled: list[dict[str, Any]] = []
     for observation in current:
         current_keys = _stable_keys(observation)
-        previous_index = next(
-            (
-                stable_index[key]
-                for key in current_keys
-                if key in stable_index and stable_index[key] not in matched
-            ),
-            None,
-        )
+        previous_index = None
+        # An ONVIF endpoint reference identifies the device rather than its
+        # current network adapter. Prefer it when both it and a recycled MAC
+        # point at different existing candidates.
+        for key in (_onvif_key(observation), _mac_key(observation)):
+            if key is None:
+                continue
+            candidate = stable_index.get(key)
+            if candidate is not None and candidate not in matched:
+                previous_index = candidate
+                break
         if previous_index is None and not current_keys:
             candidate = ip_index.get(str(observation.get("ip") or ""))
             if candidate is not None and candidate not in matched:
@@ -156,6 +171,49 @@ def reconcile_inventory(
 
     return sorted(
         annotate_identity_conflicts(reconciled),
+        key=lambda device: (
+            device.get("status") != "online",
+            str(device.get("display_name") or device.get("ip") or "").lower(),
+        ),
+    )
+
+
+def reconcile_scanned_subnets(
+    previous_devices: Iterable[dict[str, Any]],
+    current_devices: Iterable[dict[str, Any]],
+    seen_at: str,
+    subnets: Iterable[str],
+    reachable_ips: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Reconcile only devices for which the selected subnets provide evidence."""
+    previous = list(previous_devices)
+    current = list(current_devices)
+    networks = [ipaddress.IPv4Network(str(subnet), strict=False) for subnet in subnets]
+    observed_keys = {
+        key
+        for device in current
+        for key in _stable_keys(device)
+    }
+
+    targeted: list[dict[str, Any]] = []
+    untouched: list[dict[str, Any]] = []
+    for device in previous:
+        try:
+            address = ipaddress.IPv4Address(str(device.get("ip") or ""))
+        except ipaddress.AddressValueError:
+            address = None
+        in_scope = address is not None and any(address in network for network in networks)
+        identity_observed = bool(observed_keys.intersection(_stable_keys(device)))
+        (targeted if in_scope or identity_observed else untouched).append(device)
+
+    reconciled = reconcile_inventory(
+        targeted,
+        current,
+        seen_at,
+        reachable_ips=reachable_ips,
+    )
+    return sorted(
+        annotate_identity_conflicts([*untouched, *reconciled]),
         key=lambda device: (
             device.get("status") != "online",
             str(device.get("display_name") or device.get("ip") or "").lower(),

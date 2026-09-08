@@ -2,11 +2,12 @@ import json
 import subprocess
 import unittest
 import urllib.error
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from camadmiral.media import (
     ProbeResult,
     RelayHealthMonitor,
+    RelayRuntimeActivityMonitor,
     SnapshotError,
     authenticated_rtsp_uri,
     go2rtc_websocket_url,
@@ -16,12 +17,172 @@ from camadmiral.media import (
     reconcile_and_probe,
     reconcile_preloads,
     reconcile_runtime_drift,
+    replace_streams,
     restart_preload,
     snapshot_frame,
 )
 
 
 class MediaTests(unittest.TestCase):
+    @patch("camadmiral.media._request")
+    def test_runtime_activity_skips_go2rtc_without_managed_streams(self, request) -> None:
+        repository = Mock()
+        repository.managed_stream_runtime_sources.return_value = []
+
+        monitor = RelayRuntimeActivityMonitor()
+
+        self.assertEqual(monitor.poll(repository), set())
+        request.assert_not_called()
+
+    @patch("camadmiral.media._request")
+    @patch("camadmiral.media.time.monotonic", side_effect=[100.0, 104.9, 105.0, 106.0])
+    def test_runtime_activity_uses_a_time_threshold_and_advancement_clears_stall(
+        self,
+        _monotonic,
+        request,
+    ) -> None:
+        runtime = {
+            "stream_main": {
+                "producers": [
+                    {
+                        "id": 7,
+                        "bytes_recv": 1000,
+                        "receivers": [
+                            {
+                                "codec": {
+                                    "codec_name": "h264",
+                                    "codec_type": "video",
+                                },
+                                "packets": 20,
+                            }
+                        ],
+                    }
+                ],
+                "consumers": [{"id": 9}],
+            }
+        }
+        request.side_effect = lambda *_args: json.dumps(runtime).encode()
+        repository = Mock()
+        repository.managed_stream_runtime_sources.return_value = [
+            {
+                "stream_uuid": "stream-1",
+                "stream_key": "stream_main",
+                "camera_uuid": "camera-1",
+            }
+        ]
+        monitor = RelayRuntimeActivityMonitor(stall_threshold=5.0)
+
+        self.assertEqual(monitor.poll(repository), set())
+        self.assertEqual(monitor.poll(repository), set())
+        self.assertEqual(monitor.poll(repository), {"camera-1"})
+        runtime["stream_main"]["producers"][0]["receivers"][0]["packets"] = 21
+        self.assertEqual(monitor.poll(repository), set())
+        self.assertEqual(monitor.stalled_camera_uuids, set())
+        repository.managed_stream_runtime_sources.assert_called_with()
+
+    @patch("camadmiral.media._request")
+    @patch("camadmiral.media.time.monotonic", side_effect=[100.0, 105.0, 106.0, 112.0])
+    def test_runtime_activity_only_tracks_streams_with_active_consumers(
+        self,
+        _monotonic,
+        request,
+    ) -> None:
+        runtime = {
+            "stream_main": {
+                "producers": [
+                    {
+                        "id": 7,
+                        "bytes_recv": 1000,
+                        "receivers": [
+                            {
+                                "codec": {
+                                    "codec_name": "h264",
+                                    "codec_type": "video",
+                                },
+                                "packets": 20,
+                            }
+                        ],
+                    }
+                ],
+                "consumers": [{"id": 9}],
+            }
+        }
+        request.side_effect = lambda *_args: json.dumps(runtime).encode()
+        repository = Mock()
+        repository.managed_stream_runtime_sources.return_value = [
+            {
+                "stream_uuid": "stream-1",
+                "stream_key": "stream_main",
+                "camera_uuid": "camera-1",
+            }
+        ]
+        monitor = RelayRuntimeActivityMonitor(stall_threshold=5.0)
+
+        self.assertEqual(monitor.poll(repository), set())
+        self.assertEqual(monitor.poll(repository), {"camera-1"})
+        runtime["stream_main"]["consumers"] = []
+        self.assertEqual(monitor.poll(repository), set())
+        runtime["stream_main"]["consumers"] = [{"id": 10}]
+        self.assertEqual(monitor.poll(repository), set())
+
+    @patch("camadmiral.media._request")
+    @patch("camadmiral.media.time.monotonic", side_effect=[100.0, 105.0, 106.0])
+    def test_runtime_activity_tracks_missing_and_replacement_producers(
+        self,
+        _monotonic,
+        request,
+    ) -> None:
+        runtime = {
+            "stream_main": {
+                "producers": [
+                    {
+                        "id": 7,
+                        "bytes_recv": 1000,
+                        "receivers": [
+                            {
+                                "codec": {
+                                    "codec_name": "h264",
+                                    "codec_type": "video",
+                                },
+                                "packets": 20,
+                            }
+                        ],
+                    }
+                ],
+                "consumers": [{"id": 9}],
+            }
+        }
+        request.side_effect = lambda *_args: json.dumps(runtime).encode()
+        repository = Mock()
+        repository.managed_stream_runtime_sources.return_value = [
+            {
+                "stream_uuid": "stream-1",
+                "stream_key": "stream_main",
+                "camera_uuid": "camera-1",
+            }
+        ]
+        monitor = RelayRuntimeActivityMonitor(stall_threshold=5.0)
+
+        self.assertEqual(monitor.poll(repository), set())
+        runtime["stream_main"]["producers"] = []
+        self.assertEqual(monitor.poll(repository), {"camera-1"})
+        runtime["stream_main"]["producers"] = [
+            {
+                "id": 8,
+                "bytes_recv": 100,
+                "receivers": [
+                    {
+                        "codec": {
+                            "codec_name": "h264",
+                            "codec_type": "video",
+                        },
+                        "packets": 1,
+                    }
+                ],
+            }
+        ]
+        self.assertEqual(monitor.poll(repository), set())
+
     @patch("camadmiral.media.snapshot_frame", return_value=b"\xff\xd8\xffidle\xff\xd9")
     @patch("camadmiral.media._request")
     def test_relay_health_uses_active_counters_and_periodically_samples_each_camera(
@@ -299,34 +460,45 @@ class MediaTests(unittest.TestCase):
         request,
         probe_source_mock,
     ) -> None:
-        source = {
-            "stream_uuid": "detect",
-            "stream_key": "stream_detect",
-            "camera_uuid": "camera-1",
-            "uri": "rtsp://192.0.2.10/live",
-            "username": "operator",
-            "password": "synthetic-secret",
-        }
+        sources = [
+            {
+                "stream_uuid": "detect",
+                "stream_key": "stream_detect",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.10/sub",
+                "username": "operator",
+                "password": "synthetic-secret",
+            },
+            {
+                "stream_uuid": "record",
+                "stream_key": "stream_record",
+                "camera_uuid": "camera-1",
+                "uri": "rtsp://192.0.2.10/main",
+                "username": "operator",
+                "password": "synthetic-secret",
+            },
+        ]
         runtime = {
-            "stream_detect": {
+            source["stream_key"]: {
                 "producers": [{"url": source["uri"]}],
                 "consumers": [{"id": 9}],
             }
+            for source in sources
         }
         request.side_effect = lambda _method, path, _query=None: json.dumps(
             {"stream_detect": {}} if path == "/api/preload" else runtime
         ).encode()
         repository = Mock()
-        repository.managed_stream_sources.return_value = [source]
+        repository.managed_stream_sources.return_value = sources
         monitor = RelayHealthMonitor()
 
         monitor.probe(repository)
         monitor.probe(repository)
 
         probe_source_mock.assert_called_once_with(
-            source["uri"],
-            source["username"],
-            source["password"],
+            sources[0]["uri"],
+            sources[0]["username"],
+            sources[0]["password"],
         )
         repository.record_camera_auth_failure.assert_called_once_with(
             "camera-1",
@@ -440,6 +612,136 @@ class MediaTests(unittest.TestCase):
             result,
             "rtsp://camera%20user:p%40ss%3A%2Fword@192.0.2.10:554/media?channel=1",
         )
+
+    @patch("camadmiral.media.wait_for_go2rtc")
+    @patch("camadmiral.media._request")
+    @patch("camadmiral.media.time.sleep")
+    def test_replace_streams_persists_sources_then_restarts_stock_go2rtc(
+        self,
+        _sleep,
+        request,
+        wait_for_go2rtc_mock,
+    ) -> None:
+        sources = [
+            {
+                "stream_key": "stream_main",
+                "uri": "rtsp://192.0.2.20:554/main?channel=1",
+                "username": "camera user",
+                "password": "synthetic-secret",
+            },
+            {
+                "stream_key": "stream_sub",
+                "uri": "rtsp://192.0.2.20:554/sub",
+                "username": "",
+                "password": "",
+            },
+        ]
+
+        replace_streams(sources)
+
+        self.assertEqual(
+            wait_for_go2rtc_mock.call_args_list,
+            [call(), call(attempts=50, delay=0.1)],
+        )
+        main_uri = "rtsp://camera%20user:synthetic-secret@192.0.2.20:554/main?channel=1"
+        sub_uri = "rtsp://192.0.2.20:554/sub"
+        self.assertEqual(request.call_args_list[0].args, ("PATCH", "/api/config"))
+        self.assertEqual(
+            json.loads(request.call_args_list[0].kwargs["body"]),
+            {"streams": {"stream_main": [main_uri], "stream_sub": [sub_uri]}},
+        )
+        self.assertEqual(request.call_args_list[1], call("POST", "/api/restart"))
+
+    @patch("camadmiral.media.wait_for_go2rtc")
+    @patch(
+        "camadmiral.media._request",
+        side_effect=RuntimeError("synthetic persistence failure"),
+    )
+    def test_replace_streams_does_not_restart_after_persistence_failure(
+        self,
+        request,
+        _wait_for_go2rtc,
+    ) -> None:
+        with self.assertRaisesRegex(RuntimeError, "synthetic persistence failure"):
+            replace_streams([
+                {
+                    "stream_key": "stream_main",
+                    "uri": "rtsp://192.0.2.20/main",
+                    "username": "",
+                    "password": "",
+                },
+                {
+                    "stream_key": "stream_sub",
+                    "uri": "rtsp://192.0.2.20/sub",
+                    "username": "",
+                    "password": "",
+                },
+            ])
+
+        request.assert_called_once()
+
+    @patch("camadmiral.media.wait_for_go2rtc")
+    @patch(
+        "camadmiral.media._request",
+        side_effect=[b"", RuntimeError("synthetic restart failure")],
+    )
+    @patch("camadmiral.media.time.sleep")
+    def test_replace_streams_propagates_unexpected_restart_failure(
+        self,
+        _sleep,
+        request,
+        _wait_for_go2rtc,
+    ) -> None:
+        with self.assertRaisesRegex(RuntimeError, "synthetic restart failure"):
+            replace_streams([
+                {
+                    "stream_key": "stream_main",
+                    "uri": "rtsp://192.0.2.20/main",
+                    "username": "",
+                    "password": "",
+                }
+            ])
+
+        self.assertEqual(request.call_count, 2)
+
+    @patch("camadmiral.media.time.sleep")
+    @patch("camadmiral.media.wait_for_go2rtc")
+    @patch(
+        "camadmiral.media._request",
+        side_effect=[b"", urllib.error.URLError("synthetic restart disconnect")],
+    )
+    def test_replace_streams_accepts_expected_restart_disconnect(
+        self,
+        request,
+        wait_for_go2rtc_mock,
+        _sleep,
+    ) -> None:
+        replace_streams([
+            {
+                "stream_key": "stream_main",
+                "uri": "rtsp://192.0.2.20/main",
+                "username": "",
+                "password": "",
+            }
+        ])
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(
+            wait_for_go2rtc_mock.call_args_list,
+            [call(), call(attempts=50, delay=0.1)],
+        )
+
+    @patch("camadmiral.media.wait_for_go2rtc")
+    @patch("camadmiral.media._request")
+    def test_replace_streams_skips_restart_for_empty_batch(
+        self,
+        request,
+        wait_for_go2rtc_mock,
+    ) -> None:
+        replace_streams([])
+
+        wait_for_go2rtc_mock.assert_called_once_with()
+        request.assert_not_called()
 
     @patch("camadmiral.media.subprocess.run")
     def test_probe_reports_empirical_video_metadata(self, run) -> None:

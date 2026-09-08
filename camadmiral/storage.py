@@ -242,6 +242,171 @@ MIGRATIONS: tuple[str, ...] = (
         CHECK(restart_recommended IN (0, 1));
     """,
     """
+    ALTER TABLE frigate_camera_selections
+    ADD COLUMN address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost'));
+    """,
+    """
+    CREATE TABLE discovery_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        custom_subnets_json TEXT NOT NULL DEFAULT '[]',
+        excluded_detected_subnets_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    ALTER TABLE discovery_settings
+    ADD COLUMN excluded_custom_subnets_json TEXT NOT NULL DEFAULT '[]';
+    """,
+    """
+    ALTER TABLE cameras
+    ADD COLUMN stream_address_mode TEXT NOT NULL DEFAULT 'lan'
+        CHECK(stream_address_mode IN ('lan', 'localhost'));
+    UPDATE cameras
+    SET stream_address_mode = (
+        SELECT address_mode
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+        ORDER BY selected_at DESC, target_id
+        LIMIT 1
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM frigate_camera_selections
+        WHERE frigate_camera_selections.camera_uuid = cameras.camera_uuid
+    );
+    """,
+    """
+    CREATE TABLE blocked_devices (
+        block_uuid TEXT PRIMARY KEY,
+        candidate_uuid TEXT,
+        onvif_identity TEXT,
+        mac TEXT,
+        display_name TEXT NOT NULL,
+        last_ip TEXT,
+        blocked_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK(onvif_identity IS NOT NULL OR mac IS NOT NULL),
+        UNIQUE(onvif_identity),
+        UNIQUE(mac)
+    );
+    CREATE INDEX blocked_devices_candidate
+        ON blocked_devices(candidate_uuid);
+    """,
+    """
+    ALTER TABLE frigate_targets
+    ADD COLUMN address_mode TEXT DEFAULT 'lan'
+        CHECK(address_mode IN ('lan', 'localhost') OR address_mode IS NULL);
+    UPDATE frigate_targets
+    SET address_mode = (
+        SELECT CASE
+            WHEN COUNT(DISTINCT selections.address_mode) = 1
+            THEN MIN(selections.address_mode)
+            ELSE NULL
+        END
+        FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    )
+    WHERE EXISTS (
+        SELECT 1 FROM frigate_camera_selections AS selections
+        WHERE selections.target_id = frigate_targets.target_id
+    );
+    """,
+    """
+    CREATE TABLE camera_identity_periods (
+        period_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        ip_address TEXT,
+        mac_address TEXT,
+        onvif_identity TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        CHECK(ip_address IS NOT NULL OR mac_address IS NOT NULL OR onvif_identity IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX camera_identity_periods_one_current
+        ON camera_identity_periods(camera_uuid) WHERE ended_at IS NULL;
+    CREATE INDEX camera_identity_periods_camera_time
+        ON camera_identity_periods(camera_uuid, started_at DESC);
+    """,
+    """
+    PRAGMA foreign_keys = OFF;
+
+    DROP INDEX IF EXISTS notification_outbox_due;
+    DROP INDEX IF EXISTS camera_incidents_one_open_per_camera;
+    DROP INDEX IF EXISTS camera_incidents_status_time;
+    ALTER TABLE notification_outbox RENAME TO notification_outbox_v22;
+    ALTER TABLE camera_incidents RENAME TO camera_incidents_v22;
+
+    CREATE TABLE camera_incidents (
+        incident_uuid TEXT PRIMARY KEY,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN (
+            'media_offline', 'authentication_failed', 'camera_address_changed'
+        )),
+        severity TEXT NOT NULL DEFAULT 'critical'
+            CHECK(severity IN ('critical', 'warning')),
+        opened_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolution_reason TEXT,
+        details_json TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE UNIQUE INDEX camera_incidents_one_open_health_per_camera
+        ON camera_incidents(camera_uuid)
+        WHERE resolved_at IS NULL
+          AND kind IN ('media_offline', 'authentication_failed');
+    CREATE UNIQUE INDEX camera_incidents_one_open_address_per_camera
+        ON camera_incidents(camera_uuid)
+        WHERE resolved_at IS NULL AND kind = 'camera_address_changed';
+    CREATE INDEX camera_incidents_status_time
+        ON camera_incidents(resolved_at, opened_at DESC);
+
+    INSERT INTO camera_incidents(
+        incident_uuid, camera_uuid, kind, severity, opened_at,
+        last_observed_at, resolved_at, resolution_reason, details_json
+    )
+    SELECT incident_uuid, camera_uuid, kind, severity, opened_at,
+           last_observed_at, resolved_at, resolution_reason, '{}'
+    FROM camera_incidents_v22;
+
+    CREATE TABLE notification_outbox (
+        outbox_uuid TEXT PRIMARY KEY,
+        incident_uuid TEXT REFERENCES camera_incidents(incident_uuid) ON DELETE SET NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+            'incident_opened', 'incident_resolved', 'relay_restarted', 'test'
+        )),
+        payload_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'retry', 'sent', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        provider_message_id TEXT,
+        last_error_code TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT
+    );
+    CREATE INDEX notification_outbox_due
+        ON notification_outbox(status, next_attempt_at);
+
+    INSERT INTO notification_outbox(
+        outbox_uuid, incident_uuid, event_type, payload_json, idempotency_key,
+        status, attempt_count, next_attempt_at, provider_message_id,
+        last_error_code, created_at, sent_at
+    )
+    SELECT outbox_uuid, incident_uuid, event_type, payload_json, idempotency_key,
+           status, attempt_count, next_attempt_at, provider_message_id,
+           last_error_code, created_at, sent_at
+    FROM notification_outbox_v22;
+
+    DROP TABLE notification_outbox_v22;
+    DROP TABLE camera_incidents_v22;
+    PRAGMA foreign_keys = ON;
+    """,
+    """
+    ALTER TABLE cameras ADD COLUMN camera_origin TEXT NOT NULL DEFAULT 'discovery'
+        CHECK(camera_origin IN ('discovery', 'direct'));
+    """,
+    """
     CREATE TABLE frigate_retired_cameras (
         target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
         camera_key TEXT NOT NULL,
@@ -286,6 +451,26 @@ def _source_uri(row: sqlite3.Row) -> str:
             )
         )
     return str(row["uri"])
+
+
+def _rtsp_source_key(uri: str) -> tuple[str, str, int, str, str]:
+    parsed = urllib.parse.urlsplit(uri)
+    if parsed.scheme.lower() != "rtsp" or not parsed.hostname:
+        raise ValueError("RTSP source is invalid")
+    return (
+        "rtsp",
+        parsed.hostname.lower().rstrip("."),
+        parsed.port or 554,
+        parsed.path or "/",
+        parsed.query,
+    )
+
+
+class SourceAlreadyAssignedError(ValueError):
+    def __init__(self, camera_uuid: str, display_name: str):
+        super().__init__("That RTSP stream is already assigned to another camera.")
+        self.camera_uuid = camera_uuid
+        self.display_name = display_name
 
 
 class CameraRepository:
@@ -424,7 +609,8 @@ class CameraRepository:
         }.get(state)
         opened = connection.execute(
             "SELECT incident_uuid, kind FROM camera_incidents "
-            "WHERE camera_uuid = ? AND resolved_at IS NULL",
+            "WHERE camera_uuid = ? AND resolved_at IS NULL "
+            "AND kind IN ('media_offline', 'authentication_failed')",
             (camera_uuid,),
         ).fetchone()
         if desired_kind is not None:
@@ -512,13 +698,30 @@ class CameraRepository:
         ).fetchone()
         if camera is None:
             return
+        payload_data = {
+            "camera_id": camera_uuid,
+            "camera_name": str(camera["display_name"]),
+            "kind": kind,
+            "observed_at": timestamp,
+        }
+        if kind == "camera_address_changed":
+            incident = connection.execute(
+                "SELECT opened_at, details_json FROM camera_incidents "
+                "WHERE incident_uuid = ?",
+                (incident_uuid,),
+            ).fetchone()
+            if incident is not None:
+                try:
+                    details = json.loads(str(incident["details_json"] or "{}"))
+                except (TypeError, ValueError):
+                    details = {}
+                payload_data["opened_at"] = str(incident["opened_at"])
+                for field in ("previous_address", "current_address"):
+                    value = details.get(field) if isinstance(details, dict) else None
+                    if value:
+                        payload_data[field] = str(value)
         payload = json.dumps(
-            {
-                "camera_id": camera_uuid,
-                "camera_name": str(camera["display_name"]),
-                "kind": kind,
-                "observed_at": timestamp,
-            },
+            payload_data,
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -536,6 +739,113 @@ class CameraRepository:
                 timestamp,
             ),
         )
+
+    def open_camera_address_incident(
+        self,
+        camera_uuid: str,
+        previous_address: str,
+        current_address: str,
+        evidence: str,
+    ) -> str:
+        timestamp = _now()
+        details = json.dumps(
+            {
+                "previous_address": previous_address,
+                "current_address": current_address,
+                "evidence": evidence,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            opened = connection.execute(
+                "SELECT incident_uuid FROM camera_incidents WHERE camera_uuid = ? "
+                "AND kind = 'camera_address_changed' AND resolved_at IS NULL",
+                (camera_uuid,),
+            ).fetchone()
+            if opened is not None:
+                incident_uuid = str(opened["incident_uuid"])
+                connection.execute(
+                    "UPDATE camera_incidents SET last_observed_at = ?, details_json = ? "
+                    "WHERE incident_uuid = ?",
+                    (timestamp, details, incident_uuid),
+                )
+            else:
+                incident_uuid = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO camera_incidents(incident_uuid, camera_uuid, kind, severity, "
+                    "opened_at, last_observed_at, details_json) "
+                    "VALUES (?, ?, 'camera_address_changed', 'warning', ?, ?, ?)",
+                    (incident_uuid, camera_uuid, timestamp, timestamp, details),
+                )
+                self._enqueue_incident_notification(
+                    connection,
+                    incident_uuid,
+                    camera_uuid,
+                    "camera_address_changed",
+                    "incident_opened",
+                    timestamp,
+                )
+            connection.commit()
+        return incident_uuid
+
+    def resolve_camera_address_incident(self, incident_uuid: str) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            incident = connection.execute(
+                "SELECT kind, resolved_at FROM camera_incidents WHERE incident_uuid = ?",
+                (incident_uuid,),
+            ).fetchone()
+            if (
+                incident is None
+                or incident["kind"] != "camera_address_changed"
+                or incident["resolved_at"] is not None
+            ):
+                return
+            self._resolve_incident(connection, incident_uuid, timestamp, "stream_recovered")
+            connection.commit()
+
+    def enqueue_relay_restart_notification(
+        self,
+        *,
+        reason: str,
+        camera_count: int,
+    ) -> str | None:
+        timestamp = _now()
+        outbox_uuid = str(uuid.uuid4())
+        payload = json.dumps(
+            {
+                "reason": reason,
+                "camera_count": max(0, int(camera_count)),
+                "observed_at": timestamp,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            settings_row = connection.execute(
+                "SELECT enabled, chat_id FROM notification_settings WHERE singleton_id = 1"
+            ).fetchone()
+            if (
+                settings_row is None
+                or not bool(settings_row["enabled"])
+                or not settings_row["chat_id"]
+            ):
+                return None
+            connection.execute(
+                "INSERT INTO notification_outbox(outbox_uuid, event_type, payload_json, "
+                "idempotency_key, status, next_attempt_at, created_at) "
+                "VALUES (?, 'relay_restarted', ?, ?, 'pending', ?, ?)",
+                (
+                    outbox_uuid,
+                    payload,
+                    f"relay-restarted:{outbox_uuid}",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        return outbox_uuid
 
     def camera_availability(
         self,
@@ -691,6 +1001,62 @@ class CameraRepository:
             else None
         )
         return result
+
+    def discovery_network_settings(self) -> dict[str, list[str]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT custom_subnets_json, excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json "
+                "FROM discovery_settings WHERE singleton_id = 1"
+            ).fetchone()
+        if row is None:
+            return {
+                "custom_subnets": [],
+                "excluded_detected_subnets": [],
+                "excluded_custom_subnets": [],
+            }
+
+        def values(column: str) -> list[str]:
+            try:
+                parsed = json.loads(str(row[column]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+            if not isinstance(parsed, list):
+                return []
+            return [str(value) for value in parsed if isinstance(value, str)]
+
+        return {
+            "custom_subnets": values("custom_subnets_json"),
+            "excluded_detected_subnets": values("excluded_detected_subnets_json"),
+            "excluded_custom_subnets": values("excluded_custom_subnets_json"),
+        }
+
+    def save_discovery_network_settings(
+        self,
+        *,
+        custom_subnets: list[str],
+        excluded_detected_subnets: list[str],
+        excluded_custom_subnets: list[str],
+    ) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_settings(singleton_id, custom_subnets_json, "
+                "excluded_detected_subnets_json, excluded_custom_subnets_json, "
+                "updated_at) VALUES (1, ?, ?, ?, ?) "
+                "ON CONFLICT(singleton_id) DO UPDATE SET "
+                "custom_subnets_json=excluded.custom_subnets_json, "
+                "excluded_detected_subnets_json=excluded.excluded_detected_subnets_json, "
+                "excluded_custom_subnets_json=excluded.excluded_custom_subnets_json, "
+                "updated_at=excluded.updated_at",
+                (
+                    json.dumps(custom_subnets, separators=(",", ":")),
+                    json.dumps(excluded_detected_subnets, separators=(",", ":")),
+                    json.dumps(excluded_custom_subnets, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+            connection.commit()
 
     def notification_settings(self) -> dict[str, Any]:
         credentials = self.notification_credentials()
@@ -882,7 +1248,8 @@ class CameraRepository:
     def adoption_for_candidate(self, candidate_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             camera = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled "
+                "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled, "
+                "stream_address_mode, camera_origin "
                 "FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
             ).fetchone()
@@ -921,7 +1288,9 @@ class CameraRepository:
                 "camera_uuid": camera["camera_uuid"],
                 "candidate_uuid": camera["candidate_uuid"],
                 "display_name": camera["display_name"],
+                "camera_origin": str(camera["camera_origin"]),
                 "enabled": bool(camera["enabled"]),
+                "stream_address_mode": str(camera["stream_address_mode"]),
                 "adopted_at": camera["adopted_at"],
                 "roles": roles,
                 "role_tokens": role_tokens,
@@ -936,6 +1305,294 @@ class CameraRepository:
             for candidate_uuid in candidates
             if (adoption := self.adoption_for_candidate(candidate_uuid)) is not None
         }
+
+    @staticmethod
+    def _candidate_stable_identity(candidate: dict[str, Any]) -> tuple[str | None, str | None]:
+        onvif = candidate.get("onvif") or {}
+        onvif_identity = str(onvif.get("endpoint_reference") or "").strip().lower() or None
+        mac = str(candidate.get("mac") or "").strip().lower() or None
+        return onvif_identity, mac
+
+    @classmethod
+    def _candidate_identity(
+        cls,
+        candidate: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        onvif_identity, mac = cls._candidate_stable_identity(candidate)
+        ip_address = str(candidate.get("ip") or "").strip() or None
+        return ip_address, mac, onvif_identity
+
+    @classmethod
+    def _observe_camera_identity(
+        cls,
+        connection: sqlite3.Connection,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        observed_at: str,
+    ) -> bool:
+        observed_identity = cls._candidate_identity(candidate)
+        current = connection.execute(
+            "SELECT period_uuid, ip_address, mac_address, onvif_identity "
+            "FROM camera_identity_periods WHERE camera_uuid = ? AND ended_at IS NULL",
+            (camera_uuid,),
+        ).fetchone()
+        identity = observed_identity
+        if not any(identity):
+            return False
+        if current is not None:
+            current_identity = (
+                current["ip_address"],
+                current["mac_address"],
+                current["onvif_identity"],
+            )
+            # Missing fields are unknown, not evidence that a value disappeared.
+            # Fill newly learned values into the current period. Start a new
+            # period only when two known values conflict, and keep any fields
+            # that are unknown in that new observation null.
+            changed = any(
+                observed is not None
+                and previous is not None
+                and observed != previous
+                for observed, previous in zip(identity, current_identity, strict=True)
+            )
+            if not changed:
+                enriched = tuple(
+                    observed if previous is None else previous
+                    for observed, previous in zip(identity, current_identity, strict=True)
+                )
+                if enriched == current_identity:
+                    return False
+                connection.execute(
+                    "UPDATE camera_identity_periods SET ip_address = ?, mac_address = ?, "
+                    "onvif_identity = ? WHERE period_uuid = ?",
+                    (*enriched, current["period_uuid"]),
+                )
+                return True
+        if current is not None:
+            connection.execute(
+                "UPDATE camera_identity_periods SET ended_at = ? WHERE period_uuid = ?",
+                (observed_at, current["period_uuid"]),
+            )
+        connection.execute(
+            "INSERT INTO camera_identity_periods(period_uuid, camera_uuid, ip_address, "
+            "mac_address, onvif_identity, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (str(uuid.uuid4()), camera_uuid, *identity, observed_at),
+        )
+        return True
+
+    def observe_camera_identity(
+        self,
+        camera_uuid: str,
+        candidate: dict[str, Any],
+        *,
+        observed_at: str | None = None,
+    ) -> bool:
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                connection.rollback()
+                return False
+            changed = self._observe_camera_identity(
+                connection,
+                camera_uuid,
+                candidate,
+                timestamp,
+            )
+            connection.commit()
+        return changed
+
+    def initialize_camera_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        observed_at: str | None = None,
+    ) -> int:
+        return self.observe_inventory_identities(
+            observations,
+            observed_at=observed_at,
+        )
+
+    def observe_inventory_identities(
+        self,
+        observations: list[tuple[str, dict[str, Any]]],
+        *,
+        advance_existing_camera_uuids: set[str] | frozenset[str] = frozenset(),
+        observed_at: str | None = None,
+    ) -> int:
+        if not observations:
+            return 0
+        timestamp = observed_at or _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            known = {
+                str(row["camera_uuid"])
+                for row in connection.execute("SELECT camera_uuid FROM cameras")
+            }
+            initialized = {
+                str(row["camera_uuid"])
+                for row in connection.execute(
+                    "SELECT camera_uuid FROM camera_identity_periods WHERE ended_at IS NULL"
+                )
+            }
+            changes = 0
+            for camera_uuid, candidate in observations:
+                if camera_uuid not in known or (
+                    camera_uuid in initialized
+                    and camera_uuid not in advance_existing_camera_uuids
+                ):
+                    continue
+                if self._observe_camera_identity(
+                    connection,
+                    camera_uuid,
+                    candidate,
+                    timestamp,
+                ):
+                    changes += 1
+                    initialized.add(camera_uuid)
+            connection.commit()
+        return changes
+
+    def camera_identity_history(self, camera_uuid: str) -> list[dict[str, Any]] | None:
+        with self.connect() as connection:
+            camera = connection.execute(
+                "SELECT 1 FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                return None
+            rows = connection.execute(
+                "SELECT ip_address, mac_address, onvif_identity, started_at, ended_at "
+                "FROM camera_identity_periods WHERE camera_uuid = ? "
+                "ORDER BY started_at DESC, period_uuid DESC",
+                (camera_uuid,),
+            ).fetchall()
+        return [
+            {
+                "ip": row["ip_address"],
+                "mac": row["mac_address"],
+                "onvif_identity": row["onvif_identity"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "current": row["ended_at"] is None,
+            }
+            for row in rows
+        ]
+
+    def blocked_devices(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT block_uuid, candidate_uuid, onvif_identity, mac, display_name, "
+                "last_ip, blocked_at, updated_at FROM blocked_devices "
+                "ORDER BY display_name COLLATE NOCASE, block_uuid"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def blocked_device_for_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        onvif_identity, mac = self._candidate_stable_identity(candidate)
+        clauses: list[str] = []
+        values: list[str] = []
+        if onvif_identity:
+            clauses.append("onvif_identity = ?")
+            values.append(onvif_identity)
+        if mac:
+            clauses.append("mac = ?")
+            values.append(mac)
+        if not clauses:
+            return None
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT block_uuid, candidate_uuid, onvif_identity, mac, display_name, "
+                f"last_ip, blocked_at, updated_at FROM blocked_devices WHERE {' OR '.join(clauses)}",
+                values,
+            ).fetchall()
+        if len(rows) > 1:
+            return None
+        return dict(rows[0]) if rows else None
+
+    def block_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        if candidate.get("identity_conflict"):
+            raise ValueError("Camera has a conflicting stable identity")
+        onvif_identity, mac = self._candidate_stable_identity(candidate)
+        if not onvif_identity and not mac:
+            raise ValueError("Camera has no stable ONVIF identity or MAC address")
+        timestamp = _now()
+        display_name = str(candidate.get("display_name") or candidate.get("ip") or "Blocked device")
+        candidate_uuid = str(candidate.get("candidate_uuid") or "") or None
+        last_ip = str(candidate.get("ip") or "") or None
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            clauses: list[str] = []
+            values: list[str] = []
+            if onvif_identity:
+                clauses.append("onvif_identity = ?")
+                values.append(onvif_identity)
+            if mac:
+                clauses.append("mac = ?")
+                values.append(mac)
+            matches = connection.execute(
+                "SELECT block_uuid FROM blocked_devices WHERE " + " OR ".join(clauses),
+                values,
+            ).fetchall()
+            if len(matches) > 1:
+                connection.rollback()
+                raise ValueError("ONVIF identity and MAC match different blocked devices")
+            block_uuid = str(matches[0]["block_uuid"]) if matches else str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO blocked_devices(block_uuid, candidate_uuid, onvif_identity, mac, "
+                "display_name, last_ip, blocked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(block_uuid) DO UPDATE SET candidate_uuid=excluded.candidate_uuid, "
+                "onvif_identity=COALESCE(excluded.onvif_identity, blocked_devices.onvif_identity), "
+                "mac=COALESCE(excluded.mac, blocked_devices.mac), "
+                "display_name=excluded.display_name, last_ip=excluded.last_ip, updated_at=excluded.updated_at",
+                (
+                    block_uuid,
+                    candidate_uuid,
+                    onvif_identity,
+                    mac,
+                    display_name,
+                    last_ip,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        blocked = self.blocked_device_for_candidate(candidate)
+        assert blocked is not None
+        return blocked
+
+    def unblock_device(self, block_uuid: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM blocked_devices WHERE block_uuid = ?",
+                (block_uuid,),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def unadopt_camera(self, camera_uuid: str) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            camera = connection.execute(
+                "SELECT credential_uuid FROM cameras WHERE camera_uuid = ?",
+                (camera_uuid,),
+            ).fetchone()
+            if camera is None:
+                connection.rollback()
+                return False
+            credential_uuid = str(camera["credential_uuid"])
+            connection.execute("DELETE FROM cameras WHERE camera_uuid = ?", (camera_uuid,))
+            connection.execute(
+                "DELETE FROM camera_credentials WHERE credential_uuid = ?",
+                (credential_uuid,),
+            )
+            connection.commit()
+        return True
 
     def consumer_inventory(self) -> list[dict[str, Any]]:
         """Return adopted camera metadata without upstream URLs or credentials."""
@@ -995,7 +1652,8 @@ class CameraRepository:
     def camera(self, camera_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, enabled FROM cameras WHERE camera_uuid = ?",
+                "SELECT camera_uuid, candidate_uuid, display_name, enabled, camera_origin "
+                "FROM cameras WHERE camera_uuid = ?",
                 (camera_uuid,),
             ).fetchone()
         if row is None:
@@ -1022,6 +1680,17 @@ class CameraRepository:
             )
             if cursor.rowcount == 1:
                 self._record_camera_health_transition(connection, camera_uuid, timestamp)
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def set_camera_stream_address_mode(self, camera_uuid: str, address_mode: str) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Camera stream address mode is invalid")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE cameras SET stream_address_mode = ?, updated_at = ? WHERE camera_uuid = ?",
+                (address_mode, _now(), camera_uuid),
+            )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -1105,6 +1774,7 @@ class CameraRepository:
             rows = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1148,6 +1818,7 @@ class CameraRepository:
             row = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
+                "t.address_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1160,15 +1831,62 @@ class CameraRepository:
         target["restart_recommended"] = bool(target["restart_recommended"])
         return target
 
-    def select_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
+    def set_frigate_target_address_mode(
+        self,
+        target_id: str,
+        address_mode: str,
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
+        timestamp = _now()
         with self.connect() as connection:
-            cursor = connection.execute(
-                "INSERT OR IGNORE INTO frigate_camera_selections"
-                "(target_id, camera_uuid, selected_at) VALUES (?, ?, ?)",
-                (target_id, camera_uuid, _now()),
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            connection.execute(
+                "UPDATE frigate_targets SET address_mode = ?, updated_at = ? "
+                "WHERE target_id = ?",
+                (address_mode, timestamp, target_id),
+            )
+            connection.execute(
+                "UPDATE frigate_camera_selections SET address_mode = ? WHERE target_id = ?",
+                (address_mode, target_id),
             )
             connection.commit()
-        return cursor.rowcount == 1
+        return current["address_mode"] != address_mode
+
+    def select_frigate_camera(
+        self,
+        target_id: str,
+        camera_uuid: str,
+        address_mode: str = "lan",
+    ) -> bool:
+        if address_mode not in {"lan", "localhost"}:
+            raise ValueError("Frigate address mode is invalid")
+        with self.connect() as connection:
+            target = connection.execute(
+                "SELECT address_mode FROM frigate_targets WHERE target_id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is not None and target["address_mode"] is not None:
+                address_mode = str(target["address_mode"])
+            current = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO frigate_camera_selections"
+                "(target_id, camera_uuid, selected_at, address_mode) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(target_id, camera_uuid) DO UPDATE SET "
+                "address_mode=excluded.address_mode",
+                (target_id, camera_uuid, _now(), address_mode),
+            )
+            connection.commit()
+        return current is None or str(current["address_mode"]) != address_mode
 
     def deselect_frigate_camera(self, target_id: str, camera_uuid: str) -> bool:
         with self.connect() as connection:
@@ -1187,6 +1905,34 @@ class CameraRepository:
                 (target_id,),
             ).fetchall()
         return [str(row["camera_uuid"]) for row in rows]
+
+    def frigate_camera_selections(self, target_id: str) -> list[dict[str, str]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT camera_uuid, address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
+                (target_id,),
+            ).fetchall()
+        return [
+            {
+                "camera_uuid": str(row["camera_uuid"]),
+                "address_mode": str(row["address_mode"]),
+            }
+            for row in rows
+        ]
+
+    def frigate_camera_address_mode(
+        self,
+        target_id: str,
+        camera_uuid: str,
+    ) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT address_mode FROM frigate_camera_selections "
+                "WHERE target_id = ? AND camera_uuid = ?",
+                (target_id, camera_uuid),
+            ).fetchone()
+        return str(row["address_mode"]) if row is not None else None
 
     def remove_frigate_target(self, target_id: str) -> bool:
         with self.connect() as connection:
@@ -1300,6 +2046,16 @@ class CameraRepository:
             )
             connection.commit()
 
+    def mark_frigate_binding_pending(self, target_id: str, camera_uuid: str) -> None:
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_bindings SET status='pending', last_error_code=NULL, "
+                "last_attempt_at=?, updated_at=? WHERE target_id=? AND camera_uuid=?",
+                (timestamp, timestamp, target_id, camera_uuid),
+            )
+            connection.commit()
+
     def frigate_bindings(self, target_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -1367,11 +2123,33 @@ class CameraRepository:
         password: str,
         profiles: list[dict[str, Any]],
         roles: dict[str, str],
+        *,
+        camera_origin: str = "discovery",
+        reject_source_keys: set[tuple[str, str, int, str, str]] | None = None,
     ) -> dict[str, Any]:
+        if camera_origin not in {"discovery", "direct"}:
+            raise ValueError("Camera origin is invalid")
         candidate_uuid = str(candidate["candidate_uuid"])
         timestamp = _now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if reject_source_keys:
+                rows = connection.execute(
+                    "SELECT c.camera_uuid, c.display_name, p.uri, p.source_scheme, p.source_host, "
+                    "p.source_port, p.source_path, p.source_query "
+                    "FROM onvif_profiles p JOIN cameras c USING(camera_uuid) "
+                    "WHERE p.uri IS NOT NULL OR (p.source_scheme IS NOT NULL AND p.source_host IS NOT NULL)"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        source_key = _rtsp_source_key(_source_uri(row))
+                    except (TypeError, ValueError):
+                        continue
+                    if source_key in reject_source_keys:
+                        raise SourceAlreadyAssignedError(
+                            str(row["camera_uuid"]),
+                            str(row["display_name"]),
+                        )
             existing = connection.execute(
                 "SELECT camera_uuid, credential_uuid FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
@@ -1386,9 +2164,10 @@ class CameraRepository:
                 (credential_uuid, username, encrypted, timestamp, timestamp),
             )
             connection.execute(
-                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
-                "display_name=excluded.display_name, credential_uuid=excluded.credential_uuid, updated_at=excluded.updated_at",
+                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at, camera_origin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
+                "display_name=excluded.display_name, credential_uuid=excluded.credential_uuid, "
+                "updated_at=excluded.updated_at, camera_origin=excluded.camera_origin",
                 (
                     camera_uuid,
                     candidate_uuid,
@@ -1396,8 +2175,16 @@ class CameraRepository:
                     credential_uuid,
                     timestamp,
                     timestamp,
+                    camera_origin,
                 ),
             )
+            if camera_origin == "discovery":
+                self._observe_camera_identity(
+                    connection,
+                    camera_uuid,
+                    candidate,
+                    timestamp,
+                )
             current_tokens = {str(profile["token"]) for profile in profiles}
             connection.execute("DELETE FROM consumer_bindings WHERE camera_uuid = ?", (camera_uuid,))
             if current_tokens:
@@ -1533,6 +2320,28 @@ class CameraRepository:
                 }
             )
         return sources
+
+    def managed_stream_runtime_sources(self) -> list[dict[str, str]]:
+        """Return role-bound stream identities without loading camera credentials."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid "
+                "FROM managed_streams s "
+                "JOIN onvif_profiles p USING (profile_uuid) "
+                "JOIN cameras a USING (camera_uuid) "
+                "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
+                "WHERE p.uri IS NOT NULL AND a.enabled = 1 "
+                "AND s.health_status != 'auth_failed' "
+                "ORDER BY s.camera_uuid, s.stream_key"
+            ).fetchall()
+        return [
+            {
+                "stream_uuid": str(row["stream_uuid"]),
+                "stream_key": str(row["stream_key"]),
+                "camera_uuid": str(row["camera_uuid"]),
+            }
+            for row in rows
+        ]
 
     def record_desired_media_revision(
         self,

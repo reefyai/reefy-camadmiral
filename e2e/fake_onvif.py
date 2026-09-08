@@ -12,6 +12,13 @@ import urllib.parse
 ADDRESS = os.environ.get("ONVIF_ADDRESS", "172.30.0.13")
 CAMERA_UUID = os.environ.get("ONVIF_UUID", "synthetic-onvif-camera")
 CAMERA_NAME = os.environ.get("ONVIF_NAME", "Synthetic ONVIF")
+MEDIA_CONFIG = os.environ.get("ONVIF_MEDIA_CONFIG", "/e2e/camera-onvif.yaml")
+MAIN_WIDTH = int(os.environ.get("ONVIF_MAIN_WIDTH", "1280"))
+MAIN_HEIGHT = int(os.environ.get("ONVIF_MAIN_HEIGHT", "720"))
+MAIN_FPS = int(os.environ.get("ONVIF_MAIN_FPS", "10"))
+SUB_WIDTH = int(os.environ.get("ONVIF_SUB_WIDTH", "640"))
+SUB_HEIGHT = int(os.environ.get("ONVIF_SUB_HEIGHT", "360"))
+SUB_FPS = int(os.environ.get("ONVIF_SUB_FPS", "5"))
 ONVIF_MULTICAST_GROUP = "239.255.255.250"
 DEVICE_URL = f"http://{ADDRESS}:8080/onvif/device_service"
 MEDIA_URL = f"http://{ADDRESS}:8080/onvif/media_service"
@@ -31,12 +38,12 @@ PROFILES = envelope(
     'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema"',
     '<trt:GetProfilesResponse>'
     '<trt:Profiles token="main"><tt:Name>Main stream</tt:Name><tt:VideoEncoderConfiguration>'
-    '<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>1280</tt:Width><tt:Height>720</tt:Height></tt:Resolution>'
-    '<tt:RateControl><tt:FrameRateLimit>10</tt:FrameRateLimit><tt:BitrateLimit>2048</tt:BitrateLimit></tt:RateControl>'
+    f'<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>{MAIN_WIDTH}</tt:Width><tt:Height>{MAIN_HEIGHT}</tt:Height></tt:Resolution>'
+    f'<tt:RateControl><tt:FrameRateLimit>{MAIN_FPS}</tt:FrameRateLimit><tt:BitrateLimit>2048</tt:BitrateLimit></tt:RateControl>'
     '</tt:VideoEncoderConfiguration></trt:Profiles>'
     '<trt:Profiles token="sub"><tt:Name>Sub stream</tt:Name><tt:VideoEncoderConfiguration>'
-    '<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>640</tt:Width><tt:Height>360</tt:Height></tt:Resolution>'
-    '<tt:RateControl><tt:FrameRateLimit>5</tt:FrameRateLimit><tt:BitrateLimit>512</tt:BitrateLimit></tt:RateControl>'
+    f'<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>{SUB_WIDTH}</tt:Width><tt:Height>{SUB_HEIGHT}</tt:Height></tt:Resolution>'
+    f'<tt:RateControl><tt:FrameRateLimit>{SUB_FPS}</tt:FrameRateLimit><tt:BitrateLimit>512</tt:BitrateLimit></tt:RateControl>'
     '</tt:VideoEncoderConfiguration></trt:Profiles></trt:GetProfilesResponse>',
 )
 
@@ -97,9 +104,7 @@ def discovery_responder(stop: threading.Event) -> None:
 
 def main() -> int:
     stop = threading.Event()
-    media = subprocess.Popen(
-        ["/usr/local/bin/go2rtc", "-config", "/e2e/camera-onvif.yaml"]
-    )
+    media = subprocess.Popen(["/usr/local/bin/go2rtc", "-config", MEDIA_CONFIG])
     server = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     threading.Thread(target=discovery_responder, args=(stop,), daemon=True).start()
     signal.signal(

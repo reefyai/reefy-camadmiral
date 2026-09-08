@@ -84,6 +84,65 @@ class TelegramNotificationTests(unittest.TestCase):
         self.assertNotIn("rtsp://", message)
         self.assertNotIn("MAC", message)
 
+    def test_address_and_relay_restart_messages_are_explicit_and_secret_free(self) -> None:
+        address_message = notification_text(
+            "incident_opened",
+            {
+                "camera_name": "Synthetic entrance",
+                "kind": "camera_address_changed",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+                "opened_at": "2026-01-01T00:00:00+00:00",
+                "previous_address": "192.0.2.10",
+                "current_address": "192.0.2.20",
+            },
+        )
+        recovered_message = notification_text(
+            "incident_resolved",
+            {
+                "camera_name": "Synthetic entrance",
+                "kind": "camera_address_changed",
+                "opened_at": "2026-01-01T00:00:00+00:00",
+                "observed_at": "2026-01-01T00:00:04.2+00:00",
+                "previous_address": "192.0.2.10",
+                "current_address": "192.0.2.20",
+            },
+        )
+        restart_message = notification_text(
+            "relay_restarted",
+            {
+                "reason": "camera_address_recovery",
+                "camera_count": 2,
+                "observed_at": "2026-01-01T00:00:01+00:00",
+            },
+        )
+
+        self.assertIn("Synthetic entrance: address changed", address_message)
+        self.assertIn("192.0.2.10 → 192.0.2.20", address_message)
+        self.assertIn("Recovery in progress.", address_message)
+        self.assertIn("Observed: Jan 1, 2026 at 12:00:00 AM UTC", address_message)
+        self.assertIn("Synthetic entrance: recovered", recovered_message)
+        self.assertIn(
+            "Streaming resumed at 192.0.2.20 after 4 seconds.",
+            recovered_message,
+        )
+        self.assertIn("media relay restarted", restart_message)
+        self.assertIn("Recovered cameras: 2", restart_message)
+        self.assertIn("Camera streams are reconnecting", restart_message)
+        self.assertIn("Observed: Jan 1, 2026 at 12:00:01 AM UTC", restart_message)
+        self.assertNotIn("rtsp://", restart_message)
+
+    def test_invalid_observed_time_is_preserved_instead_of_failing_delivery(self) -> None:
+        message = notification_text(
+            "incident_opened",
+            {
+                "camera_name": "Synthetic entrance",
+                "kind": "media_offline",
+                "observed_at": "unknown-time",
+            },
+        )
+
+        self.assertIn("Observed: unknown-time", message)
+
 
 if __name__ == "__main__":
     unittest.main()

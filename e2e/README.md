@@ -11,29 +11,46 @@ The isolated Docker Compose lab covers:
 - manual and full RTSP discovery on a non-default connected private subnet
 - multicast ONVIF discovery plus bounded learned-neighbor ONVIF and RTSP
   probing on an oversized /16 subnet without a per-address sweep
+- persistent detected/custom subnet selection and routed unicast ONVIF plus
+  RTSP discovery within a bounded custom CIDR
 - explicit IP discovery and adoption through a synthetic ONVIF camera
 - unauthenticated and authenticated RTSP adoption
+- two direct RTSP cameras added through the real browser from distinct paths on one DNS
+  endpoint, including exact-duplicate rejection, decoded source verification, scan and restart
+  persistence, independent Frigate resources, recovery when the DNS endpoint moves to another
+  private address, isolated path failure, and isolated unadopt cleanup
 - incorrect camera-credential rejection
 - empirical H.264 metadata and automatic recording/detection role selection
 - periodic cache-only camera thumbnails, snapshots, and authenticated stable downstream RTSP URLs
 - two downstream consumers sharing one physical-camera session
 - reversible camera disable and enable
+- camera unadopt cleanup, including removal from a real Frigate target,
+  plus persistent stable-identity block and unblock
 - out-of-band managed-stream deletion and automatic runtime-drift repair
 - go2rtc child failure without a CamAdmiral container restart
 - synthetic camera outage across a CamAdmiral restart and recovery without user action
 - recovered media overriding stale offline scan state in camera summary counts
 - persisted availability buckets across camera outage and recovery
 - complete CamAdmiral container restart with stable IDs, paths, and secrets
-- real Frigate 0.17 camera injection, global detect-FPS inheritance, legacy
-  camera-level FPS cleanup, runtime creation, and frame processing
+- real Frigate 0.17 through a remote container-network API URL, per-camera LAN and
+  localhost configuration previews, global detect-FPS inheritance, legacy camera-level
+  FPS cleanup, runtime creation, and frame processing
 - invalid recovered-address rejection with last-known-good media preservation
 - camera IP change with validated upstream replacement and stable downstream
   identities
+- automatic two-camera address recovery across targeted retry scans, including stable ONVIF and
+  unique-MAC matching, an initial recovery scan that misses rebooting cameras, bounded retries,
+  stock go2rtc restarts, downstream client reconnection through unchanged URLs, distinguishable
+  moved media within 45 seconds, resolution-change recovery, resolved offline and address-change
+  incidents, persisted sources across a supervised child restart, and Frigate frame recovery with
+  only the expected detection-dimension metadata update
+- changed IP, MAC, and ONVIF identity producing a separate adoptable camera while
+  retaining the old adopted camera offline
 - camera credential rotation, failed repair preservation, and successful repair
 - WebKit phone-viewport rendering with a stable dashboard action bar, 44px scan
   and add-camera targets, every camera action fully visible inside its card,
-  downstream passwords masked in the modal, and plaintext credentials preserved
-  only for Copy
+  downstream passwords masked in the modal, plaintext credentials preserved only
+  for Copy, fixed-size sync spinner geometry, and specific sync failure details
 
 Run from the repository root:
 
@@ -71,7 +88,7 @@ it afterward with:
 
 ```console
 docker compose --project-name camadmiral-e2e --file e2e/compose.yaml \
-  --profile moved --profile rotated down --volumes --remove-orphans
+  --profile moved --profile rotated --profile identity down --volumes --remove-orphans
 ```
 
 Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay

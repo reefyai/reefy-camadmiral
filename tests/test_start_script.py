@@ -37,6 +37,9 @@ if [ "$1" = container ] && [ "$2" = inspect ]; then
     esac
     exit 0
 fi
+if [ "$1" = pull ] && [ "${DOCKER_PULL_FAIL:-0}" = 1 ]; then
+    exit 1
+fi
 if [ "$1" = exec ]; then
     case "$*" in
         *admin-password) printf '%s\\n' generated-admin-password ;;
@@ -56,16 +59,19 @@ exit 0
         self,
         script: Path,
         *,
+        arguments: tuple[str, ...] = (),
         container_exists: bool = False,
         container_running: bool = True,
+        extra_environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["PATH"] = f"{self.bin}:{environment['PATH']}"
         environment["DOCKER_LOG"] = str(self.log)
         environment["DOCKER_CONTAINER_EXISTS"] = "1" if container_exists else "0"
         environment["DOCKER_CONTAINER_RUNNING"] = "true" if container_running else "false"
+        environment.update(extra_environment or {})
         return subprocess.run(
-            [str(script)],
+            [str(script), *arguments],
             check=False,
             capture_output=True,
             text=True,
@@ -99,6 +105,81 @@ exit 0
         self.assertNotIn("pull ", calls)
         self.assertNotIn("volume create", calls)
         self.assertNotIn("run --rm", calls)
+
+    def test_update_pulls_then_replaces_running_container_and_preserves_volume(self) -> None:
+        completed = self.run_script(
+            self.start_script,
+            arguments=("--update",),
+            container_exists=True,
+            container_running=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self.log.read_text(encoding="utf-8").splitlines()
+        pull = "pull ghcr.io/reefyai/reefy-camadmiral:latest"
+        stop = "stop camadmiral"
+        remove = "rm camadmiral"
+        self.assertIn(pull, calls)
+        self.assertIn(stop, calls)
+        self.assertIn(remove, calls)
+        self.assertLess(calls.index(pull), calls.index(stop))
+        self.assertLess(calls.index(stop), calls.index(remove))
+        self.assertTrue(any(call.startswith("run -d --name camadmiral") for call in calls))
+        self.assertFalse(any(call.startswith("volume rm") for call in calls))
+        self.assertIn("Persistent data and credentials were preserved", completed.stdout)
+
+    def test_update_replaces_stopped_container_without_stopping_it_again(self) -> None:
+        completed = self.run_script(
+            self.start_script,
+            arguments=("--update",),
+            container_exists=True,
+            container_running=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("stop camadmiral", calls)
+        self.assertIn("rm camadmiral", calls)
+        self.assertIn("run -d --name camadmiral", calls)
+
+    def test_failed_update_pull_leaves_existing_container_untouched(self) -> None:
+        completed = self.run_script(
+            self.start_script,
+            arguments=("--update",),
+            container_exists=True,
+            extra_environment={"DOCKER_PULL_FAIL": "1"},
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertIn("pull ghcr.io/reefyai/reefy-camadmiral:latest", calls)
+        self.assertNotIn("stop camadmiral", calls)
+        self.assertNotIn("rm camadmiral", calls)
+
+    def test_update_with_custom_image_recreates_without_pulling(self) -> None:
+        completed = self.run_script(
+            self.start_script,
+            arguments=("--update",),
+            container_exists=True,
+            extra_environment={"CAMADMIRAL_IMAGE": "camadmiral:local"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertIn("image inspect camadmiral:local", calls)
+        self.assertNotIn("pull ", calls)
+        self.assertIn("rm camadmiral", calls)
+        self.assertIn("camadmiral:local", calls)
+
+    def test_rejects_unknown_arguments_without_calling_docker(self) -> None:
+        completed = self.run_script(
+            self.start_script,
+            arguments=("--replace",),
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Usage: ./start-camadmiral.sh [--update]", completed.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_stop_preserves_the_container_and_data(self) -> None:
         completed = self.run_script(
