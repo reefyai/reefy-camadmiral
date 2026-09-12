@@ -604,6 +604,19 @@ def main() -> int:
         run("rm", "--force", "camera-auth")
         run("up", "--detach", "camera-auth-rotated")
         scenario("rotated-camera-ready")
+        scenario("temporary-auth-failure")
+        run("stop", "camera-auth-rotated")
+        run("rm", "--force", "camera-auth-rotated")
+        run("up", "--detach", "camera-auth")
+        # Avoid a five-minute wall-clock sleep while exercising restart-safe
+        # cooldown. The camera really rejected authentication; only age changes.
+        run("exec", "-T", "camadmiral", "python", "/e2e/faults.py", "expire-auth-cooldown")
+        run("restart", "camadmiral")
+        scenario("temporary-auth-recovery")
+        run("stop", "camera-auth")
+        run("rm", "--force", "camera-auth")
+        run("up", "--detach", "camera-auth-rotated")
+        scenario("rotated-camera-ready")
         scenario("credential-repair")
 
         run("up", "--detach", "frigate", "frigate-api-proxy")

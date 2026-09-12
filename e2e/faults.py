@@ -8,6 +8,7 @@ import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import yaml
 
@@ -29,6 +30,19 @@ IDENTITY_CONSUMER_PREFIX = "CamAdmiral-E2E-Identity/"
 CONTROL_CONSUMER_PREFIX = "CamAdmiral-E2E-Control/"
 ADMIN_PASSWORD_PATH = Path("/run/secrets/camadmiral_admin_password")
 IDENTITY_ONVIF_ENDPOINT = "urn:uuid:synthetic-onvif-camera"
+
+
+def expire_auth_cooldown() -> None:
+    """Advance only the test camera's failure age, not its health or credentials."""
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        changed = connection.execute(
+            "UPDATE managed_streams SET last_failure_at=? WHERE health_status='auth_failed' "
+            "AND camera_uuid IN (SELECT camera_uuid FROM cameras WHERE candidate_uuid='candidate-auth')",
+            ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),),
+        ).rowcount
+        if not changed:
+            raise RuntimeError("Expected an actual authentication failure before expiring cooldown")
+    print("advanced synthetic authentication failure age without changing credentials")
 
 
 def write_inventory(inventory: dict[str, object]) -> None:
@@ -518,6 +532,8 @@ def main() -> int:
         assert_onvif_runtime_config_moved()
     elif action == ["seed-scan-pid-pressure"]:
         seed_scan_pid_pressure()
+    elif action == ["expire-auth-cooldown"]:
+        expire_auth_cooldown()
     elif action == ["clear-scan-pid-pressure"]:
         clear_scan_pid_pressure()
     else:

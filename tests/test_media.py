@@ -241,7 +241,7 @@ class MediaTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs == {"width": 320} for call in frame.call_args_list))
         self.assertEqual(monitor.cached_frame("camera-idle").content, b"\xff\xd8\xffidle\xff\xd9")
         repository.managed_stream_sources.assert_any_call(
-            include_auth_failed=False,
+            include_auth_failed=True,
             role_bound_only=True,
         )
         repository.managed_stream_sources.assert_any_call(
@@ -500,10 +500,10 @@ class MediaTests(unittest.TestCase):
             sources[0]["username"],
             sources[0]["password"],
         )
-        repository.record_camera_auth_failure.assert_called_once_with(
-            "camera-1",
-            ProbeResult("auth_failed", 20),
-        )
+        repository.record_camera_auth_failure.assert_not_called()
+        recorded = repository.record_probe_results.call_args.args[0]
+        self.assertEqual(recorded["detect"].status, "auth_failed")
+        self.assertEqual(recorded["record"].status, "unavailable")
 
     @patch("camadmiral.media._request")
     def test_failed_camera_preload_does_not_block_other_cameras(self, request) -> None:
@@ -832,7 +832,7 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(result.status, "auth_failed")
 
     @patch("camadmiral.media._probe_source_entries")
-    def test_upstream_auth_failure_marks_whole_camera_and_stops_more_probes(self, probe_entries) -> None:
+    def test_upstream_auth_failure_marks_only_tested_stream_and_stops_more_probes(self, probe_entries) -> None:
         sources = [
             {
                 "camera_uuid": "camera-1",
@@ -858,8 +858,8 @@ class MediaTests(unittest.TestCase):
         probe_upstreams(repository)
 
         probe_entries.assert_called_once_with([sources[0]])
-        repository.record_camera_auth_failure.assert_called_once()
-        repository.record_probe_results.assert_called_once_with({})
+        repository.record_camera_auth_failure.assert_not_called()
+        repository.record_probe_results.assert_called_once_with({"stream-1": ProbeResult("auth_failed", 50)})
 
     @patch("camadmiral.media.probe_streams", return_value={})
     @patch("camadmiral.media.runtime_stream_keys", return_value={"stream_one"})

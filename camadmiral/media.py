@@ -11,6 +11,7 @@ import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 
@@ -31,6 +32,8 @@ FRAME_PROBE_BATCH_SIZE = max(
     1,
     int(os.environ.get("CAMADMIRAL_FRAME_PROBE_BATCH_SIZE", "8")),
 )
+AUTH_RETRY_INTERVAL = 300.0
+AUTH_RETRY_MAX_INTERVAL = 1800.0
 THUMBNAIL_WIDTH = max(
     160,
     min(640, int(os.environ.get("CAMADMIRAL_THUMBNAIL_WIDTH", "320"))),
@@ -82,6 +85,9 @@ class RelayHealthMonitor:
         self._failure_samples: dict[str, int] = {}
         self._frame_probe_attempts: dict[str, float] = {}
         self._frame_probe_retries: set[str] = set()
+        self._auth_retry_at: dict[str, float] = {}
+        self._auth_retry_delay: dict[str, float] = {}
+        self._auth_stream_attempts: dict[str, float] = {}
         self._frame_probe_interval = max(0.0, frame_probe_interval)
         self._frame_probe_batch_size = max(1, frame_probe_batch_size)
         self._thumbnail_width = max(1, thumbnail_width)
@@ -164,6 +170,67 @@ class RelayHealthMonitor:
                     )
         return results
 
+    def _sample_auth_failed_sources(
+        self, sources: list[dict[str, str]],
+    ) -> dict[str, ProbeResult]:
+        """Retry one failed stream per camera, without a fast diagnostic retry."""
+        now = time.monotonic()
+        grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+        for source in sources:
+            grouped[source["camera_uuid"]].append(source)
+        for camera_uuid in set(self._auth_retry_at) - set(grouped):
+            self._auth_retry_at.pop(camera_uuid, None)
+            self._auth_retry_delay.pop(camera_uuid, None)
+        active_ids = {source["stream_uuid"] for source in sources}
+        for stream_uuid in set(self._auth_stream_attempts) - active_ids:
+            self._auth_stream_attempts.pop(stream_uuid, None)
+        due = []
+        for camera_uuid, camera_sources in grouped.items():
+            if camera_uuid not in self._auth_retry_at:
+                # Respect the last failure across application restarts too.
+                ages = []
+                for source in camera_sources:
+                    try:
+                        stamp = datetime.fromisoformat(source.get("last_failure_at", ""))
+                        if stamp.tzinfo is not None:
+                            ages.append(max(0.0, time.time() - stamp.timestamp()))
+                    except ValueError:
+                        pass
+                age = min(ages) if ages else 0.0
+                self._auth_retry_at[camera_uuid] = now + max(0.0, AUTH_RETRY_INTERVAL - age)
+                self._auth_retry_delay[camera_uuid] = AUTH_RETRY_INTERVAL
+            if now >= self._auth_retry_at[camera_uuid]:
+                due.append(min(camera_sources, key=lambda source: self._auth_stream_attempts.get(source["stream_uuid"], -1.0)))
+        due.sort(key=lambda source: self._auth_retry_at[source["camera_uuid"]])
+        results = {}
+        due = due[:self._frame_probe_batch_size]
+        if not due:
+            return results
+        # Bounded across cameras, with only one pending attempt per camera.
+        with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(due))) as executor:
+            pending = {
+                executor.submit(snapshot_frame, source["stream_key"], width=self._thumbnail_width): source
+                for source in due
+            }
+            for future in as_completed(pending):
+                source = pending[future]
+                camera_uuid, stream_uuid = source["camera_uuid"], source["stream_uuid"]
+                self._auth_stream_attempts[stream_uuid] = now
+                try:
+                    self.cache_frame(camera_uuid, future.result())
+                    results[stream_uuid] = ProbeResult("ready", round((time.monotonic() - now) * 1000))
+                    self._auth_retry_delay[camera_uuid] = AUTH_RETRY_INTERVAL
+                except Exception:
+                    # A failed snapshot does not prove new credentials are wrong.
+                    # Retain the previous classification and persist the failed
+                    # attempt time so a restart cannot bypass the cooldown.
+                    results[stream_uuid] = ProbeResult("auth_failed", round((time.monotonic() - now) * 1000))
+                    self._auth_retry_delay[camera_uuid] = min(
+                        AUTH_RETRY_MAX_INTERVAL, self._auth_retry_delay[camera_uuid] * 2,
+                    )
+                self._auth_retry_at[camera_uuid] = time.monotonic() + self._auth_retry_delay[camera_uuid]
+        return results
+
     @staticmethod
     def _active_video_sample(stream: object) -> tuple[str, int] | None:
         if not isinstance(stream, dict):
@@ -188,7 +255,7 @@ class RelayHealthMonitor:
     def probe(self, repository: Any) -> dict[str, ProbeResult]:
         started = time.monotonic()
         sources = repository.managed_stream_sources(
-            include_auth_failed=False,
+            include_auth_failed=True,
             role_bound_only=True,
         )
         preferred_sources = repository.managed_stream_sources(
@@ -204,7 +271,6 @@ class RelayHealthMonitor:
         latency_ms = round((time.monotonic() - started) * 1000)
         active_ids = {str(source["stream_uuid"]) for source in sources}
         results: dict[str, ProbeResult] = {}
-        auth_failures: dict[str, ProbeResult] = {}
         diagnostic_sources: dict[str, dict[str, str]] = {}
         for source in sources:
             stream_uuid = str(source["stream_uuid"])
@@ -215,11 +281,12 @@ class RelayHealthMonitor:
                 continue
             else:
                 current = self._active_video_sample(stream)
+                previous = self._video_samples.get(stream_uuid)
+                advancing = False
                 if current is None or current[1] <= 0:
                     self._video_samples.pop(stream_uuid, None)
                     result = ProbeResult("unavailable", latency_ms)
                 else:
-                    previous = self._video_samples.get(stream_uuid)
                     self._video_samples[stream_uuid] = current
                     advancing = (
                         previous is None
@@ -228,12 +295,18 @@ class RelayHealthMonitor:
                     )
                     result = ProbeResult("ready" if advancing else "unavailable", latency_ms)
             results[stream_uuid] = result
+            if source.get("health_status") == "auth_failed":
+                # Historical nonzero counters are not proof of recovery. Require
+                # observed advancement, without opening another camera session.
+                if current is None or previous is None or not advancing:
+                    results.pop(stream_uuid, None)
         source_by_stream = {str(source["stream_uuid"]): source for source in sources}
         sources_by_camera: dict[str, list[dict[str, str]]] = {}
         for source in sources:
             sources_by_camera.setdefault(str(source["camera_uuid"]), []).append(source)
         active_results = dict(results)
-        periodic_results = self._sample_periodic_sources(sources, preferred_sources)
+        healthy_sources = [source for source in sources if source.get("health_status") != "auth_failed"]
+        periodic_results = self._sample_periodic_sources(healthy_sources, preferred_sources)
         for stream_uuid, result in periodic_results.items():
             camera_uuid = str(source_by_stream[stream_uuid]["camera_uuid"])
             camera_sources = sources_by_camera[camera_uuid]
@@ -245,6 +318,8 @@ class RelayHealthMonitor:
             if result.status != "ready" and not active_ready:
                 self._frame_probe_retries.add(camera_uuid)
             for source in camera_sources:
+                if source.get("health_status") == "auth_failed":
+                    continue
                 target_stream_uuid = str(source["stream_uuid"])
                 active_result = active_results.get(target_stream_uuid)
                 if active_result is None:
@@ -270,17 +345,22 @@ class RelayHealthMonitor:
                         source["uri"],
                         source["username"],
                         source["password"],
-                    ): camera_uuid
-                    for camera_uuid, source in diagnostic_sources.items()
+                    ): source["stream_uuid"]
+                    for source in diagnostic_sources.values()
                 }
                 for future in as_completed(diagnostics):
-                    camera_uuid = diagnostics[future]
+                    stream_uuid = diagnostics[future]
                     try:
                         diagnostic = future.result()
                     except Exception:
                         continue
                     if diagnostic.status == "auth_failed":
-                        auth_failures[camera_uuid] = diagnostic
+                        results[stream_uuid] = diagnostic
+        results.update(self._sample_auth_failed_sources([
+            source for source in sources
+            if source.get("health_status") == "auth_failed"
+            and results.get(source["stream_uuid"], ProbeResult("idle", 0)).status != "ready"
+        ]))
         for stream_uuid in set(self._video_samples) - active_ids:
             self._video_samples.pop(stream_uuid, None)
         for stream_uuid in set(self._failure_samples) - active_ids:
@@ -291,14 +371,7 @@ class RelayHealthMonitor:
             self._frame_probe_retries.discard(camera_uuid)
             with self._frame_lock:
                 self._frames.pop(camera_uuid, None)
-        failed_camera_ids = set(auth_failures)
-        repository.record_probe_results({
-            stream_uuid: result
-            for stream_uuid, result in results.items()
-            if str(source_by_stream[stream_uuid]["camera_uuid"]) not in failed_camera_ids
-        })
-        for camera_uuid, result in auth_failures.items():
-            repository.record_camera_auth_failure(camera_uuid, result)
+        repository.record_probe_results(results)
         return results
 
 
@@ -677,7 +750,7 @@ def probe_upstreams(repository: Any) -> dict[str, ProbeResult]:
         first = camera_sources[0]
         result = first_results[first["stream_uuid"]]
         if result.status == "auth_failed":
-            repository.record_camera_auth_failure(camera_uuid, result)
+            results[first["stream_uuid"]] = result
             continue
         results[first["stream_uuid"]] = result
         remaining.extend(camera_sources[1:])

@@ -2298,7 +2298,7 @@ class CameraRepository:
         )
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid, p.uri, p.source_scheme, p.source_host, p.source_port, "
+                "SELECT DISTINCT s.stream_uuid, s.stream_key, s.camera_uuid, s.health_status, s.last_failure_at, p.uri, p.source_scheme, p.source_host, p.source_port, "
                 "p.source_path, p.source_query, c.username, c.password_ciphertext, c.credential_uuid "
                 "FROM managed_streams s JOIN onvif_profiles p USING (profile_uuid) "
                 "JOIN cameras a USING (camera_uuid) JOIN camera_credentials c USING (credential_uuid) "
@@ -2317,6 +2317,8 @@ class CameraRepository:
                     "username": str(row["username"]),
                     "password": decrypt_password(row["password_ciphertext"], row["credential_uuid"], self.master_key),
                     "credential_uuid": str(row["credential_uuid"]),
+                    "health_status": str(row["health_status"]),
+                    "last_failure_at": str(row["last_failure_at"] or ""),
                 }
             )
         return sources

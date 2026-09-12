@@ -1707,6 +1707,43 @@ def invalid_address() -> None:
     print("invalid-address: rejected endpoint preserved last-known-good media")
 
 
+def temporary_auth_failure() -> None:
+    state = load_state()
+
+    def failed():
+        device = discovery_device("candidate-auth") or {}
+        streams = (device.get("adoption") or {}).get("streams") or []
+        return any(stream.get("health_status") == "auth_failed" for stream in streams)
+
+    wait_for("temporary authentication rejection", failed, timeout=120)
+    if directory_signature(consumer_directory()) != state["signature"]:
+        raise ScenarioFailure("Authentication rejection changed stable identities")
+    print("temporary-auth-failure: real RTSP rejection observed")
+
+
+def temporary_auth_recovery() -> None:
+    state = load_state()
+    wait_for_health()
+
+    def recovered():
+        device = discovery_device("candidate-auth") or {}
+        streams = (device.get("adoption") or {}).get("streams") or []
+        return bool(streams) and all(stream.get("health_status") == "healthy" for stream in streams)
+
+    # Poll status only; do not open a downstream consumer to force recovery.
+    wait_for("idle authentication recovery without credential edits", recovered, timeout=120)
+    resolved = incidents("resolved").get("incidents") or []
+    if not any(
+        item.get("camera_id") == state["auth_camera_uuid"]
+        and item.get("kind") == "authentication_failed"
+        and item.get("resolution_reason") == "recovered"
+        for item in resolved
+    ):
+        raise ScenarioFailure("Authentication recovery did not resolve its incident")
+    assert_stable(state)  # Also decode video through the original downstream URLs.
+    print("temporary-auth-recovery: idle retry, restart, incident resolution and media passed")
+
+
 def credential_repair() -> None:
     state = load_state()
     camera_uuid = state["auth_camera_uuid"]
@@ -3766,6 +3803,8 @@ SCENARIOS = {
     "invalid-address": invalid_address,
     "rotated-camera-ready": rotated_camera_ready,
     "credential-repair": credential_repair,
+    "temporary-auth-failure": temporary_auth_failure,
+    "temporary-auth-recovery": temporary_auth_recovery,
     "frigate": frigate,
     "frigate-restart-verify": frigate_restart_verify,
     "frigate-unadopt": frigate_unadopt,
