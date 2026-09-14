@@ -24,6 +24,8 @@ services:
     ports:
       - "127.0.0.1::18080"
     pids_limit: 192
+    mem_limit: 512m
+    memswap_limit: 512m
     networks:
       lab:
         ipv4_address: 172.30.0.20

@@ -95,6 +95,28 @@ Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay
 under `tests/`. They may use mocks to isolate a single behavior. Real synthetic
 media and multi-process failure workflows belong here.
 
+## Media memory regression
+
+Run `python3 e2e/memory_pressure.py` on a disposable Docker host. It adopts eight
+synthetic 1080p RTSP cameras through the real HTTP API, then requests eight
+concurrent JPEG snapshots per batch while ordinary health and thumbnail work stays
+enabled. The separate `camadmiral-memory-e2e` lab applies the shipped 512 MiB RAM
+and 192 PID limits, with no swap allowance. No allocation mocks or forced kills
+are used. The full release gate runs this alongside the existing E2E job.
+
+The default 12 batches must return 96 actual JPEG frames without OOM events or
+container restarts. Samples record cgroup memory throughout the run, including
+idle periods between batches. Late idle memory must remain within 32 MiB of the
+post-warmup baseline, and FFmpeg snapshot processes must exit after the workload.
+This checks bounded retention for this workload, not absence of every possible leak.
+Evidence is saved under `e2e-artifacts/memory-pressure/`, including Docker events
+that survive cgroup replacement on container restart.
+
+Use `CAMADMIRAL_MEMORY_CYCLES=60` for a roughly ten-minute soak. To reproduce
+the previous runtime envelope without changing application code, set
+`CAMADMIRAL_E2E_MEMORY_LIMIT=256m`. The same healthy-behavior assertions remain in
+effect, so an OOM reproduction fails the test rather than being counted as a pass.
+
 ## Recording continuity regression
 
 Run `python3 e2e/recording_continuity.py` on a disposable Docker host. This
