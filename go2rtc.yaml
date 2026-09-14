@@ -9,4 +9,10 @@ rtsp:
 webrtc:
   listen: ""
 
+ffmpeg:
+  # Concurrent one-frame conversions must not allocate a thread pool per CPU.
+  # Input decoder/filter limits and output JPEG encoder limits are separate.
+  global: "-hide_banner -threads 1 -filter_threads 1 -filter_complex_threads 1"
+  mjpeg: "-c:v mjpeg -threads:v 1"
+
 streams:
