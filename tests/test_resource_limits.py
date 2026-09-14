@@ -33,3 +33,4 @@ class ResourceLimitTests(unittest.TestCase):
     def test_full_release_gate_runs_memory_regression(self):
         gate = (ROOT / '.github/workflows/release-gate.yml').read_text()
         self.assertIn('python3 e2e/memory_pressure.py', gate)
+        self.assertIn('uses: ./.github/workflows/stalled-snapshot.yml', gate)

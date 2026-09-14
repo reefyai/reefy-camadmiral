@@ -238,7 +238,8 @@ class MediaTests(unittest.TestCase):
             [call.args for call in frame.call_args_list],
             [("stream_active",), ("stream_idle",)],
         )
-        self.assertTrue(all(call.kwargs == {"width": 320} for call in frame.call_args_list))
+        self.assertTrue(all(call.kwargs == {"width": 320, "rtsp_password": repository.rtsp_access_password()}
+                            for call in frame.call_args_list))
         self.assertEqual(monitor.cached_frame("camera-idle").content, b"\xff\xd8\xffidle\xff\xd9")
         repository.managed_stream_sources.assert_any_call(
             include_auth_failed=False,
@@ -562,44 +563,30 @@ class MediaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid managed stream"):
             go2rtc_websocket_url("rtsp://camera.invalid/live")
 
-    @patch("camadmiral.media.urllib.request.urlopen")
-    def test_snapshot_reads_bounded_jpeg_from_managed_stream(self, urlopen) -> None:
+    @patch("camadmiral.media._snapshot_jpeg")
+    def test_snapshot_reads_bounded_jpeg_from_managed_stream(self, decoder) -> None:
         jpeg = b"\xff\xd8\xff\xe0synthetic-image\xff\xd9"
-        response = Mock()
-        response.headers.get_content_type.return_value = "image/jpeg"
-        response.headers.get.return_value = str(len(jpeg))
-        response.read.return_value = jpeg
-        urlopen.return_value.__enter__.return_value = response
+        decoder.return_value = jpeg
 
-        result = snapshot_frame("stream_synthetic")
+        result = snapshot_frame("stream_synthetic", rtsp_password="synthetic@secret")
 
         self.assertEqual(result, jpeg)
-        request = urlopen.call_args.args[0]
-        self.assertEqual(request.get_header("Accept"), "image/jpeg")
-        self.assertIn("/api/frame.jpeg?", request.full_url)
-        self.assertIn("src=stream_synthetic", request.full_url)
-        self.assertIn("width=960", request.full_url)
+        self.assertEqual(decoder.call_args.args[0],
+                         "rtsp://camadmiral:synthetic%40secret@127.0.0.1:18554/stream_synthetic")
+        self.assertEqual(decoder.call_args.args[1], 960)
 
-    @patch("camadmiral.media.urllib.request.urlopen")
-    def test_snapshot_rejects_non_jpeg_response(self, urlopen) -> None:
-        response = Mock()
-        response.headers.get_content_type.return_value = "text/plain"
-        response.headers.get.return_value = None
-        urlopen.return_value.__enter__.return_value = response
+    @patch("camadmiral.media._snapshot_jpeg")
+    def test_snapshot_rejects_unmanaged_stream(self, decoder) -> None:
+        for key in ("stream_", "rtsp://camera.invalid/live", "stream_x?src=other", "stream_x/live"):
+            with self.assertRaisesRegex(SnapshotError, "Invalid managed stream"):
+                snapshot_frame(key, rtsp_password="synthetic")
+        decoder.assert_not_called()
 
-        with self.assertRaisesRegex(SnapshotError, "unexpected format"):
-            snapshot_frame("stream_synthetic")
-
-    @patch("camadmiral.media.urllib.request.urlopen")
-    def test_snapshot_rejects_invalid_jpeg_data(self, urlopen) -> None:
-        response = Mock()
-        response.headers.get_content_type.return_value = "image/jpeg"
-        response.headers.get.return_value = None
-        response.read.return_value = b"not-a-jpeg"
-        urlopen.return_value.__enter__.return_value = response
+    @patch("camadmiral.media._snapshot_jpeg", return_value=b"not-a-jpeg")
+    def test_snapshot_rejects_invalid_jpeg_data(self, decoder) -> None:
 
         with self.assertRaisesRegex(SnapshotError, "invalid JPEG"):
-            snapshot_frame("stream_synthetic")
+            snapshot_frame("stream_synthetic", rtsp_password="synthetic")
 
     def test_authenticated_uri_encodes_credentials(self) -> None:
         result = authenticated_rtsp_uri(

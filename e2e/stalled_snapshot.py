@@ -39,6 +39,10 @@ def driver(stage):
             assert elapsed < 9, elapsed
         else:
             assert status == 200 and body.startswith(b'\xff\xd8\xff') and body.endswith(b'\xff\xd9'), status
+            decoded = subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-threads', '1',
+                                      '-i', 'pipe:0', '-frames:v', '1', '-f', 'null', '-'],
+                                     input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            assert decoded.returncode == 0, 'Snapshot JPEG did not decode'
         return {'status': status, 'elapsed': elapsed, 'bytes': len(body)}
 
     if stage == 'burst':
@@ -117,6 +121,7 @@ def host():
             sample()
         final = samples[-1]
         assert len(final['keyframe_ids']) <= 1, f"Abandoned snapshot consumers retained: {len(final['keyframe_ids'])}"
+        assert sum(final['consumers'].values()) <= 1, 'Abandoned relay clients retained after timeout'
         assert final['rss_kib'] - samples[2]['rss_kib'] < 16 * 1024, 'Stalled snapshots retain growing relay memory'
         assert final['ffmpeg'] <= 4, 'Snapshot subprocesses accumulated'
         for point in samples:
@@ -129,6 +134,7 @@ def host():
         time.sleep(7)
         recovered = sample()
         assert not recovered['keyframe_ids'], 'Snapshot consumers remain after recovery'
+        assert sum(recovered['consumers'].values()) <= 1, 'Relay consumers remain after recovery'
         assert recovered['ffmpeg'] <= 1, 'Snapshot processes remain after recovery'
         assert recovered['go2rtc_pid'] == baseline['go2rtc_pid']
         print('PASS: stalled snapshots reclaimed; same stream resumes video without relay restart', flush=True)

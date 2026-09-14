@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import selectors
 import subprocess
 import threading
 import time
@@ -23,6 +25,8 @@ SNAPSHOT_MAX_BYTES = max(
     1024,
     int(os.environ.get("CAMADMIRAL_SNAPSHOT_MAX_BYTES", str(8 * 1024 * 1024))),
 )
+# Shared by HTTP snapshots and periodic health checks, not one pool per request.
+_SNAPSHOT_SLOTS = threading.BoundedSemaphore(max(1, min(PROBE_WORKERS, 4)))
 FRAME_PROBE_INTERVAL = max(
     30.0,
     float(os.environ.get("CAMADMIRAL_FRAME_PROBE_INTERVAL", "60")),
@@ -114,6 +118,7 @@ class RelayHealthMonitor:
         self,
         sources: list[dict[str, str]],
         preferred_sources: list[dict[str, str]],
+        rtsp_password: str,
     ) -> dict[str, ProbeResult]:
         now = time.monotonic()
         preferred = {str(source["camera_uuid"]): source for source in preferred_sources}
@@ -143,7 +148,8 @@ class RelayHealthMonitor:
         results: dict[str, ProbeResult] = {}
         with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(due))) as executor:
             pending = {
-                executor.submit(snapshot_frame, source["stream_key"], width=self._thumbnail_width): source
+                executor.submit(snapshot_frame, source["stream_key"], width=self._thumbnail_width,
+                                rtsp_password=rtsp_password): source
                 for source in due
             }
             submitted_at = {future: time.monotonic() for future in pending}
@@ -233,7 +239,7 @@ class RelayHealthMonitor:
         for source in sources:
             sources_by_camera.setdefault(str(source["camera_uuid"]), []).append(source)
         active_results = dict(results)
-        periodic_results = self._sample_periodic_sources(sources, preferred_sources)
+        periodic_results = self._sample_periodic_sources(sources, preferred_sources, repository.rtsp_access_password())
         for stream_uuid, result in periodic_results.items():
             camera_uuid = str(source_by_stream[stream_uuid]["camera_uuid"])
             camera_sources = sources_by_camera[camera_uuid]
@@ -483,28 +489,68 @@ def reconcile_runtime_drift(repository: Any) -> bool:
     return True
 
 
-def snapshot_frame(stream_key: str, *, width: int = 960) -> bytes:
-    if not stream_key.startswith("stream_") or not stream_key.removeprefix("stream_"):
-        raise SnapshotError("Invalid managed stream")
-    query = urllib.parse.urlencode({"src": stream_key, "width": str(max(1, width))})
-    request = urllib.request.Request(
-        f"{GO2RTC_URL}/api/frame.jpeg?{query}",
-        headers={"Accept": "image/jpeg"},
-        method="GET",
-    )
+def _snapshot_jpeg(uri: str, width: int, deadline: float) -> bytes:
+    """Read bounded output and always reap the decoder, including on timeout."""
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
+        "-rtsp_transport", "tcp", "-allowed_media_types", "video",
+        "-analyzeduration", "100000", "-probesize", "32768", "-i", uri,
+        "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
+        "-vf", f"scale={width}:-2", "-c:v", "mjpeg", "-threads:v", "1",
+        "-f", "image2pipe", "pipe:1",
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    image = bytearray()
     try:
-        with urllib.request.urlopen(request, timeout=SNAPSHOT_TIMEOUT) as response:
-            content_type = response.headers.get_content_type()
-            content_length = response.headers.get("Content-Length")
-            if content_type != "image/jpeg":
-                raise SnapshotError("Snapshot service returned an unexpected format")
-            if content_length and int(content_length) > SNAPSHOT_MAX_BYTES:
-                raise SnapshotError("Snapshot is too large")
-            image = response.read(SNAPSHOT_MAX_BYTES + 1)
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise SnapshotError("Snapshot is unavailable")
+                chunk = os.read(process.stdout.fileno(), min(65536, SNAPSHOT_MAX_BYTES + 1 - len(image)))
+                if not chunk:
+                    break
+                image.extend(chunk)
+                if len(image) > SNAPSHOT_MAX_BYTES:
+                    raise SnapshotError("Snapshot is too large")
+        if process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
+            raise SnapshotError("Snapshot is unavailable")
+        return bytes(image)
+    finally:
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait()
+        if process.stdout:
+            process.stdout.close()
+
+
+def snapshot_frame(stream_key: str, *, rtsp_password: str, width: int = 960) -> bytes:
+    if not re.fullmatch(r"stream_[A-Za-z0-9_-]+", stream_key):
+        raise SnapshotError("Invalid managed stream")
+    # go2rtc's frame.jpeg handler can retain consumers after HTTP cancellation
+    # when no keyframe arrives. A killed RTSP client releases its relay session.
+    deadline = time.monotonic() + SNAPSHOT_TIMEOUT
+    if not _SNAPSHOT_SLOTS.acquire(timeout=SNAPSHOT_TIMEOUT):
+        raise SnapshotError("Snapshot service is busy")
+    try:
+        if time.monotonic() >= deadline:
+            raise SnapshotError("Snapshot service is busy")
+        uri = authenticated_rtsp_uri(f"{GO2RTC_RTSP_URL}/{stream_key}", "camadmiral", rtsp_password)
+        image = _snapshot_jpeg(uri, max(1, min(4096, int(width))), deadline)
     except SnapshotError:
         raise
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise SnapshotError("Snapshot is unavailable") from exc
+    except (subprocess.SubprocessError, TimeoutError, OSError, ValueError):
+        # Never expose an FFmpeg command or credential-bearing URI in exceptions.
+        raise SnapshotError("Snapshot is unavailable") from None
+    finally:
+        _SNAPSHOT_SLOTS.release()
     if len(image) > SNAPSHOT_MAX_BYTES:
         raise SnapshotError("Snapshot is too large")
     if len(image) < 4 or not image.startswith(b"\xff\xd8\xff") or not image.endswith(b"\xff\xd9"):
