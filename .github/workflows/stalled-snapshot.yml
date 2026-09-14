@@ -1,0 +1,22 @@
+name: Stalled snapshot regression
+on:
+  push:
+    branches: ["codex/fix-stalled-snapshot-cleanup"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stalled-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 e2e/stalled_snapshot.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stalled-snapshot-evidence
+          path: e2e-artifacts/stalled-snapshot/
+      - name: Cleanup
+        if: always()
+        run: docker compose -p camadmiral-stalled-e2e -f e2e/compose.yaml -f e2e/stalled-snapshot-compose.yaml down --volumes --remove-orphans

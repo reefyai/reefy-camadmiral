@@ -1,0 +1,18 @@
+services:
+  camadmiral:
+    volumes:
+      - ./stalled_snapshot.py:/e2e/stalled_snapshot.py:ro
+  camera-open:
+    volumes:
+      - ./fixtures/camera-memory.yaml:/e2e/camera-open.yaml:ro
+  stalled-camera:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/stalled_rtsp_proxy.py]
+    volumes:
+      - ./stalled_rtsp_proxy.py:/e2e/stalled_rtsp_proxy.py:ro
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      disable: true
