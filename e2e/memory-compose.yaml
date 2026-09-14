@@ -1,0 +1,12 @@
+services:
+  camadmiral:
+    mem_limit: ${CAMADMIRAL_E2E_MEMORY_LIMIT:-512m}
+    # Exercise machines without swap, rather than hiding pressure in swap.
+    memswap_limit: ${CAMADMIRAL_E2E_MEMORY_LIMIT:-512m}
+    restart: unless-stopped
+  camera-open:
+    volumes:
+      - ./fixtures/camera-memory.yaml:/e2e/camera-open.yaml:ro
+  test-driver:
+    environment:
+      CAMADMIRAL_MEMORY_CYCLES: ${CAMADMIRAL_MEMORY_CYCLES:-12}

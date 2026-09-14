@@ -1,0 +1,28 @@
+name: Media memory regression
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: camadmiral-memory-regression
+  cancel-in-progress: false
+jobs:
+  memory:
+    runs-on: [self-hosted, Linux, X64, big-bird, large]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 e2e/memory_pressure.py
+        env:
+          CAMADMIRAL_MEMORY_CYCLES: "60"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: media-memory-evidence
+          path: e2e-artifacts/memory-pressure/
+      - name: Remove memory regression resources
+        if: always()
+        run: >-
+          docker compose -p camadmiral-memory-e2e
+          -f e2e/compose.yaml -f e2e/memory-compose.yaml
+          down --volumes --remove-orphans

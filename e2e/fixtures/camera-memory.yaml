@@ -1,0 +1,16 @@
+api:
+  listen: "0.0.0.0:1984"
+rtsp:
+  listen: "0.0.0.0:8554"
+webrtc:
+  listen: ""
+streams:
+  main: "ffmpeg:virtual?video=testsrc2&size=1920x1080&rate=15#video=h264"
+  camera0: rtsp://127.0.0.1:8554/main
+  camera1: rtsp://127.0.0.1:8554/main
+  camera2: rtsp://127.0.0.1:8554/main
+  camera3: rtsp://127.0.0.1:8554/main
+  camera4: rtsp://127.0.0.1:8554/main
+  camera5: rtsp://127.0.0.1:8554/main
+  camera6: rtsp://127.0.0.1:8554/main
+  camera7: rtsp://127.0.0.1:8554/main

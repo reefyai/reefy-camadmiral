@@ -115,6 +115,8 @@ def run_launcher() -> None:
                 raise RuntimeError("Launcher container is not using host networking")
             if host_config.get("RestartPolicy", {}).get("Name") != "unless-stopped":
                 raise RuntimeError("Launcher container restart policy is incorrect")
+            if host_config.get("Memory") != 512 * 1024 * 1024:
+                raise RuntimeError("Launcher memory limit does not match the tested media envelope")
 
             stopped = subprocess.run(
                 [str(stop_script)],
@@ -153,6 +155,8 @@ def run_launcher() -> None:
             if not wait_for_health(password).get("version"):
                 raise RuntimeError("Restarted launcher did not become healthy")
 
+            # Reproduce an existing installation carrying the former runtime limit.
+            docker("update", "--memory", "256m", CONTAINER)
             updated = subprocess.run(
                 [str(script), "--update"],
                 check=True,
@@ -164,6 +168,9 @@ def run_launcher() -> None:
             )
             if updated_container == restarted_container:
                 raise RuntimeError("Update did not recreate the CamAdmiral container")
+            updated_memory = docker("inspect", "--format", "{{.HostConfig.Memory}}", CONTAINER, capture=True)
+            if int(updated_memory) != 512 * 1024 * 1024:
+                raise RuntimeError("Update retained the old memory limit")
             if f"Password: {password}" not in updated.stdout:
                 raise RuntimeError("Update replaced the existing admin password")
             if not exists("volume", VOLUME):
