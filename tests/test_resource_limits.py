@@ -33,3 +33,20 @@ class ResourceLimitTests(unittest.TestCase):
     def test_full_release_gate_runs_memory_regression(self):
         gate = (ROOT / '.github/workflows/release-gate.yml').read_text()
         self.assertIn('python3 e2e/memory_pressure.py', gate)
+        self.assertIn('uses: ./.github/workflows/stalled-snapshot.yml', gate)
+        workflow = (ROOT / '.github/workflows/stalled-snapshot.yml').read_text()
+        self.assertIn('python3 e2e/snapshot_health.py', workflow)
+
+    def test_snapshot_health_e2e_matches_production_deadline(self):
+        import os
+        from unittest.mock import patch
+        import subprocess
+        import sys
+        with patch.dict(os.environ):
+            os.environ.pop('CAMADMIRAL_SNAPSHOT_TIMEOUT', None)
+            value = subprocess.check_output([sys.executable, '-c',
+                'from camadmiral.media import SNAPSHOT_TIMEOUT; print(SNAPSHOT_TIMEOUT)'], text=True)
+        timeout = float(value)
+        self.assertEqual(timeout, 30)
+        config = yaml.safe_load((ROOT / 'e2e/snapshot-health-compose.yaml').read_text())
+        self.assertEqual(float(config['services']['camadmiral']['environment']['CAMADMIRAL_SNAPSHOT_TIMEOUT']), timeout)

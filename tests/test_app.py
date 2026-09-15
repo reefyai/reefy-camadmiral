@@ -1934,7 +1934,7 @@ class SnapshotEndpointTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("x-camadmiral-captured-at", response.headers)
-        snapshot.assert_called_once_with("stream_synthetic")
+        snapshot.assert_called_once_with("stream_synthetic", rtsp_password=repository.rtsp_access_password())
 
     def test_thumbnail_returns_only_an_already_cached_frame(self) -> None:
         jpeg = b"\xff\xd8\xffcached\xff\xd9"

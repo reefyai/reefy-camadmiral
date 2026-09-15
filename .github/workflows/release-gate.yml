@@ -28,6 +28,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  stalled-snapshot:
+    name: Stalled snapshot cleanup
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true'
+    uses: ./.github/workflows/stalled-snapshot.yml
+
   memory-regression:
     name: Production memory envelope
     concurrency:

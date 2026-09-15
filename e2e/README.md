@@ -97,6 +97,23 @@ media and multi-process failure workflows belong here.
 
 ## Media memory regression
 
+### Stalled snapshot cleanup
+
+Run `python3 e2e/stalled_snapshot.py` on a disposable Docker host. A real RTSP
+proxy initially forwards a synthetic 1080p camera, then drops media while still
+answering RTSP control requests. After adoption, six batches of four concurrent
+HTTP snapshots must fail within the deadline without retaining relay consumers,
+decoder processes, or growing relay memory. Normal background health checks stay
+enabled. Resuming media must produce a decodable JPEG at the same stream URL,
+without restarting go2rtc. The lab uses the production 512 MiB / 192 PID limits.
+
+This runs as a separate parallel job in the full release gate. Its artifacts in
+`e2e-artifacts/stalled-snapshot/` include consumer IDs, process counts, relay RSS,
+cgroup failure counters, workload timings, and logs. Unlike the successful-frame
+workload below, it catches server-side snapshot work surviving client timeouts.
+
+### Concurrent successful snapshots
+
 Run `python3 e2e/memory_pressure.py` on a disposable Docker host. It adopts eight
 synthetic 1080p RTSP cameras through the real HTTP API, then requests eight
 concurrent JPEG snapshots per batch while ordinary health and thumbnail work stays

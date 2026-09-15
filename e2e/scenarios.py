@@ -3109,12 +3109,26 @@ def identity_recovery_missed_scan() -> None:
         }
         return expected_camera_ids.issubset(offline_ids)
 
-    wait_for(
-        "offline incidents for both rebooting cameras",
-        both_offline_incidents_open,
-        timeout=90,
-        interval=2,
-    )
+    try:
+        wait_for(
+            "offline incidents for both rebooting cameras",
+            both_offline_incidents_open,
+            timeout=90,
+            interval=2,
+        )
+    except ScenarioFailure as exc:
+        health = []
+        for device in discovery().get('devices', []):
+            adoption = device.get('adoption') or {}
+            if str(adoption.get('camera_uuid')) in expected_camera_ids:
+                health.append({
+                    'camera': adoption['camera_uuid'], 'roles': adoption['roles'],
+                    'streams': [{key: stream.get(key) for key in (
+                        'stream_uuid', 'health_status', 'consecutive_failures',
+                        'probed_at', 'last_ready_at', 'last_failure_at')}
+                        for stream in adoption['streams']],
+                })
+        raise ScenarioFailure(f'{exc}; stream health={json.dumps(health)}') from exc
     IDENTITY_STATE_PATH.write_text(json.dumps(before), encoding="utf-8")
     IDENTITY_STATE_PATH.chmod(0o600)
     print("identity-recovery-missed-scan: first targeted scan missed the rebooting camera")

@@ -557,7 +557,7 @@ class CameraRepository:
             return "auth_failed", "authentication_failed"
         if all(state == "healthy" for state in observed_states):
             return "healthy", "all_streams_healthy"
-        if all(state == "offline" for state in observed_states):
+        if all(state == "offline" for state in states):
             return "offline", "all_streams_offline"
         if "offline" in observed_states:
             return "degraded", "partial_stream_failure"

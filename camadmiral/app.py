@@ -2083,7 +2083,7 @@ def camera_snapshot(camera_uuid: str) -> Response:
     try:
         frame = RELAY_HEALTH_MONITOR.cache_frame(
             camera_uuid,
-            snapshot_frame(stream["stream_key"]),
+            snapshot_frame(stream["stream_key"], rtsp_password=repository.rtsp_access_password()),
         )
         return _snapshot_response(frame.content, captured_at=frame.captured_at)
     except SnapshotError:
