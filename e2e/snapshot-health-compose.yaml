@@ -1,0 +1,9 @@
+services:
+  camadmiral:
+    environment:
+      # Exercise the production default, not the short leak-test deadline.
+      CAMADMIRAL_SNAPSHOT_TIMEOUT: "30"
+      CAMADMIRAL_FRAME_PROBE_INTERVAL: "30"
+  camera-open:
+    volumes:
+      - ./fixtures/camera-snapshot-health.yaml:/e2e/camera-open.yaml:ro

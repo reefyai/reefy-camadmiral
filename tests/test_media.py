@@ -2,11 +2,12 @@ import json
 import subprocess
 import unittest
 import urllib.error
+from concurrent.futures import Future
 from unittest.mock import Mock, call, patch
 
 from camadmiral.media import (
     ProbeResult,
-    RelayHealthMonitor,
+    RelayHealthMonitor as AsyncRelayHealthMonitor,
     RelayRuntimeActivityMonitor,
     SnapshotError,
     authenticated_rtsp_uri,
@@ -21,6 +22,24 @@ from camadmiral.media import (
     restart_preload,
     snapshot_frame,
 )
+
+
+class ImmediateExecutor:
+    def submit(self, function, *args, **kwargs):
+        future = Future()
+        try:
+            future.set_result(function(*args, **kwargs))
+        except Exception as exc:
+            future.set_exception(exc)
+        return future
+
+
+class RelayHealthMonitor(AsyncRelayHealthMonitor):
+    """Deterministic completion for aggregation tests; real scheduling tested separately."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._snapshot_executor = ImmediateExecutor()
 
 
 class MediaTests(unittest.TestCase):
@@ -361,10 +380,10 @@ class MediaTests(unittest.TestCase):
 
     @patch(
         "camadmiral.media.snapshot_frame",
-        side_effect=SnapshotError("synthetic camera outage"),
+        side_effect=[SnapshotError("synthetic detect outage"), b"\xff\xd8\xffrecord\xff\xd9"],
     )
     @patch("camadmiral.media._request", return_value=b"{}")
-    def test_periodic_camera_failure_updates_all_idle_role_streams(
+    def test_periodic_failure_does_not_mark_other_idle_stream_offline(
         self,
         _request,
         _frame,
@@ -394,10 +413,11 @@ class MediaTests(unittest.TestCase):
         results = monitor.probe(repository)
 
         self.assertEqual(results["detect"].status, "unavailable")
-        self.assertEqual(results["record"].status, "unavailable")
+        self.assertEqual(results["record"].status, "ready")
         recorded = repository.record_probe_results.call_args.args[0]
         self.assertEqual(recorded["detect"].status, "unavailable")
-        self.assertEqual(recorded["record"].status, "unavailable")
+        self.assertEqual(recorded["record"].status, "ready")
+        self.assertEqual(_frame.call_count, 2)
 
     @patch(
         "camadmiral.media.snapshot_frame",
@@ -452,7 +472,8 @@ class MediaTests(unittest.TestCase):
         recorded = repository.record_probe_results.call_args.args[0]
         self.assertEqual(recorded["detect"].status, "unavailable")
         self.assertEqual(recorded["record"].status, "ready")
-        self.assertNotIn("camera-1", monitor._frame_probe_retries)
+        self.assertNotIn("record", monitor._frame_probe_retries)
+        self.assertIn("detect", monitor._frame_probe_retries)
 
     @patch("camadmiral.media.probe_source", return_value=ProbeResult("auth_failed", 20))
     @patch("camadmiral.media._request")

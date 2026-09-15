@@ -1509,6 +1509,26 @@ class CameraRepositoryTests(unittest.TestCase):
             ).fetchone()["state"]
         self.assertEqual(state, "healthy")
 
+    def test_unchecked_role_is_not_evidence_all_streams_are_offline(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-unchecked", "display_name": "Synthetic camera"},
+            "operator", "synthetic-secret",
+            [{"token": token, "name": token, "uri": f"rtsp://192.0.2.44/{token}",
+              "width": 640, "height": 360, "encoding": "H264", "fps": 10,
+              "bitrate_kbps": 0} for token in ("main", "sub")],
+            {"record": "main", "detect": "sub"},
+        )
+        for _ in range(3):
+            self.repository.record_probe_results({adoption['roles']['detect']: ProbeResult('unavailable', 30000)})
+        with self.repository.connect() as connection:
+            self.assertEqual(self.repository._camera_health_state(connection, adoption['camera_uuid']),
+                             ('degraded', 'partial_stream_failure'))
+        for _ in range(3):
+            self.repository.record_probe_results({adoption['roles']['record']: ProbeResult('unavailable', 30000)})
+        with self.repository.connect() as connection:
+            self.assertEqual(self.repository._camera_health_state(connection, adoption['camera_uuid']),
+                             ('offline', 'all_streams_offline'))
+
     def test_availability_excludes_unknown_and_disabled_time(self) -> None:
         adoption = self.repository.adopt(
             {"candidate_uuid": "candidate-availability", "display_name": "Camera"},

@@ -38,6 +38,7 @@ class SnapshotProcessTests(unittest.TestCase):
         for option in ('-threads', '-threads:v', '-filter_threads', '-filter_complex_threads', '-frames:v'):
             self.assertEqual(command[command.index(option) + 1], '1')
         self.assertEqual(command[command.index('-allowed_media_types') + 1], 'video')
+        self.assertEqual(command[command.index('-user_agent') + 1], 'CamAdmiral-Snapshot')
 
     def test_stalled_decoder_is_killed_and_reaped(self):
         started = time.monotonic()

@@ -1,5 +1,9 @@
 services:
   camadmiral:
+    environment:
+      # Keep the repeated timeout/leak stress test short. The delayed-frame
+      # health regression separately exercises the production 30s default.
+      CAMADMIRAL_SNAPSHOT_TIMEOUT: "5"
     volumes:
       - ./stalled_snapshot.py:/e2e/stalled_snapshot.py:ro
   camera-open:

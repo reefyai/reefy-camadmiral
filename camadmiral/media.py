@@ -20,7 +20,8 @@ GO2RTC_URL = os.environ.get("CAMADMIRAL_GO2RTC_URL", "http://127.0.0.1:1984").rs
 GO2RTC_RTSP_URL = os.environ.get("CAMADMIRAL_GO2RTC_RTSP_URL", "rtsp://127.0.0.1:18554").rstrip("/")
 PROBE_TIMEOUT = float(os.environ.get("CAMADMIRAL_MEDIA_PROBE_TIMEOUT", "8"))
 PROBE_WORKERS = int(os.environ.get("CAMADMIRAL_MEDIA_PROBE_WORKERS", "4"))
-SNAPSHOT_TIMEOUT = max(1.0, float(os.environ.get("CAMADMIRAL_SNAPSHOT_TIMEOUT", "5")))
+SNAPSHOT_TIMEOUT = max(1.0, float(os.environ.get("CAMADMIRAL_SNAPSHOT_TIMEOUT", "30")))
+SNAPSHOT_USER_AGENT = "CamAdmiral-Snapshot"
 SNAPSHOT_MAX_BYTES = max(
     1024,
     int(os.environ.get("CAMADMIRAL_SNAPSHOT_MAX_BYTES", str(8 * 1024 * 1024))),
@@ -53,6 +54,10 @@ class SnapshotError(RuntimeError):
     pass
 
 
+class SnapshotBusyError(SnapshotError):
+    """Local snapshot capacity is exhausted, not a camera failure."""
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     status: str
@@ -71,7 +76,7 @@ class CachedFrame:
 
 
 class RelayHealthMonitor:
-    """Observe active relays and periodically sample one frame per camera."""
+    """Observe active relays and asynchronously sample each selected stream."""
 
     def __init__(
         self,
@@ -86,6 +91,8 @@ class RelayHealthMonitor:
         self._failure_samples: dict[str, int] = {}
         self._frame_probe_attempts: dict[str, float] = {}
         self._frame_probe_retries: set[str] = set()
+        self._snapshot_executor = None
+        self._pending_snapshots: dict[str, tuple[Any, dict[str, str], float]] = {}
         self._frame_probe_interval = max(0.0, frame_probe_interval)
         self._frame_probe_batch_size = max(1, frame_probe_batch_size)
         self._thumbnail_width = max(1, thumbnail_width)
@@ -121,54 +128,77 @@ class RelayHealthMonitor:
         rtsp_password: str,
     ) -> dict[str, ProbeResult]:
         now = time.monotonic()
-        preferred = {str(source["camera_uuid"]): source for source in preferred_sources}
-        for source in sources:
-            preferred.setdefault(str(source["camera_uuid"]), source)
+        # Observe each bound stream independently. A thumbnail failure is not
+        # evidence that another profile on the same camera has failed.
+        current = {str(source["stream_uuid"]): source for source in sources}
+        preferred = {str(source["camera_uuid"]): str(source["stream_uuid"])
+                     for source in preferred_sources}
+        results: dict[str, ProbeResult] = {}
+
+        def collect() -> None:
+            for stream_uuid, (future, source, started) in list(self._pending_snapshots.items()):
+                if not future.done():
+                    continue
+                del self._pending_snapshots[stream_uuid]
+                # Unadopt, credential changes and address recovery invalidate
+                # observations started against the previous source.
+                if current.get(stream_uuid) != source:
+                    continue
+                try:
+                    content = future.result()
+                    if preferred.get(str(source["camera_uuid"]), stream_uuid) == stream_uuid:
+                        self.cache_frame(str(source["camera_uuid"]), content)
+                    status = "ready"
+                    self._frame_probe_retries.discard(stream_uuid)
+                except SnapshotBusyError:
+                    self._frame_probe_retries.add(stream_uuid)
+                    continue
+                except Exception:
+                    status = "unavailable"
+                    self._frame_probe_retries.add(stream_uuid)
+                results[stream_uuid] = ProbeResult(status, round((time.monotonic() - started) * 1000))
+
+        collect()
         due = []
-        for camera_uuid, source in preferred.items():
-            previous = self._frame_probe_attempts.get(camera_uuid)
+        for stream_uuid, source in current.items():
+            previous = self._frame_probe_attempts.get(stream_uuid)
             if (
-                previous is None
-                or camera_uuid in self._frame_probe_retries
-                or now - previous >= self._frame_probe_interval
+                stream_uuid not in self._pending_snapshots
+                and stream_uuid not in results
+                and (previous is None
+                     or stream_uuid in self._frame_probe_retries
+                     or now - previous >= self._frame_probe_interval)
             ):
                 due.append(source)
         due.sort(key=lambda source: (
-            str(source["camera_uuid"]) in self._frame_probe_attempts,
-            self._frame_probe_attempts.get(str(source["camera_uuid"]), -1.0),
+            str(source["stream_uuid"]) in self._frame_probe_attempts,
+            self._frame_probe_attempts.get(str(source["stream_uuid"]), -1.0),
         ))
-        due = due[: self._frame_probe_batch_size]
+        # No unbounded executor queue. Slow cameras occupy a bounded worker,
+        # never the health-loop lock; active counters remain observable.
+        capacity = max(1, min(PROBE_WORKERS, 4))
+        due = due[:max(0, min(self._frame_probe_batch_size, capacity - len(self._pending_snapshots)))]
+        if due and self._snapshot_executor is None:
+            self._snapshot_executor = ThreadPoolExecutor(max_workers=capacity)
         for source in due:
-            camera_uuid = str(source["camera_uuid"])
-            self._frame_probe_attempts[camera_uuid] = now
-            self._frame_probe_retries.discard(camera_uuid)
-        if not due:
-            return {}
-
-        results: dict[str, ProbeResult] = {}
-        with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(due))) as executor:
-            pending = {
-                executor.submit(snapshot_frame, source["stream_key"], width=self._thumbnail_width,
-                                rtsp_password=rtsp_password): source
-                for source in due
-            }
-            submitted_at = {future: time.monotonic() for future in pending}
-            for future in as_completed(pending):
-                source = pending[future]
-                started = submitted_at[future]
-                try:
-                    content = future.result()
-                    self.cache_frame(str(source["camera_uuid"]), content)
-                    results[str(source["stream_uuid"])] = ProbeResult(
-                        "ready",
-                        round((time.monotonic() - started) * 1000),
-                    )
-                except Exception:
-                    results[str(source["stream_uuid"])] = ProbeResult(
-                        "unavailable",
-                        round((time.monotonic() - started) * 1000),
-                    )
+            stream_uuid = str(source["stream_uuid"])
+            self._frame_probe_attempts[stream_uuid] = now
+            self._frame_probe_retries.discard(stream_uuid)
+            future = self._snapshot_executor.submit(
+                snapshot_frame, source["stream_key"], width=self._thumbnail_width,
+                rtsp_password=rtsp_password,
+            )
+            self._pending_snapshots[stream_uuid] = (future, dict(source), now)
+        collect()
         return results
+
+    @staticmethod
+    def _has_external_consumers(stream: object) -> bool:
+        if not isinstance(stream, dict):
+            return False
+        return any(not isinstance(consumer, dict)
+                   or consumer.get("user_agent") != SNAPSHOT_USER_AGENT
+                   for consumer in (stream.get("consumers") or []))
 
     @staticmethod
     def _active_video_sample(stream: object) -> tuple[str, int] | None:
@@ -215,8 +245,7 @@ class RelayHealthMonitor:
         for source in sources:
             stream_uuid = str(source["stream_uuid"])
             stream = runtime.get(source["stream_key"])
-            consumers = stream.get("consumers") if isinstance(stream, dict) else None
-            if not consumers:
+            if not self._has_external_consumers(stream):
                 self._video_samples.pop(stream_uuid, None)
                 continue
             else:
@@ -235,28 +264,16 @@ class RelayHealthMonitor:
                     result = ProbeResult("ready" if advancing else "unavailable", latency_ms)
             results[stream_uuid] = result
         source_by_stream = {str(source["stream_uuid"]): source for source in sources}
-        sources_by_camera: dict[str, list[dict[str, str]]] = {}
-        for source in sources:
-            sources_by_camera.setdefault(str(source["camera_uuid"]), []).append(source)
         active_results = dict(results)
         periodic_results = self._sample_periodic_sources(sources, preferred_sources, repository.rtsp_access_password())
+        # Snapshot consumers are excluded above. Their packets do not prove a
+        # decoded frame, and waiting for one must not hide a real viewer stall.
         for stream_uuid, result in periodic_results.items():
-            camera_uuid = str(source_by_stream[stream_uuid]["camera_uuid"])
-            camera_sources = sources_by_camera[camera_uuid]
-            active_ready = any(
-                active_results.get(str(source["stream_uuid"]), ProbeResult("idle", 0)).status
-                == "ready"
-                for source in camera_sources
-            )
-            if result.status != "ready" and not active_ready:
-                self._frame_probe_retries.add(camera_uuid)
-            for source in camera_sources:
-                target_stream_uuid = str(source["stream_uuid"])
-                active_result = active_results.get(target_stream_uuid)
-                if active_result is None:
-                    results[target_stream_uuid] = result
-                elif target_stream_uuid == stream_uuid and result.status == "ready":
-                    results[target_stream_uuid] = result
+            active_result = active_results.get(stream_uuid)
+            if active_result is None or active_result.status != "ready" or result.status == "ready":
+                results[stream_uuid] = result
+            else:
+                self._frame_probe_retries.discard(stream_uuid)
         for stream_uuid, result in results.items():
             source = source_by_stream[stream_uuid]
             if result.status == "unavailable":
@@ -292,10 +309,11 @@ class RelayHealthMonitor:
         for stream_uuid in set(self._failure_samples) - active_ids:
             self._failure_samples.pop(stream_uuid, None)
         active_camera_ids = {str(source["camera_uuid"]) for source in sources}
-        for camera_uuid in set(self._frame_probe_attempts) - active_camera_ids:
-            self._frame_probe_attempts.pop(camera_uuid, None)
-            self._frame_probe_retries.discard(camera_uuid)
-            with self._frame_lock:
+        for stream_uuid in set(self._frame_probe_attempts) - active_ids:
+            self._frame_probe_attempts.pop(stream_uuid, None)
+            self._frame_probe_retries.discard(stream_uuid)
+        with self._frame_lock:
+            for camera_uuid in set(self._frames) - active_camera_ids:
                 self._frames.pop(camera_uuid, None)
         failed_camera_ids = set(auth_failures)
         repository.record_probe_results({
@@ -341,8 +359,7 @@ class RelayRuntimeActivityMonitor:
         stalled_camera_uuids: set[str] = set()
         for source in sources:
             stream = runtime.get(source["stream_key"])
-            consumers = stream.get("consumers") if isinstance(stream, dict) else None
-            if not consumers:
+            if not RelayHealthMonitor._has_external_consumers(stream):
                 continue
 
             stream_uuid = str(source["stream_uuid"])
@@ -495,6 +512,7 @@ def _snapshot_jpeg(uri: str, width: int, deadline: float) -> bytes:
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
         "-rtsp_transport", "tcp", "-allowed_media_types", "video",
+        "-user_agent", SNAPSHOT_USER_AGENT,
         "-analyzeduration", "100000", "-probesize", "32768", "-i", uri,
         "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
         "-vf", f"scale={width}:-2", "-c:v", "mjpeg", "-threads:v", "1",
@@ -538,10 +556,10 @@ def snapshot_frame(stream_key: str, *, rtsp_password: str, width: int = 960) -> 
     # when no keyframe arrives. A killed RTSP client releases its relay session.
     deadline = time.monotonic() + SNAPSHOT_TIMEOUT
     if not _SNAPSHOT_SLOTS.acquire(timeout=SNAPSHOT_TIMEOUT):
-        raise SnapshotError("Snapshot service is busy")
+        raise SnapshotBusyError("Snapshot service is busy")
     try:
         if time.monotonic() >= deadline:
-            raise SnapshotError("Snapshot service is busy")
+            raise SnapshotBusyError("Snapshot service is busy")
         uri = authenticated_rtsp_uri(f"{GO2RTC_RTSP_URL}/{stream_key}", "camadmiral", rtsp_password)
         image = _snapshot_jpeg(uri, max(1, min(4096, int(width))), deadline)
     except SnapshotError:

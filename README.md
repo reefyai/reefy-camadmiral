@@ -149,6 +149,10 @@ snapshots and background thumbnails. This is a ceiling, not memory reserved at s
 larger camera fleets or heavier media workloads may need a higher limit.
 Snapshot conversion uses bounded FFmpeg thread counts so concurrent conversions do
 not each create a thread pool sized to every CPU on the host.
+Snapshots wait up to 30 seconds for a decoded frame (configurable with
+`CAMADMIRAL_SNAPSHOT_TIMEOUT`). Background checks run in a bounded worker pool,
+so slow snapshots do not block active-stream monitoring. Selected streams are
+checked independently: a failed thumbnail does not mark another stream offline.
 
 Stop CamAdmiral without removing its container, credentials, or data:
 
