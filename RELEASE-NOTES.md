@@ -1,13 +1,16 @@
-# CamAdmiral v2026.09.14-02
+# CamAdmiral v2026.09.19-00
 
-- Allow up to 30 seconds to obtain a snapshot, accommodating slower stream startup.
-- Monitor selected streams independently; a failed detect-stream snapshot no longer
-  marks the record stream offline.
-- Run background snapshots in a bounded worker pool without blocking active-stream
-  monitoring. Local worker exhaustion is not treated as a camera failure.
-- Retain bounded, killable FFmpeg snapshot processes from the previous update,
-  preventing abandoned go2rtc keyframe consumers and memory growth on stalled sources.
-- Preserve existing camera identities, RTSP URLs, credentials and Frigate bindings.
+- Automatically retry authentication-failed streams after one minute, then five,
+  fifteen, and thirty minutes, capped at thirty minutes between attempts.
+- Preserve retry backoff across restarts, with one recovery connection per camera
+  at a time and bounded global concurrency.
+- Require a decoded video frame before clearing the authentication error.
+- Keep working sibling streams healthy and resolve incidents after recovery.
+- Enroll previously stuck cameras automatically. Credential updates use the
+  existing immediate validation flow without waiting for the old backoff.
+- Preserve camera identities, URLs, credentials, and Frigate configuration.
 
-Validation covers delayed real RTSP frames, an isolated profile outage and recovery,
-snapshot cancellation cleanup, production memory/PID limits, and the full release gate.
+Validation includes real RTSP authentication rejection and recovery at production
+retry intervals, snapshot cleanup, resource limits, and the full release gate.
+
+This candidate is published to Reefy dev first for operator testing.
