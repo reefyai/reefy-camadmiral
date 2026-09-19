@@ -1,0 +1,12 @@
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+detect:
+  fps: 5
+record:
+  enabled: true
+  continuous:
+    days: 1
+cameras: {}

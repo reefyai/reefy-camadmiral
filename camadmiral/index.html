@@ -1075,6 +1075,7 @@
     const availabilityResults = new Map();
     const identityHistoryResults = new Map();
     const streamAddressModes = new Map();
+    const streamSettingsDrafts = new Map();
     const streamAddressSaveChains = new Map();
     const streamAddressSaveErrors = new Map();
     const rowAvailabilityResults = new Map();
@@ -1118,6 +1119,11 @@
 
     function closeAppModal(restoreFocus = true) {
       if (appModal.hidden) return;
+      if (appModalKind === "streams") {
+        for (const [id, draft] of streamSettingsDrafts) {
+          if (!draft.saving) streamSettingsDrafts.delete(id);
+        }
+      }
       dismissAvailabilityTooltip();
       if (["camera", "streams", "adopt"].includes(appModalKind)) expandedCandidate = null;
       if (appModalKind === "frigate-cameras") activeFrigateChooserState = null;
@@ -3396,14 +3402,42 @@
         addText(streams, "div", "setup-status warning", `${result.rejected_sources.length} additional stream could not be read and was not added.`);
       }
       const list = addText(streams, "div", "profile-list", "");
+      if (!streamSettingsDrafts.has(cameraUuid)) {
+        streamSettingsDrafts.set(cameraUuid, {
+          enabled: adoption.streams.filter(s => s.enabled !== 0 && s.enabled !== false).map(s => s.stream_uuid),
+          roles: {...adoption.roles}, saving: false, message: ""
+        });
+      }
+      const draft = streamSettingsDrafts.get(cameraUuid);
       result.profiles.forEach(profile => {
         const row = addText(list, "div", "profile", "");
-        const roleTokens = result.role_tokens || {};
-        const roles = Object.entries(roleTokens).filter(([, token]) => token === profile.token).map(([role]) => role);
         const identity = addText(row, "div", "stream-identity", "");
         addText(identity, "div", "profile-name", profile.name || profile.token);
-        if (roles.length) addText(identity, "div", "role-label", roles.join(" · "));
         const managed = adoption?.streams?.find(stream => stream.profile_token === profile.token);
+        if (managed) {
+          const controls = addText(identity, "div", "stream-address-options", "");
+          controls.setAttribute("aria-label", `${profile.name || profile.token} settings`);
+          ["enabled", "record", "detect"].forEach(choice => {
+            const label = addText(controls, "label", "stream-address-option", "");
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = choice === "enabled" ? draft.enabled.includes(managed.stream_uuid) : draft.roles[choice] === managed.stream_uuid;
+            input.disabled = draft.saving || (choice !== "enabled" && !draft.enabled.includes(managed.stream_uuid));
+            input.addEventListener("change", () => {
+              draft.message = "";
+              if (choice === "enabled") {
+                draft.enabled = draft.enabled.filter(id => id !== managed.stream_uuid);
+                if (input.checked) draft.enabled.push(managed.stream_uuid);
+                else for (const role of ["record", "detect"]) {
+                  if (draft.roles[role] === managed.stream_uuid) delete draft.roles[role];
+                }
+              } else if (input.checked) draft.roles[choice] = managed.stream_uuid;
+              else delete draft.roles[choice];
+              renderActiveCameraModal();
+            });
+            label.append(input, document.createTextNode(choice[0].toUpperCase() + choice.slice(1)));
+          });
+        }
         const width = managed?.probed_width || profile.width;
         const height = managed?.probed_height || profile.height;
         const codec = managed?.video_codec || profile.encoding;
@@ -3421,16 +3455,46 @@
         addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
         metadata.append(source);
         const endpoint = addText(row, "div", "stream-access", "");
-        addStreamAccess(endpoint, managed, adoption?.enabled !== false, addressMode);
+        addStreamAccess(endpoint, managed, adoption?.enabled !== false && managed?.enabled !== 0 && managed?.enabled !== false, addressMode);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
           const labels = {healthy: "Healthy", degraded: "Degraded", offline: "Offline", auth_failed: "Authentication failed", unknown: "Media check pending", idle: "Idle - waiting for a consumer"};
           const health = managed.probe_status === "idle" ? "idle" : managed.health_status || "unknown";
           if (managed.consecutive_failures) facts.push(`${managed.consecutive_failures} consecutive failure${managed.consecutive_failures === 1 ? "" : "s"}`);
-          addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, [labels[health] || "Media check failed", ...facts].join(" · "));
+          addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, managed.enabled === 0 || managed.enabled === false ? "Disabled" : [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
+      addText(streams, "p", "detail-message", "Saving briefly reconnects all camera streams and updates selected Frigate destinations.");
+      const save = addText(streams, "button", "row-action", draft.saving ? "Saving..." : "Save stream settings");
+      save.disabled = draft.saving;
+      save.addEventListener("click", async () => {
+        if (!["record", "detect"].every(role => draft.enabled.includes(draft.roles[role]))) {
+          draft.message = "Choose an enabled stream for both Record and Detect.";
+          renderActiveCameraModal();
+          return;
+        }
+        draft.saving = true;
+        draft.message = "";
+        renderActiveCameraModal();
+        try {
+          const response = await fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/stream-settings`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-camera-stream-settings"},
+            body: JSON.stringify({enabled: draft.enabled, roles: draft.roles})
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || "Could not save stream settings.");
+          inspections.delete(device.candidate_uuid);
+          draft.message = "Stream settings saved. Frigate synchronization queued.";
+          await refresh();
+        } catch (error) { draft.message = error.message; }
+        finally { draft.saving = false; renderActiveCameraModal(); }
+      });
+      if (draft.message) {
+        const message = addText(streams, "p", "detail-message", draft.message);
+        message.setAttribute("role", "status");
+      }
       return wrapper;
     }
 
@@ -4149,9 +4213,10 @@
           device.block_uuid,
           device.connectivity_status,
           device.adoption?.enabled,
+          device.adoption?.roles,
           device.adoption?.thumbnail_captured_at,
           ...(device.adoption?.frigate || []).map(status => [status.target_id, status.selected, status.status, status.error_code, status.address_mode]),
-          ...(device.adoption?.streams || []).map(stream => [stream.health_status, stream.consecutive_failures, stream.probed_at])
+          ...(device.adoption?.streams || []).map(stream => [stream.enabled, stream.health_status, stream.consecutive_failures, stream.probed_at])
         ]));
         const resultId = `${data.inventory_scan_id || data.scan_id || data.completed_at}:${healthSignature}`;
         if (resultId !== lastResultId) {

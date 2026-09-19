@@ -11,6 +11,8 @@ stalled_path = None
 delay_until = 0.0
 rejected_path = None
 auth_requests = 0
+active_streams = {}
+describes = {}
 
 
 async def control(reader, writer):
@@ -34,6 +36,8 @@ async def control(reader, writer):
     body = f'stalled={stalled} dropped={dropped}'.encode()
     if path == b'/auth-stats':
         body = json.dumps({'requests': auth_requests}).encode()
+    if path == b'/stream-stats':
+        body = json.dumps({'active': active_streams, 'describes': describes}).encode()
     writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: '
                  + str(len(body)).encode() + b'\r\n\r\n' + body)
     await writer.drain()
@@ -46,11 +50,12 @@ async def relay(reader, writer):
     upstream = None
     task = None
     stream_name = ''
+    counted_name = None
     try:
         source, upstream = await asyncio.open_connection('camera-open', 8554)
 
         async def requests():
-            nonlocal stream_name
+            nonlocal stream_name, counted_name
             global auth_requests
             while True:
                 first = await reader.readexactly(1)
@@ -65,6 +70,11 @@ async def relay(reader, writer):
                 match = re.search(rb'(?:DESCRIBE|PLAY) (rtsp://[^\s]+)', data)
                 if match:
                     stream_name = urlsplit(match.group(1).decode()).path.strip('/')
+                if data.startswith(b'DESCRIBE '):
+                    describes[stream_name] = describes.get(stream_name, 0) + 1
+                    if counted_name is None:
+                        counted_name = stream_name
+                        active_streams[counted_name] = active_streams.get(counted_name, 0) + 1
                 if data.startswith(b'DESCRIBE ') and stream_name == rejected_path:
                     auth_requests += 1
                     cseq = re.search(rb'(?im)^CSeq:\s*(\d+)', data).group(1)
@@ -97,6 +107,8 @@ async def relay(reader, writer):
     except (OSError, asyncio.IncompleteReadError, ConnectionError):
         pass
     finally:
+        if counted_name is not None:
+            active_streams[counted_name] -= 1
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

@@ -60,6 +60,8 @@ from .media import (
     probe_source,
     reconcile_and_probe,
     reconcile_runtime_drift,
+    reconcile_streams,
+    replace_streams,
     snapshot_frame,
 )
 from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
@@ -186,6 +188,11 @@ class CameraEnabledRequest(BaseModel):
 
 class CameraStreamAddressRequest(BaseModel):
     address_mode: Literal["lan", "localhost"]
+
+
+class CameraStreamSettingsRequest(BaseModel):
+    enabled: list[str] = Field(max_length=128)
+    roles: dict[str, str]
 
 
 class CameraCredentialRequest(BaseModel):
@@ -555,6 +562,8 @@ def _observation_matches_saved_sources(
         return False
     source_hosts: list[str] = []
     for stream in streams:
+        if isinstance(stream, dict) and not stream.get("enabled", True):
+            continue
         if not isinstance(stream, dict) or not stream.get("uri"):
             return False
         try:
@@ -874,7 +883,7 @@ def _queue_targeted_recovery_scan(
             RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
             continue
         candidate = candidates.get(candidate_uuid) or {}
-        streams = adoption.get("streams", [])
+        streams = [stream for stream in adoption.get("streams", []) if stream.get("enabled", True)]
         candidate_offline = candidate.get("status") == "offline"
         runtime_stalled = (
             str(adoption.get("camera_uuid")) in runtime_stalled_camera_uuids
@@ -1937,6 +1946,40 @@ def set_camera_stream_address(
             "address_mode": request.address_mode,
         }
     )
+
+
+@app.post("/internal/cameras/{camera_uuid}/stream-settings", include_in_schema=False)
+def set_camera_stream_settings(
+    camera_uuid: str,
+    request: CameraStreamSettingsRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-camera-stream-settings":
+        raise HTTPException(status_code=400, detail="Missing stream settings action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.camera(camera_uuid) is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    with MEDIA_LOCK:
+        try:
+            repository.set_stream_settings(camera_uuid, request.enabled, request.roles)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            sources = repository.managed_stream_sources()
+            revision, _ = repository.record_desired_media_revision(sources)
+            # DELETE also removes persisted config. The subsequent shared restart
+            # closes orphaned consumers still attached to removed stream objects.
+            reconcile_streams(sources)
+            replace_streams(sources)
+            repository.complete_media_revision(revision, "applied")
+            repository.enqueue_relay_restart_notification(reason="stream_settings_changed", camera_count=0)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=(
+                "Settings saved, but media relay update failed. Save again to retry."
+            )) from exc
+    _queue_frigate_reconciliation()
+    return _secured_json({"status": "updated"})
 
 
 @app.post("/internal/cameras/{camera_uuid}/credentials", include_in_schema=False)

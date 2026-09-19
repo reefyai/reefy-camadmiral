@@ -251,6 +251,17 @@ Documentation screenshots use synthetic device identities and TEST-NET addresses
 
 **Need another notification service?** Please open a PR with the provider.
 
+## Stream settings
+
+Open a camera's **Streams** dialog to enable or disable each stream and assign
+**Record** and **Detect**. Both roles can use the same stream. For a limited-bandwidth
+connection, disable the high-resolution stream and assign both roles to the low-resolution one.
+
+**Save stream settings** stops disabled streams, including health probes, and updates
+existing Frigate selections. Saving briefly reconnects all streams through the shared media
+relay. Settings survive restarts and camera address recovery; re-enabling a stream restores
+its original URL. Disabled streams are omitted from the consumer API.
+
 ## Frigate integration
 
 Use **Find Frigate** in Settings > Integrations to find local Frigate APIs on
