@@ -1,4 +1,13 @@
-# CamAdmiral v2026.09.19-00
+# CamAdmiral v2026.09.19-01
+
+- Enable or disable individual streams and assign Record and Detect in the Streams dialog.
+  Both roles can use the low-resolution stream for limited-bandwidth cameras.
+- Disabled streams are not restreamed or health-probed and are omitted from the consumer API.
+  Re-enabling retains their original IDs and URLs.
+- Save updates existing Frigate selections and briefly reconnects all streams through one
+  shared relay restart. Settings persist across restarts and camera address recovery.
+
+Also includes the authentication recovery improvements from the previous dev candidate:
 
 - Automatically retry authentication-failed streams after one minute, then five,
   fifteen, and thirty minutes, capped at thirty minutes between attempts.
