@@ -154,6 +154,13 @@ Snapshots wait up to 30 seconds for a decoded frame (configurable with
 so slow snapshots do not block active-stream monitoring. Selected streams are
 checked independently: a failed thumbnail does not mark another stream offline.
 
+Authentication errors are retried automatically after one minute, then five,
+fifteen, and thirty minutes, with subsequent attempts every thirty minutes.
+Retry timing survives restarts. Recovery checks are bounded and run one at a time
+per camera; a decoded video frame is required before clearing the error.
+Updating credentials uses the existing immediate validation flow. Working sibling
+streams keep their own health status, and camera URLs are not rewritten.
+
 Stop CamAdmiral without removing its container, credentials, or data:
 
 ```console

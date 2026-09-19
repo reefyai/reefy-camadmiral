@@ -15,6 +15,7 @@ class SnapshotHealthTests(unittest.TestCase):
     def pending_monitor(self):
         from concurrent.futures import Future
         repo = Mock()
+        repo.auth_retry_schedule.return_value = {}
         repo.managed_stream_sources.return_value = [self.source('one')]
         monitor = RelayHealthMonitor()
         monitor._snapshot_executor = Mock()
@@ -41,6 +42,7 @@ class SnapshotHealthTests(unittest.TestCase):
 
     def test_waiting_snapshot_does_not_trigger_early_address_recovery(self):
         repo = Mock()
+        repo.auth_retry_schedule.return_value = {}
         repo.managed_stream_runtime_sources.return_value = [self.source('one')]
         monitor = RelayRuntimeActivityMonitor(stall_threshold=5)
         with patch('camadmiral.media._request', return_value=self.runtime('CamAdmiral-Snapshot')), \
@@ -54,6 +56,7 @@ class SnapshotHealthTests(unittest.TestCase):
         entered = threading.Event()
         sources = [self.source(str(i)) for i in range(8)]
         repo = Mock()
+        repo.auth_retry_schedule.return_value = {}
         repo.managed_stream_sources.return_value = sources
         monitor = RelayHealthMonitor()
 
@@ -89,6 +92,7 @@ class SnapshotHealthTests(unittest.TestCase):
         from concurrent.futures import Future
         source = self.source('one')
         repo = Mock()
+        repo.auth_retry_schedule.return_value = {}
         repo.managed_stream_sources.return_value = [source]
         monitor = RelayHealthMonitor()
         future = Future()
@@ -104,6 +108,7 @@ class SnapshotHealthTests(unittest.TestCase):
     def test_busy_snapshot_worker_is_not_camera_failure(self, request):
         from concurrent.futures import Future
         repo = Mock()
+        repo.auth_retry_schedule.return_value = {}
         repo.managed_stream_sources.return_value = [self.source('one')]
         monitor = RelayHealthMonitor()
         future = Future()

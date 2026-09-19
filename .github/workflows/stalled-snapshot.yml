@@ -1,12 +1,23 @@
 name: Stalled snapshot regression
 on:
   push:
-    branches: ["fix-snapshot-health"]
+    branches: ["fix-snapshot-health", "fix-auth-retry"]
   workflow_dispatch:
   workflow_call:
 permissions:
   contents: read
 jobs:
+  auth-retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 e2e/auth_retry.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: auth-retry-evidence
+          path: e2e-artifacts/auth-retry/
   snapshot-health:
     runs-on: ubuntu-latest
     timeout-minutes: 15

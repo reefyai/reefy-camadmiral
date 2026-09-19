@@ -82,11 +82,11 @@ def driver():
     print('PASS: delayed frame decoded; profile failure isolated; automatic recovery and stable URLs', flush=True)
 
 
-def host():
+def host(driver_file='snapshot_health.py', artifact_name='snapshot-health'):
     root = Path(__file__).resolve().parents[1]
-    artifacts = root / 'e2e-artifacts/snapshot-health'
+    artifacts = root / 'e2e-artifacts' / artifact_name
     artifacts.mkdir(parents=True, exist_ok=True)
-    compose = ['docker', 'compose', '-p', 'camadmiral-snapshot-health-e2e',
+    compose = ['docker', 'compose', '-p', 'camadmiral-' + artifact_name + '-e2e',
                '-f', str(root / 'e2e/compose.yaml'), '-f', str(root / 'e2e/stalled-snapshot-compose.yaml'),
                '-f', str(root / 'e2e/snapshot-health-compose.yaml')]
 
@@ -102,7 +102,7 @@ def host():
     try:
         run('build', 'camadmiral')
         run('up', '-d', 'camera-open', 'stalled-camera', 'camadmiral')
-        run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/snapshot_health.py', 'driver')
+        run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/' + driver_file, 'driver')
         run('exec', '-T', 'camadmiral', 'python', '/e2e/stalled_snapshot.py', 'measure')
     finally:
         (artifacts / 'container.log').write_text(run('logs', '--no-color', 'camadmiral', check=False))

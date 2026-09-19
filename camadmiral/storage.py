@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 import secrets
 import urllib.parse
 import uuid
@@ -415,6 +416,13 @@ MIGRATIONS: tuple[str, ...] = (
     );
     """,
 
+    """
+    CREATE TABLE stream_auth_retries (
+        stream_uuid TEXT PRIMARY KEY REFERENCES managed_streams(stream_uuid) ON DELETE CASCADE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt REAL NOT NULL
+    );
+    """,
 )
 
 
@@ -2495,6 +2503,13 @@ class CameraRepository:
                 ).fetchone()
                 if current is None:
                     continue
+                if result.status == "auth_failed":
+                    connection.execute(
+                        "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) VALUES (?, ?)",
+                        (stream_uuid, time.time() + 60),
+                    )
+                elif result.status == "ready":
+                    connection.execute("DELETE FROM stream_auth_retries WHERE stream_uuid=?", (stream_uuid,))
                 affected_cameras.add(str(current["camera_uuid"]))
                 failures = 0 if result.status in {"ready", "idle"} else int(current["consecutive_failures"]) + 1
                 if result.status == "ready":
@@ -2563,3 +2578,36 @@ class CameraRepository:
                 )
             ]
         self.record_probe_results({stream_uuid: result for stream_uuid in stream_ids})
+
+    def auth_retry_schedule(self) -> dict[str, float]:
+        with self.connect() as connection:
+            # Also enroll streams already stuck before this feature was installed.
+            connection.execute(
+                "DELETE FROM stream_auth_retries WHERE stream_uuid IN "
+                "(SELECT stream_uuid FROM managed_streams WHERE health_status != 'auth_failed')"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) "
+                "SELECT stream_uuid, ? FROM managed_streams WHERE health_status='auth_failed'",
+                (time.time() + 60,),
+            )
+            rows = connection.execute("SELECT stream_uuid, next_attempt FROM stream_auth_retries").fetchall()
+            connection.commit()
+        return {str(row['stream_uuid']): float(row['next_attempt']) for row in rows}
+
+    def claim_auth_retry(self, stream_uuid: str, now: float) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT attempts FROM stream_auth_retries WHERE stream_uuid=? AND next_attempt<=?",
+                (stream_uuid, now),
+            ).fetchone()
+            if row is None:
+                return False
+            delay = (300, 900, 1800)[min(int(row['attempts']), 2)]
+            connection.execute(
+                "UPDATE stream_auth_retries SET attempts=attempts+1, next_attempt=? WHERE stream_uuid=?",
+                (now + delay, stream_uuid),
+            )
+            connection.commit()
+        return True

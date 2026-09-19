@@ -1,6 +1,7 @@
 """Synthetic RTSP fault: keep control replies working but discard media packets."""
 import asyncio
 import re
+import json
 import time
 from urllib.parse import urlsplit, parse_qs
 
@@ -8,10 +9,12 @@ stalled = False
 dropped = 0
 stalled_path = None
 delay_until = 0.0
+rejected_path = None
+auth_requests = 0
 
 
 async def control(reader, writer):
-    global stalled, stalled_path, delay_until
+    global stalled, stalled_path, delay_until, rejected_path
     line = await reader.readline()
     path = line.split()[1]
     if path == b'/stall':
@@ -20,12 +23,17 @@ async def control(reader, writer):
         stalled = False
         stalled_path = None
         delay_until = 0.0
+        rejected_path = None
+    elif path.startswith(b'/reject/'):
+        rejected_path = path.removeprefix(b'/reject/').decode()
     elif path.startswith(b'/stall/'):
         stalled_path = path.removeprefix(b'/stall/').decode()
     elif path.startswith(b'/delay?'):
         seconds = float(parse_qs(urlsplit(path.decode()).query)['seconds'][0])
         delay_until = time.monotonic() + max(0, min(60, seconds))
     body = f'stalled={stalled} dropped={dropped}'.encode()
+    if path == b'/auth-stats':
+        body = json.dumps({'requests': auth_requests}).encode()
     writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: '
                  + str(len(body)).encode() + b'\r\n\r\n' + body)
     await writer.drain()
@@ -43,15 +51,33 @@ async def relay(reader, writer):
 
         async def requests():
             nonlocal stream_name
-            while data := await reader.read(65536):
+            global auth_requests
+            while True:
+                first = await reader.readexactly(1)
+                if first == b'$':
+                    header = await reader.readexactly(3)
+                    data = first + header + await reader.readexactly(int.from_bytes(header[1:], 'big'))
+                else:
+                    data = first + await reader.readuntil(b'\r\n\r\n')
+                    length = next((int(line.split(b':', 1)[1]) for line in data.split(b'\r\n')
+                                   if line.lower().startswith(b'content-length:')), 0)
+                    data += await reader.readexactly(length)
                 match = re.search(rb'(?:DESCRIBE|PLAY) (rtsp://[^\s]+)', data)
                 if match:
                     stream_name = urlsplit(match.group(1).decode()).path.strip('/')
+                if data.startswith(b'DESCRIBE ') and stream_name == rejected_path:
+                    auth_requests += 1
+                    cseq = re.search(rb'(?im)^CSeq:\s*(\d+)', data).group(1)
+                    writer.write(b'RTSP/1.0 401 Unauthorized\r\nCSeq: ' + cseq +
+                                 b'\r\nWWW-Authenticate: Digest realm="synthetic", nonce="test-nonce"\r\nContent-Length: 0\r\n\r\n')
+                    await writer.drain()
+                    continue
                 upstream.write(data)
                 await upstream.drain()
             upstream.close()
 
         task = asyncio.create_task(requests())
+        task.add_done_callback(lambda _: upstream.close())
         while True:
             first = await source.readexactly(1)
             if first == b'$':

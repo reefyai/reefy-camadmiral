@@ -100,6 +100,45 @@ class RelayHealthMonitor:
         self._thumbnail_cache_max_bytes = max(1, thumbnail_cache_max_bytes)
         self._frames: dict[str, CachedFrame] = {}
         self._frame_lock = threading.Lock()
+        self._auth_executor = None
+        self._pending_auth: dict[str, tuple[Any, dict[str, str], float]] = {}
+
+    def _retry_authentication(self, repository: Any) -> None:
+        schedule = repository.auth_retry_schedule()
+        if not schedule and not self._pending_auth:
+            return
+        sources = {s['stream_uuid']: s for s in repository.managed_stream_sources(role_bound_only=True)
+                   if s['stream_uuid'] in schedule}
+        for camera_uuid, (future, source, started) in list(self._pending_auth.items()):
+            if not future.done():
+                continue
+            del self._pending_auth[camera_uuid]
+            uid = source['stream_uuid']
+            # Credential edits, unadoption and address changes invalidate old work.
+            if sources.get(uid) != source:
+                continue
+            try:
+                future.result()
+            except Exception:
+                # Do not erase an auth failure on a timeout or local capacity error.
+                continue
+            repository.record_probe_results({uid: ProbeResult('ready', round((time.monotonic() - started) * 1000))})
+            sources.pop(uid, None)
+        now = time.time()
+        capacity = max(1, min(PROBE_WORKERS, 4))
+        for uid in sorted(sources, key=lambda uid: schedule[uid]):
+            source = sources[uid]
+            camera_uuid = source['camera_uuid']
+            if len(self._pending_auth) >= capacity:
+                break
+            if camera_uuid in self._pending_auth or schedule[uid] > now:
+                continue
+            if not repository.claim_auth_retry(uid, now):
+                continue
+            if self._auth_executor is None:
+                self._auth_executor = ThreadPoolExecutor(max_workers=capacity)
+            future = self._auth_executor.submit(_validate_auth_video, dict(source))
+            self._pending_auth[camera_uuid] = (future, dict(source), time.monotonic())
 
     def cache_frame(self, camera_uuid: str, content: bytes) -> CachedFrame:
         frame = CachedFrame(content=content, captured_at=time.time())
@@ -222,6 +261,7 @@ class RelayHealthMonitor:
         return None
 
     def probe(self, repository: Any) -> dict[str, ProbeResult]:
+        self._retry_authentication(repository)
         started = time.monotonic()
         sources = repository.managed_stream_sources(
             include_auth_failed=False,
@@ -280,7 +320,13 @@ class RelayHealthMonitor:
                 failures = self._failure_samples.get(stream_uuid, 0) + 1
                 self._failure_samples[stream_uuid] = failures
                 if failures == 2:
-                    diagnostic_sources.setdefault(str(source["camera_uuid"]), source)
+                    camera_uuid = str(source['camera_uuid'])
+                    if camera_uuid in diagnostic_sources:
+                        # Serialize diagnostics, but let the sibling take its
+                        # turn next cycle instead of missing its only check.
+                        self._failure_samples[stream_uuid] = 1
+                    else:
+                        diagnostic_sources[camera_uuid] = source
             else:
                 self._failure_samples.pop(stream_uuid, None)
         if diagnostic_sources:
@@ -293,17 +339,17 @@ class RelayHealthMonitor:
                         source["uri"],
                         source["username"],
                         source["password"],
-                    ): camera_uuid
+                    ): source['stream_uuid']
                     for camera_uuid, source in diagnostic_sources.items()
                 }
                 for future in as_completed(diagnostics):
-                    camera_uuid = diagnostics[future]
+                    stream_uuid = diagnostics[future]
                     try:
                         diagnostic = future.result()
                     except Exception:
                         continue
                     if diagnostic.status == "auth_failed":
-                        auth_failures[camera_uuid] = diagnostic
+                        auth_failures[stream_uuid] = diagnostic
         for stream_uuid in set(self._video_samples) - active_ids:
             self._video_samples.pop(stream_uuid, None)
         for stream_uuid in set(self._failure_samples) - active_ids:
@@ -315,14 +361,8 @@ class RelayHealthMonitor:
         with self._frame_lock:
             for camera_uuid in set(self._frames) - active_camera_ids:
                 self._frames.pop(camera_uuid, None)
-        failed_camera_ids = set(auth_failures)
-        repository.record_probe_results({
-            stream_uuid: result
-            for stream_uuid, result in results.items()
-            if str(source_by_stream[stream_uuid]["camera_uuid"]) not in failed_camera_ids
-        })
-        for camera_uuid, result in auth_failures.items():
-            repository.record_camera_auth_failure(camera_uuid, result)
+        results.update(auth_failures)
+        repository.record_probe_results(results)
         return results
 
 
@@ -576,6 +616,22 @@ def snapshot_frame(stream_key: str, *, rtsp_password: str, width: int = 960) -> 
     return image
 
 
+def _validate_auth_video(source: dict[str, str]) -> None:
+    """One bounded direct connection; successful RTSP metadata alone is insufficient."""
+    deadline = time.monotonic() + SNAPSHOT_TIMEOUT
+    if not _SNAPSHOT_SLOTS.acquire(timeout=SNAPSHOT_TIMEOUT):
+        raise SnapshotBusyError('Snapshot service is busy')
+    try:
+        uri = authenticated_rtsp_uri(source['uri'], source['username'], source['password'])
+        image = _snapshot_jpeg(uri, THUMBNAIL_WIDTH, deadline)
+        if not image.startswith(b'\xff\xd8\xff') or not image.endswith(b'\xff\xd9'):
+            raise SnapshotError('Snapshot service returned invalid JPEG data')
+    except Exception:
+        raise SnapshotError('Authentication recovery video is unavailable') from None
+    finally:
+        _SNAPSHOT_SLOTS.release()
+
+
 def go2rtc_websocket_url(stream_key: str) -> str:
     if not stream_key.startswith("stream_") or not stream_key.removeprefix("stream_"):
         raise ValueError("Invalid managed stream")
@@ -740,9 +796,6 @@ def probe_upstreams(repository: Any) -> dict[str, ProbeResult]:
     for camera_uuid, camera_sources in grouped.items():
         first = camera_sources[0]
         result = first_results[first["stream_uuid"]]
-        if result.status == "auth_failed":
-            repository.record_camera_auth_failure(camera_uuid, result)
-            continue
         results[first["stream_uuid"]] = result
         remaining.extend(camera_sources[1:])
     if remaining:
