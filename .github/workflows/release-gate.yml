@@ -152,7 +152,17 @@ jobs:
 
       - name: Run isolated E2E lab
         if: needs.classify-changes.outputs.e2e == 'true'
-        run: python3 e2e/run.py
+        run: python3 -u e2e/run.py
+
+      - name: Upload E2E timing
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: camadmiral-e2e-timing
+          path: |
+            e2e-artifacts/timings.jsonl
+            e2e-artifacts/timings.md
+          if-no-files-found: ignore
 
       - name: Upload UI E2E failure screenshot
         if: failure()

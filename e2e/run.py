@@ -10,11 +10,13 @@ from pathlib import Path
 
 from frame_fingerprint import fingerprint_distance
 from launcher import run_launcher
+from timing import Timings
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_DIR = ROOT / "e2e-artifacts"
 TRANSCRIPT = ARTIFACT_DIR / "e2e-transcript.log"
+TIMINGS = Timings(ARTIFACT_DIR / "timings.jsonl")
 COMPOSE_FILE = ROOT / "e2e" / "compose.yaml"
 COMPOSE = [
     "docker",
@@ -33,6 +35,14 @@ COMPOSE = [
 
 
 def run(*arguments: str, capture: bool = False) -> str:
+    # Only a short operation label goes into timing artifacts, not command payloads.
+    operation = arguments[0] if arguments else "compose"
+    label = " ".join(arguments) if operation in {"up", "stop", "start", "restart", "build", "down", "rm"} else operation
+    with TIMINGS.measure("command", label):
+        return _run(*arguments, capture=capture)
+
+
+def _run(*arguments: str, capture: bool = False) -> str:
     command = [*COMPOSE, *arguments]
     completed = subprocess.run(
         command,
@@ -64,7 +74,8 @@ def run(*arguments: str, capture: bool = False) -> str:
 
 
 def scenario(name: str) -> None:
-    run("run", "--rm", "test-driver", name)
+    with TIMINGS.measure("scenario", name):
+        run("run", "--rm", "test-driver", name)
 
 
 def identity_consumer() -> dict[str, object]:
@@ -454,6 +465,11 @@ def wait_for_identity_consumer_advancement(
 
 
 def ui_scenario(name: str | None = None) -> None:
+    with TIMINGS.measure("browser", name or "dashboard"):
+        _ui_scenario(name)
+
+
+def _ui_scenario(name: str | None = None) -> None:
     published = run("port", "camadmiral", "18080", capture=True)
     if not published:
         raise RuntimeError("CamAdmiral E2E web port was not published")
@@ -482,6 +498,7 @@ def main() -> int:
     started = time.monotonic()
     ARTIFACT_DIR.mkdir(exist_ok=True)
     TRANSCRIPT.write_text("", encoding="utf-8")
+    TIMINGS.reset()
     try:
         run("down", "--volumes", "--remove-orphans")
         run("build", "camadmiral")
@@ -686,7 +703,8 @@ def main() -> int:
         run("up", "--detach", "camera-onvif-reidentified")
         scenario("identity-replacement")
         run("down", "--volumes", "--remove-orphans")
-        run_launcher()
+        with TIMINGS.measure("launcher", "install-stop-start-update"):
+            run_launcher()
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"CamAdmiral E2E failed: {exc}", file=sys.stderr)
         with TRANSCRIPT.open("a", encoding="utf-8") as transcript:
@@ -753,6 +771,11 @@ def main() -> int:
                 run("down", "--volumes", "--remove-orphans")
             except (OSError, subprocess.CalledProcessError):
                 pass
+        summary = TIMINGS.summary()
+        (ARTIFACT_DIR / "timings.md").write_text(summary, encoding="utf-8")
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+                output.write(summary + "\n")
     print(f"CamAdmiral E2E passed in {time.monotonic() - started:.1f}s")
     return 0
 
