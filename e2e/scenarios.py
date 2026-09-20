@@ -3049,6 +3049,34 @@ def identity_outage_start() -> None:
     print("identity-outage-start: recovery deadline started before camera shutdown")
 
 
+# An idle profile can wait one 60s period, then require three failed 30s
+# samples plus health-cycle collection/scheduling and bounded diagnostics.
+# Keep production timings unchanged; retain the requirement for BOTH incidents.
+IDENTITY_OFFLINE_INCIDENT_TIMEOUT = 240
+
+
+def completed_recovery_scan_id(scan: dict, before: dict) -> str | None:
+    device = next((item for item in scan.get("devices", [])
+                   if str(item.get("candidate_uuid")) == str(before["candidate_uuid"])), None)
+    # Running/queued scan responses retain the last completed inventory and log.
+    # The live scanner flag belongs to the NEXT scan and can change between polls.
+    completed_id = scan.get("inventory_scan_id")
+    if scan.get("status") == "complete":
+        completed_id = scan.get("scan_id")
+    lines = [str(line) for line in scan.get("raw_log", [])]
+    try:
+        completed_at = datetime.fromisoformat(str(scan.get("completed_at"))).timestamp()
+    except (TypeError, ValueError):
+        return None
+    if (not completed_id or completed_id == before.get("scan_id")
+            or completed_at < float(before["outage_started_at"])
+            or device is None or device.get("status") != "offline"
+            or not any(line.endswith(f"RECOVERY: target candidate {before['candidate_uuid']}") for line in lines)
+            or not any("RECOVERY: complete in " in line for line in lines)):
+        return None
+    return str(completed_id)
+
+
 def identity_recovery_missed_scan() -> None:
     before = _load_identity_state()
     observation: dict[str, object] = {}
@@ -3073,15 +3101,10 @@ def identity_recovery_missed_scan() -> None:
                 "raw_log": raw_log[-500:],
             }
         )
-        if (
-            scan.get("scan_id") == before.get("scan_id")
-            or (scan.get("scanners") or {}).get("recovery") != "complete"
-            or device is None
-            or device.get("status") != "offline"
-            or f"RECOVERY: target candidate {before['candidate_uuid']}" not in raw_log
-        ):
+        completed_id = completed_recovery_scan_id(scan, before)
+        if completed_id is None:
             return None
-        return scan
+        return {**scan, "scan_id": completed_id}
 
     try:
         missed = wait_for(
@@ -3113,7 +3136,7 @@ def identity_recovery_missed_scan() -> None:
         wait_for(
             "offline incidents for both rebooting cameras",
             both_offline_incidents_open,
-            timeout=90,
+            timeout=IDENTITY_OFFLINE_INCIDENT_TIMEOUT,
             interval=2,
         )
     except ScenarioFailure as exc:
