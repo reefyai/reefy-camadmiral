@@ -347,7 +347,8 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertNotIn('addText(endpoint, "div", `media-state', self.html)
 
     def test_stream_roles_use_enabled_stream_dropdowns(self) -> None:
-        self.assertIn('addDetailSection(wrapper, "Roles")', self.html)
+        self.assertIn('"details", "detail-section stream-roles"', self.html)
+        self.assertIn('rolesSection.open = Boolean(draft.rolesExpanded)', self.html)
         self.assertIn('for (const role of ["record", "detect"])', self.html)
         self.assertIn('if (!draft.enabled.includes(stream.stream_uuid)) continue;', self.html)
         self.assertIn('select.append(new Option(optionLabel, stream.stream_uuid))', self.html)

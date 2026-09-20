@@ -1,4 +1,6 @@
-# CamAdmiral v2026.09.20-02
+# CamAdmiral v2026.09.20-03
+
+- Collapse Roles by default, preserve expansion during refreshes, and keep Save visible.
 
 - Include saved camera credentials in copied source URLs while masking displayed passwords.
 - Keep camera source sections expanded across dialog refreshes until closed by the user.

@@ -142,6 +142,7 @@ def host():
             row.get_by_role('button', name='Streams', exact=True).click()
             main = page.get_by_label('Main settings', exact=True)
             main.get_by_label('Enabled', exact=True).uncheck()
+            page.locator('.stream-roles > summary').click()
             sub_option = page.get_by_role('combobox', name='Detect', exact=True).locator('option').filter(has_text='Sub').get_attribute('value')
             page.get_by_role('combobox', name='Record', exact=True).select_option(sub_option)
             page.get_by_role('combobox', name='Detect', exact=True).select_option(sub_option)

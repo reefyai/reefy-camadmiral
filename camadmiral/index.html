@@ -626,6 +626,8 @@
     .stream-enabled-control label { min-height: 32px; gap: 8px; width: fit-content; }
     .stream-enabled-control input { width: 18px; height: 18px; flex-shrink: 0; }
     .stream-role-choices { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .stream-roles > summary { cursor: pointer; list-style-position: inside; }
+    .stream-roles[open] > summary { margin-bottom: 14px; }
     .stream-role-choice { display: grid; gap: 6px; color: #b8c7d2; font-size: 12px; min-width: 0; }
     .stream-role-choice select { width: 100%; min-width: 0; padding: 8px; border-radius: 7px; border: 1px solid #2a3c4c; background: #0c1a2a; color: #e0eaf0; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
@@ -3531,7 +3533,12 @@
           addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, managed.enabled === 0 || managed.enabled === false ? "Disabled" : [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
-      const rolesSection = addDetailSection(wrapper, "Roles");
+      const rolesSection = addText(wrapper, "details", "detail-section stream-roles", "");
+      rolesSection.open = Boolean(draft.rolesExpanded);
+      addText(rolesSection, "summary", "detail-title", "Roles");
+      rolesSection.addEventListener("toggle", () => {
+        if (rolesSection.isConnected) draft.rolesExpanded = rolesSection.open;
+      });
       const choices = addText(rolesSection, "div", "stream-role-choices", "");
       for (const role of ["record", "detect"]) {
         const label = addText(choices, "label", "stream-role-choice", role === "record" ? "Record" : "Detect");
@@ -3558,11 +3565,14 @@
         select.addEventListener("change", () => { draft.roles[role] = select.value; draft.message = ""; });
         label.append(select);
       }
-      addText(rolesSection, "p", "detail-message", "One stream can serve both roles. Saving briefly reconnects all camera streams and updates selected Frigate destinations.");
-      const save = addText(rolesSection, "button", "row-action", draft.saving ? "Saving..." : "Save stream settings");
+      addText(rolesSection, "p", "detail-message", "One stream can serve both roles.");
+      const actions = addText(wrapper, "div", "stream-settings-actions", "");
+      addText(actions, "p", "detail-message", "Saving briefly reconnects all camera streams and updates selected Frigate destinations.");
+      const save = addText(actions, "button", "row-action", draft.saving ? "Saving..." : "Save stream settings");
       save.disabled = draft.saving;
       save.addEventListener("click", async () => {
         if (!["record", "detect"].every(role => draft.enabled.includes(draft.roles[role]))) {
+          draft.rolesExpanded = true;
           draft.message = "Choose an enabled stream for both Record and Detect.";
           renderActiveCameraModal();
           return;
@@ -3585,7 +3595,7 @@
         finally { draft.saving = false; renderActiveCameraModal(); }
       });
       if (draft.message) {
-        const message = addText(rolesSection, "p", "detail-message", draft.message);
+        const message = addText(actions, "p", "detail-message", draft.message);
         message.setAttribute("role", "status");
       }
       return wrapper;
