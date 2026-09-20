@@ -339,7 +339,7 @@ class DiscoveryUiTests(unittest.TestCase):
     def test_camera_source_is_stacked_under_downstream_with_masked_password(self) -> None:
         self.assertIn('const metadata = addText(row, "div", "profile-metadata", "")', self.html)
         self.assertIn('addText(metadata, "div", "profile-specs", specifications)', self.html)
-        self.assertIn("addCameraSource(endpoint, profile.uri)", self.html)
+        self.assertIn("addCameraSource(endpoint, profile.uri, cameraUuid, managed?.stream_uuid)", self.html)
         self.assertIn('"Camera source URL"', self.html)
         self.assertIn("url.password = downstreamPasswordMask", self.html)
         self.assertNotIn("Show camera source", self.html)

@@ -1,4 +1,7 @@
-# CamAdmiral v2026.09.20-01
+# CamAdmiral v2026.09.20-02
+
+- Include saved camera credentials in copied source URLs while masking displayed passwords.
+- Keep camera source sections expanded across dialog refreshes until closed by the user.
 
 - Collapse camera source URLs by default while retaining password masking and copying.
 - Give Enabled controls more spacing and a larger clickable label.

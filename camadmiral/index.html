@@ -1085,6 +1085,8 @@
     const identityHistoryResults = new Map();
     const streamAddressModes = new Map();
     const streamSettingsDrafts = new Map();
+    const cameraSourceExpanded = new Set();
+    const cameraSourceAccess = new Map();
     const streamAddressSaveChains = new Map();
     const streamAddressSaveErrors = new Map();
     const rowAvailabilityResults = new Map();
@@ -1129,6 +1131,8 @@
     function closeAppModal(restoreFocus = true) {
       if (appModal.hidden) return;
       if (appModalKind === "streams") {
+        cameraSourceExpanded.clear();
+        cameraSourceAccess.clear();
         for (const [id, draft] of streamSettingsDrafts) {
           if (!draft.saving) streamSettingsDrafts.delete(id);
         }
@@ -2830,20 +2834,53 @@
       } catch (_) { return "Source URL unavailable"; }
     }
 
-    function addCameraSource(parent, uri) {
+    function addCameraSource(parent, uri, cameraUuid, streamUuid) {
+      const key = `${cameraUuid}:${streamUuid}`;
       const source = addText(parent, "details", "camera-source-url", "");
+      source.open = cameraSourceExpanded.has(key);
       addText(source, "summary", "downstream-label", "Camera source URL");
       const row = addText(source, "div", "downstream-row", "");
       const display = uri ? maskedSourceUrl(uri) : "Source URL unavailable";
       const value = addText(row, "div", "downstream-url", display);
       value.title = display;
-      if (uri && display !== "Source URL unavailable") {
-        const copy = addText(row, "button", "copy-button", "⧉");
-        copy.type = "button";
-        copy.title = "Copy camera source URL";
-        copy.setAttribute("aria-label", "Copy camera source URL");
-        copy.addEventListener("click", () => copyText(uri, copy));
+      const copy = addText(row, "button", "copy-button", "⧉");
+      copy.type = "button";
+      copy.title = "Copy camera source URL";
+      copy.setAttribute("aria-label", "Copy camera source URL");
+      copy.disabled = true;
+      let fullUri = null;
+      copy.addEventListener("click", () => { if (fullUri) copyText(fullUri, copy); });
+      async function loadSource() {
+        if (!streamUuid) return;
+        value.textContent = "Loading source URL...";
+        if (!cameraSourceAccess.has(key)) {
+          const request = fetch(`/internal/cameras/${encodeURIComponent(cameraUuid)}/streams/${encodeURIComponent(streamUuid)}/source-access`, {
+            method: "POST", headers: {"X-CamAdmiral-Action": "reveal-camera-source"}
+          }).then(async response => {
+            if (!response.ok) throw new Error("Source URL unavailable");
+            return (await response.json()).uri;
+          });
+          cameraSourceAccess.set(key, request);
+        }
+        const request = cameraSourceAccess.get(key);
+        try {
+          fullUri = await request;
+          const masked = maskedSourceUrl(fullUri);
+          value.textContent = masked;
+          value.title = masked;
+          copy.disabled = masked === "Source URL unavailable";
+        } catch (_) {
+          value.textContent = "Source URL unavailable. Close and expand to retry.";
+          value.removeAttribute("title");
+          if (cameraSourceAccess.get(key) === request) cameraSourceAccess.delete(key);
+        }
       }
+      source.addEventListener("toggle", () => {
+        if (!source.isConnected) return;
+        if (source.open) { cameraSourceExpanded.add(key); loadSource(); }
+        else cameraSourceExpanded.delete(key);
+      });
+      if (source.open) loadSource();
     }
 
     function addAdoptionProgress(parent, message) {
@@ -3484,7 +3521,7 @@
         addText(metadata, "div", "profile-specs", specifications);
         const endpoint = addText(row, "div", "stream-access", "");
         addStreamAccess(endpoint, managed, adoption?.enabled !== false && managed?.enabled !== 0 && managed?.enabled !== false, addressMode);
-        addCameraSource(endpoint, profile.uri);
+        addCameraSource(endpoint, profile.uri, cameraUuid, managed?.stream_uuid);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);

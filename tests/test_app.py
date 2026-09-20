@@ -67,6 +67,30 @@ class FakeRepository:
 
 
 class DiscoveryDecorationTests(unittest.TestCase):
+    def test_camera_source_access_uses_saved_credentials_and_disables_caching(self) -> None:
+        repository = Mock()
+        repository.managed_stream_sources.return_value = [{
+            "stream_uuid": "source-one", "uri": "rtsp://192.0.2.10:554/live?q=1",
+            "username": "viewer@example", "password": "synthetic:p@ss/word",
+        }]
+        with patch.object(app_module, "_repository", return_value=repository):
+            response = app_module.camera_source_access("camera-one", "source-one", "reveal-camera-source")
+        self.assertEqual(json.loads(response.body)["uri"],
+                         "rtsp://viewer%40example:synthetic%3Ap%40ss%2Fword@192.0.2.10:554/live?q=1")
+        self.assertIn("no-store", response.headers["cache-control"])
+        repository.managed_stream_sources.assert_called_once_with(camera_uuid="camera-one", include_disabled=True)
+
+    def test_camera_source_access_requires_action_and_matching_stream(self) -> None:
+        with self.assertRaises(app_module.HTTPException) as error:
+            app_module.camera_source_access("camera-one", "source-one", None)
+        self.assertEqual(error.exception.status_code, 400)
+        repository = Mock()
+        repository.managed_stream_sources.return_value = []
+        with patch.object(app_module, "_repository", return_value=repository):
+            with self.assertRaises(app_module.HTTPException) as error:
+                app_module.camera_source_access("camera-one", "other-source", "reveal-camera-source")
+        self.assertEqual(error.exception.status_code, 404)
+
     def test_media_access_reports_current_lan_host_for_url_previews(self) -> None:
         repository = Mock()
         repository.rtsp_access_password.return_value = "synthetic-secret"

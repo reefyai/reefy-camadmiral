@@ -52,6 +52,7 @@ from .frigate import (
     remove_frigate_camera,
 )
 from .media import (
+    authenticated_rtsp_uri,
     ProbeResult,
     RelayHealthMonitor,
     RelayRuntimeActivityMonitor,
@@ -1946,6 +1947,25 @@ def set_camera_stream_address(
             "address_mode": request.address_mode,
         }
     )
+
+
+@app.post("/internal/cameras/{camera_uuid}/streams/{stream_uuid}/source-access", include_in_schema=False)
+def camera_source_access(
+    camera_uuid: str,
+    stream_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "reveal-camera-source":
+        raise HTTPException(status_code=400, detail="Missing camera source action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    sources = repository.managed_stream_sources(camera_uuid=camera_uuid, include_disabled=True)
+    source = next((item for item in sources if item["stream_uuid"] == stream_uuid), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return _secured_json({"uri": authenticated_rtsp_uri(
+        source["uri"], source["username"], source["password"]
+    )})
 
 
 @app.post("/internal/cameras/{camera_uuid}/stream-settings", include_in_schema=False)
