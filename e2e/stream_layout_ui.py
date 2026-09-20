@@ -20,7 +20,7 @@ def main():
               roles: {record: 'main', detect: 'sub'}, streams: ['main', 'sub'].map(id => ({
                 stream_uuid: id, stream_key: id, profile_token: id, name: id,
                 enabled: true, uri: 'rtsp://viewer:synthetic-secret@192.0.2.10/' + id,
-                health_status: 'healthy', width: 640, height: 360
+                health_status: 'healthy', width: 640, height: 360, encoding: 'H264', fps: 20
               }))}};
           devices = [syntheticCamera, {candidate_uuid: 'other', display_name: 'A unadopted',
             ip: '192.0.2.11', online: true, rtsp: []}];
@@ -31,6 +31,7 @@ def main():
             expect(page.locator('#camera-rows tr.camera-row').first).to_contain_text('Z adopted')
         page.get_by_role('button', name='Streams', exact=True).click()
         expect(page.get_by_role('combobox', name='Record', exact=True)).to_have_value('main')
+        expect(page.get_by_role('combobox', name='Record', exact=True).locator('option[value="main"]')).to_have_text('main · 640 × 360 · H264 · 20 fps')
         page.get_by_role('combobox', name='Record', exact=True).select_option('sub')
         expect(page.get_by_role('combobox', name='Detect', exact=True)).to_have_value('sub')
         page.get_by_label('main settings', exact=True).get_by_label('Enabled', exact=True).uncheck()
@@ -38,6 +39,9 @@ def main():
         expect(page.get_by_role('combobox', name='Record', exact=True)).to_have_value('sub')
         assert page.evaluate('streamSettingsDrafts.get("synthetic-camera").roles') == {'record': 'sub', 'detect': 'sub'}
         assert page.locator('.camera-source-url').count() == 2
+        assert page.locator('.camera-source-url[open]').count() == 0
+        expect(page.get_by_role('button', name='Copy camera source URL', exact=True).first).not_to_be_visible()
+        page.locator('.camera-source-url summary').first.click()
         assert 'synthetic-secret' not in page.locator('.stream-details').inner_text()
         assert '********' in page.locator('.camera-source-url').first.inner_text()
         assert page.evaluate('maskedSourceUrl("rtsp://viewer:secret@192.0.2.10/live?password=secret")').count('secret') == 0
@@ -46,6 +50,13 @@ def main():
         assert page.evaluate('window.copied') == 'rtsp://viewer:synthetic-secret@192.0.2.10/main'
         for width in (1280, 390):
             page.set_viewport_size({'width': width, 'height': 1000})
+            assert page.evaluate('''() => {
+              const roles = [...document.querySelectorAll('.stream-role-choice')].map(el => el.getBoundingClientRect());
+              const identity = document.querySelector('.stream-identity');
+              return roles[1].top >= roles[0].bottom &&
+                identity.querySelector('.stream-enabled-control').getBoundingClientRect().top >=
+                identity.querySelector('.profile-name').getBoundingClientRect().bottom + 12;
+            }''')
             assert page.evaluate('''() => [...document.querySelectorAll('.stream-access')].every(el => {
               const source = el.querySelector('.camera-source-url').getBoundingClientRect();
               const downstream = el.querySelector('.downstream-row').getBoundingClientRect();

@@ -1,4 +1,8 @@
-# CamAdmiral v2026.09.20-00
+# CamAdmiral v2026.09.20-01
+
+- Collapse camera source URLs by default while retaining password masking and copying.
+- Give Enabled controls more spacing and a larger clickable label.
+- Stack role dropdowns and include resolution, codec, and FPS in stream options.
 
 - Simplify Streams with stacked downstream and camera source URLs and masked passwords.
 - Select Record and Detect streams in a separate Roles section using dropdowns.

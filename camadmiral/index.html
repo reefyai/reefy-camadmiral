@@ -620,7 +620,12 @@
     .endpoint + .endpoint { margin-top: 5px; }
     .stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0; align-self: center; }
     .camera-source-url { margin-top: 12px; }
-    .stream-role-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .camera-source-url summary { cursor: pointer; list-style-position: inside; }
+    .camera-source-url[open] summary { margin-bottom: 8px; }
+    .stream-enabled-control { margin-top: 12px; }
+    .stream-enabled-control label { min-height: 32px; gap: 8px; width: fit-content; }
+    .stream-enabled-control input { width: 18px; height: 18px; flex-shrink: 0; }
+    .stream-role-choices { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
     .stream-role-choice { display: grid; gap: 6px; color: #b8c7d2; font-size: 12px; min-width: 0; }
     .stream-role-choice select { width: 100%; min-width: 0; padding: 8px; border-radius: 7px; border: 1px solid #2a3c4c; background: #0c1a2a; color: #e0eaf0; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
@@ -2826,8 +2831,8 @@
     }
 
     function addCameraSource(parent, uri) {
-      const source = addText(parent, "div", "camera-source-url", "");
-      addText(source, "div", "downstream-label", "Camera source URL");
+      const source = addText(parent, "details", "camera-source-url", "");
+      addText(source, "summary", "downstream-label", "Camera source URL");
       const row = addText(source, "div", "downstream-row", "");
       const display = uri ? maskedSourceUrl(uri) : "Source URL unavailable";
       const value = addText(row, "div", "downstream-url", display);
@@ -3446,7 +3451,7 @@
         addText(identity, "div", "profile-name", profile.name || profile.token);
         const managed = adoption?.streams?.find(stream => stream.profile_token === profile.token);
         if (managed) {
-          const controls = addText(identity, "div", "stream-address-options", "");
+          const controls = addText(identity, "div", "stream-address-options stream-enabled-control", "");
           controls.setAttribute("aria-label", `${profile.name || profile.token} settings`);
           {
             const label = addText(controls, "label", "stream-address-option", "");
@@ -3499,7 +3504,18 @@
         placeholder.disabled = true;
         select.append(placeholder);
         for (const stream of adoption.streams) {
-          if (draft.enabled.includes(stream.stream_uuid)) select.append(new Option(stream.name || stream.profile_token, stream.stream_uuid));
+          if (!draft.enabled.includes(stream.stream_uuid)) continue;
+          const width = stream.probed_width || stream.width;
+          const height = stream.probed_height || stream.height;
+          const codec = stream.video_codec || stream.encoding;
+          const fps = stream.probed_fps || stream.fps;
+          const details = [
+            width && height ? `${width} × ${height}` : null,
+            codec ? String(codec).toUpperCase() : null,
+            fps ? `${Number(fps).toFixed(Number(fps) % 1 ? 1 : 0)} fps` : null
+          ].filter(Boolean);
+          const optionLabel = [stream.name || stream.profile_token, ...details].join(" · ");
+          select.append(new Option(optionLabel, stream.stream_uuid));
         }
         select.value = draft.roles[role] || "";
         select.addEventListener("change", () => { draft.roles[role] = select.value; draft.message = ""; });
