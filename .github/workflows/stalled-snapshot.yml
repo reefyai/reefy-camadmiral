@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m pip install -r requirements.txt -r e2e/requirements.txt
       - run: python3 -m playwright install --with-deps webkit
+      - run: python3 e2e/stream_layout_ui.py
       - run: python3 e2e/stream_settings.py
       - uses: actions/upload-artifact@v4
         if: always()

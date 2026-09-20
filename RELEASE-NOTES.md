@@ -1,4 +1,8 @@
-# CamAdmiral v2026.09.19-01
+# CamAdmiral v2026.09.20-00
+
+- Simplify Streams with stacked downstream and camera source URLs and masked passwords.
+- Select Record and Detect streams in a separate Roles section using dropdowns.
+- Keep adopted cameras first in the dashboard while preserving sorting within each group.
 
 - Enable or disable individual streams and assign Record and Detect in the Streams dialog.
   Both roles can use the low-resolution stream for limited-bandwidth cameras.

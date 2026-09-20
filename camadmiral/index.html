@@ -619,6 +619,10 @@
     .endpoint { max-width: 290px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b9fff5; overflow-wrap: anywhere; }
     .endpoint + .endpoint { margin-top: 5px; }
     .stream-access { grid-column: 2; grid-row: 1 / span 2; min-width: 0; align-self: center; }
+    .camera-source-url { margin-top: 12px; }
+    .stream-role-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .stream-role-choice { display: grid; gap: 6px; color: #b8c7d2; font-size: 12px; min-width: 0; }
+    .stream-role-choice select { width: 100%; min-width: 0; padding: 8px; border-radius: 7px; border: 1px solid #2a3c4c; background: #0c1a2a; color: #e0eaf0; }
     .downstream-label { margin-bottom: 5px; color: #7890a4; font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .downstream-row {
       display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px 5px 8px;
@@ -2810,6 +2814,33 @@
       }
     }
 
+    function maskedSourceUrl(value) {
+      try {
+        const url = new URL(value);
+        if (url.password) url.password = downstreamPasswordMask;
+        for (const name of [...url.searchParams.keys()]) {
+          if (/^(password|pass|pwd)$/i.test(name)) url.searchParams.set(name, downstreamPasswordMask);
+        }
+        return url.toString();
+      } catch (_) { return "Source URL unavailable"; }
+    }
+
+    function addCameraSource(parent, uri) {
+      const source = addText(parent, "div", "camera-source-url", "");
+      addText(source, "div", "downstream-label", "Camera source URL");
+      const row = addText(source, "div", "downstream-row", "");
+      const display = uri ? maskedSourceUrl(uri) : "Source URL unavailable";
+      const value = addText(row, "div", "downstream-url", display);
+      value.title = display;
+      if (uri && display !== "Source URL unavailable") {
+        const copy = addText(row, "button", "copy-button", "⧉");
+        copy.type = "button";
+        copy.title = "Copy camera source URL";
+        copy.setAttribute("aria-label", "Copy camera source URL");
+        copy.addEventListener("click", () => copyText(uri, copy));
+      }
+    }
+
     function addAdoptionProgress(parent, message) {
       const progress = addText(parent, "div", "adoption-progress", "");
       const spinner = addText(progress, "span", "inline-spinner", "");
@@ -3417,26 +3448,23 @@
         if (managed) {
           const controls = addText(identity, "div", "stream-address-options", "");
           controls.setAttribute("aria-label", `${profile.name || profile.token} settings`);
-          ["enabled", "record", "detect"].forEach(choice => {
+          {
             const label = addText(controls, "label", "stream-address-option", "");
             const input = document.createElement("input");
             input.type = "checkbox";
-            input.checked = choice === "enabled" ? draft.enabled.includes(managed.stream_uuid) : draft.roles[choice] === managed.stream_uuid;
-            input.disabled = draft.saving || (choice !== "enabled" && !draft.enabled.includes(managed.stream_uuid));
+            input.checked = draft.enabled.includes(managed.stream_uuid);
+            input.disabled = draft.saving;
             input.addEventListener("change", () => {
               draft.message = "";
-              if (choice === "enabled") {
-                draft.enabled = draft.enabled.filter(id => id !== managed.stream_uuid);
-                if (input.checked) draft.enabled.push(managed.stream_uuid);
-                else for (const role of ["record", "detect"]) {
-                  if (draft.roles[role] === managed.stream_uuid) delete draft.roles[role];
-                }
-              } else if (input.checked) draft.roles[choice] = managed.stream_uuid;
-              else delete draft.roles[choice];
+              draft.enabled = draft.enabled.filter(id => id !== managed.stream_uuid);
+              if (input.checked) draft.enabled.push(managed.stream_uuid);
+              else for (const role of ["record", "detect"]) {
+                if (draft.roles[role] === managed.stream_uuid) delete draft.roles[role];
+              }
               renderActiveCameraModal();
             });
-            label.append(input, document.createTextNode(choice[0].toUpperCase() + choice.slice(1)));
-          });
+            label.append(input, document.createTextNode("Enabled"));
+          }
         }
         const width = managed?.probed_width || profile.width;
         const height = managed?.probed_height || profile.height;
@@ -3449,13 +3477,9 @@
         ].filter(Boolean).join(" · ") || "Media details unavailable";
         const metadata = addText(row, "div", "profile-metadata", "");
         addText(metadata, "div", "profile-specs", specifications);
-        const source = document.createElement("details");
-        source.className = "camera-source";
-        addText(source, "summary", "", "Show camera source");
-        addText(source, "div", "endpoint", profile.uri || "No RTSP URI");
-        metadata.append(source);
         const endpoint = addText(row, "div", "stream-access", "");
         addStreamAccess(endpoint, managed, adoption?.enabled !== false && managed?.enabled !== 0 && managed?.enabled !== false, addressMode);
+        addCameraSource(endpoint, profile.uri);
         if (managed) {
           const facts = [];
           if (managed.probe_latency_ms) facts.push(`checked in ${(managed.probe_latency_ms / 1000).toFixed(1)}s`);
@@ -3465,8 +3489,24 @@
           addText(metadata, "div", `media-state ${health === "healthy" ? "ready" : ["unknown", "idle"].includes(health) ? "" : "unavailable"}`, managed.enabled === 0 || managed.enabled === false ? "Disabled" : [labels[health] || "Media check failed", ...facts].join(" · "));
         }
       });
-      addText(streams, "p", "detail-message", "Saving briefly reconnects all camera streams and updates selected Frigate destinations.");
-      const save = addText(streams, "button", "row-action", draft.saving ? "Saving..." : "Save stream settings");
+      const rolesSection = addDetailSection(wrapper, "Roles");
+      const choices = addText(rolesSection, "div", "stream-role-choices", "");
+      for (const role of ["record", "detect"]) {
+        const label = addText(choices, "label", "stream-role-choice", role === "record" ? "Record" : "Detect");
+        const select = document.createElement("select");
+        select.disabled = draft.saving;
+        const placeholder = new Option("Select stream", "");
+        placeholder.disabled = true;
+        select.append(placeholder);
+        for (const stream of adoption.streams) {
+          if (draft.enabled.includes(stream.stream_uuid)) select.append(new Option(stream.name || stream.profile_token, stream.stream_uuid));
+        }
+        select.value = draft.roles[role] || "";
+        select.addEventListener("change", () => { draft.roles[role] = select.value; draft.message = ""; });
+        label.append(select);
+      }
+      addText(rolesSection, "p", "detail-message", "One stream can serve both roles. Saving briefly reconnects all camera streams and updates selected Frigate destinations.");
+      const save = addText(rolesSection, "button", "row-action", draft.saving ? "Saving..." : "Save stream settings");
       save.disabled = draft.saving;
       save.addEventListener("click", async () => {
         if (!["record", "detect"].every(role => draft.enabled.includes(draft.roles[role]))) {
@@ -3492,7 +3532,7 @@
         finally { draft.saving = false; renderActiveCameraModal(); }
       });
       if (draft.message) {
-        const message = addText(streams, "p", "detail-message", draft.message);
+        const message = addText(rolesSection, "p", "detail-message", draft.message);
         message.setAttribute("role", "status");
       }
       return wrapper;
@@ -4061,6 +4101,8 @@
         return !cameraFilter || cameraConnectivity(device) === cameraFilter;
       });
       visible.sort((left, right) => {
+        const adoptionOrder = Number(Boolean(right.adoption)) - Number(Boolean(left.adoption));
+        if (adoptionOrder) return adoptionOrder;
         const a = sortValue(left, sortKey);
         const b = sortValue(right, sortKey);
         return (a < b ? -1 : a > b ? 1 : 0) * sortDirection;

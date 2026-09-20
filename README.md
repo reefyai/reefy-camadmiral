@@ -253,8 +253,8 @@ Documentation screenshots use synthetic device identities and TEST-NET addresses
 
 ## Stream settings
 
-Open a camera's **Streams** dialog to enable or disable each stream and assign
-**Record** and **Detect**. Both roles can use the same stream. For a limited-bandwidth
+Open a camera's **Streams** dialog to enable or disable each stream. In **Roles**, choose
+the **Record** and **Detect** streams from the dropdowns. Both roles can use the same stream. For a limited-bandwidth
 connection, disable the high-resolution stream and assign both roles to the low-resolution one.
 
 **Save stream settings** stops disabled streams, including health probes, and updates

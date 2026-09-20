@@ -336,12 +336,25 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn("overflow-x: auto; overflow-y: hidden", self.html)
         self.assertIn("user-select: text; white-space: nowrap", self.html)
 
-    def test_camera_source_and_health_are_grouped_under_stream_specs(self) -> None:
+    def test_camera_source_is_stacked_under_downstream_with_masked_password(self) -> None:
         self.assertIn('const metadata = addText(row, "div", "profile-metadata", "")', self.html)
         self.assertIn('addText(metadata, "div", "profile-specs", specifications)', self.html)
-        self.assertIn("metadata.append(source)", self.html)
+        self.assertIn("addCameraSource(endpoint, profile.uri)", self.html)
+        self.assertIn('"Camera source URL"', self.html)
+        self.assertIn("url.password = downstreamPasswordMask", self.html)
+        self.assertNotIn("Show camera source", self.html)
         self.assertIn('addText(metadata, "div", `media-state', self.html)
         self.assertNotIn('addText(endpoint, "div", `media-state', self.html)
+
+    def test_stream_roles_use_enabled_stream_dropdowns(self) -> None:
+        self.assertIn('addDetailSection(wrapper, "Roles")', self.html)
+        self.assertIn('for (const role of ["record", "detect"])', self.html)
+        self.assertIn('if (draft.enabled.includes(stream.stream_uuid)) select.append', self.html)
+        self.assertIn('draft.roles[role] = select.value', self.html)
+
+    def test_adopted_cameras_sort_before_unadopted_in_both_directions(self) -> None:
+        self.assertIn('const adoptionOrder = Number(Boolean(right.adoption)) - Number(Boolean(left.adoption))', self.html)
+        self.assertIn('if (adoptionOrder) return adoptionOrder;', self.html)
 
     def test_stream_rows_keep_metadata_clear_of_long_profile_names(self) -> None:
         self.assertIn("grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.6fr)", self.html)
