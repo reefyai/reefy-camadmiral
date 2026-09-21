@@ -69,15 +69,18 @@ def driver(stage):
             assert status()['status'] == 'error'
             assert config()['cameras'][key]['friendly_name'] == camera['name']
         elif stage == 'sync-remove-conflict':
-            from camadmiral.frigate import FrigateClient, FrigateTarget
             import yaml
-            client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate:5000'))
-            raw = client.raw_config()
+            # Exercise Frigate's public API without importing the application
+            # package, which is not on the isolated driver's Python path.
+            raw = yaml.safe_load(json.load(urllib.request.urlopen('http://frigate:5000/api/config/raw', timeout=10)))
             raw['cameras'].pop(key)
             for alias in ('record', 'detect'):
                 raw.get('go2rtc', {}).get('streams', {}).pop(key + '_' + alias, None)
-            client.save_raw_config(yaml.safe_dump(raw, sort_keys=False))
-            client.restart()
+            save = urllib.request.Request('http://frigate:5000/api/config/save?save_option=save',
+                                          data=yaml.safe_dump(raw, sort_keys=False).encode(), method='POST')
+            assert json.load(urllib.request.urlopen(save, timeout=30))['success']
+            restart = urllib.request.Request('http://frigate:5000/api/restart', data=b'', method='POST')
+            assert json.load(urllib.request.urlopen(restart, timeout=30))['success']
         elif stage == 'sync-original':
             request_json(route, method='POST', expected=202, payload={'detect_width': None, 'detect_height': None},
                          headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
