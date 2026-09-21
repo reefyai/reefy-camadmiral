@@ -194,6 +194,8 @@ def host():
         run('restart', 'camadmiral')
         stage('verify')
         stage('reenable')
+        # Docker can allocate a new ephemeral published port after restart.
+        base = 'http://' + run('port', 'camadmiral', '18080')
         with sync_playwright() as playwright:
             browser = playwright.webkit.launch()
             page = browser.new_page(http_credentials={'username': 'admin', 'password': 'synthetic-e2e-admin-password'})
