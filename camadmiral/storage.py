@@ -429,6 +429,11 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE cameras ADD COLUMN stream_settings_custom INTEGER NOT NULL DEFAULT 0
         CHECK(stream_settings_custom IN (0, 1));
     """,
+    """
+    ALTER TABLE frigate_camera_selections ADD COLUMN detect_width INTEGER;
+    ALTER TABLE frigate_camera_selections ADD COLUMN detect_height INTEGER;
+    ALTER TABLE frigate_camera_selections ADD COLUMN sync_error TEXT;
+    """,
 )
 
 
@@ -1923,7 +1928,7 @@ class CameraRepository:
     def frigate_camera_selections(self, target_id: str) -> list[dict[str, str]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT camera_uuid, address_mode FROM frigate_camera_selections "
+                "SELECT camera_uuid, address_mode, detect_width, detect_height, sync_error FROM frigate_camera_selections "
                 "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
                 (target_id,),
             ).fetchall()
@@ -1931,9 +1936,33 @@ class CameraRepository:
             {
                 "camera_uuid": str(row["camera_uuid"]),
                 "address_mode": str(row["address_mode"]),
+                "detect_width": row["detect_width"],
+                "detect_height": row["detect_height"],
+                "sync_error": row["sync_error"],
             }
             for row in rows
         ]
+
+    def set_frigate_detection_resolution(self, target_id, camera_uuid, width, height):
+        if (width is None) != (height is None) or (
+            width is not None and any(type(v) is not int or not 16 <= v <= 8192 or v % 2 for v in (width, height))
+        ):
+            raise ValueError("Detection dimensions must both be even integers from 16 to 8192")
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET detect_width=?, detect_height=? WHERE target_id=? AND camera_uuid=?",
+                (width, height, target_id, camera_uuid),
+            )
+            connection.commit()
+
+    def set_frigate_selection_error(self, target_id, camera_uuid, code):
+        # An error on a selection must not create an ownership binding.
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET sync_error=? WHERE target_id=? AND camera_uuid=?",
+                (code, target_id, camera_uuid),
+            )
+            connection.commit()
 
     def frigate_camera_address_mode(
         self,

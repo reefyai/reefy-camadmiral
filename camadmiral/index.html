@@ -1835,7 +1835,7 @@
       }
       state.cameras.forEach(device => {
         const cameraUuid = device.adoption.camera_uuid;
-        const choice = addText(list, "label", "frigate-camera-choice", "");
+        const choice = addText(list, "div", "frigate-camera-choice", "");
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.checked = state.selected.has(cameraUuid);
@@ -1862,6 +1862,53 @@
         if (cameraState.errorCode) status.title = cameraState.errorCode;
         if (cameraState.help) addText(identity, "span", "frigate-camera-help", cameraState.help);
         addFrigateChooserStreams(identity, state, device);
+        if (state.selected.has(cameraUuid)) {
+          const saved = frigateStatusForCamera(device, state.target.target_id) || {};
+          if (!state.resolutions.has(cameraUuid)) state.resolutions.set(cameraUuid, {
+            custom: saved.detect_width != null,
+            width: saved.detect_width ?? 640,
+            height: saved.detect_height ?? 360
+          });
+          const resolution = state.resolutions.get(cameraUuid);
+          const controls = addText(identity, "div", "frigate-detection-resolution", "");
+          const label = addText(controls, "label", "", "Detection resolution ");
+          const select = document.createElement("select");
+          select.setAttribute("aria-label", `Detection resolution for ${device.display_name}`);
+          [["original", "Original stream size"], ["custom", "Custom"]].forEach(([value, text]) => {
+            const option = new Option(text, value);
+            select.add(option);
+          });
+          select.value = resolution.custom ? "custom" : "original";
+          select.disabled = state.running;
+          select.addEventListener("change", () => {
+            resolution.custom = select.value === "custom";
+            updateFrigateCameraChooser(state);
+          });
+          label.append(select);
+          if (resolution.custom) {
+            const warning = document.createElement("div");
+            warning.className = "frigate-camera-help";
+            const updateWarning = () => {
+              const stream = (device.adoption.streams || []).find(s => s.stream_uuid === device.adoption.roles?.detect);
+              const width = stream?.probed_width || stream?.width;
+              const height = stream?.probed_height || stream?.height;
+              warning.textContent = width && height && resolution.height > 0 && Math.abs(resolution.width / resolution.height - width / height) > 0.02
+                ? "Different aspect ratio: Frigate will reshape the detection image. Live video and recordings keep their original proportions." : "";
+            };
+            [["width", "Width"], ["height", "Height"]].forEach(([field, text]) => {
+              const fieldLabel = addText(controls, "label", "", `${text} `);
+              const input = document.createElement("input");
+              input.type = "number"; input.min = "16"; input.max = "8192"; input.step = "2";
+              input.style.width = "7em";
+              input.value = resolution[field]; input.disabled = state.running;
+              input.setAttribute("aria-label", `${text} for ${device.display_name}`);
+              input.addEventListener("input", () => { resolution[field] = Number(input.value); updateWarning(); });
+              fieldLabel.append(input);
+            });
+            controls.append(warning);
+            updateWarning();
+          }
+        }
       });
       const actions = addText(content, "div", "frigate-camera-chooser-actions", "");
       const cancel = addText(actions, "button", "secondary-action", "Cancel");
@@ -1950,7 +1997,9 @@
             {
               method: "POST",
               headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "sync-frigate-camera"},
-              body: JSON.stringify({address_mode: addressMode})
+              body: JSON.stringify({address_mode: addressMode,
+                detect_width: state.resolutions.get(cameraUuid)?.custom ? state.resolutions.get(cameraUuid).width : null,
+                detect_height: state.resolutions.get(cameraUuid)?.custom ? state.resolutions.get(cameraUuid).height : null})
             }
           );
           const result = await response.json();
@@ -2027,6 +2076,7 @@
           addressModeChanged: false,
           addressError: "",
           progress: new Map(),
+          resolutions: new Map(),
           running: false
         };
         activeFrigateChooserState = state;
@@ -3104,6 +3154,10 @@
 
     function frigateSyncError(errorCode) {
       const errors = {
+        camera_resource_conflict: ["Sync blocked: camera already exists", "A camera with this key already exists in Frigate without CamAdmiral ownership. Remove or rename the conflicting entry, including inactive placeholders, then retry."],
+        stream_resource_conflict: ["Sync blocked: stream already exists", "A managed stream alias already exists in Frigate without CamAdmiral ownership. Remove or rename the conflicting alias, then retry."],
+        stream_roles_missing: ["Stream roles missing", "Assign an enabled stream to both Record and Detect before syncing."],
+        detect_metadata_unavailable: ["Detection dimensions unavailable", "Choose custom detection dimensions or obtain stream metadata before syncing."],
         camera_start_pending: ["Waiting for camera process", "Frigate accepted the camera. CamAdmiral will retry until its process appears."],
         camera_enabled_mismatch: ["Camera state differs", "Frigate did not retain the requested enabled state for this camera."],
         camera_configuration_missing: ["Camera configuration missing", "Frigate did not retain the managed camera configuration."],

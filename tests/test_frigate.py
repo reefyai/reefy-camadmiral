@@ -1305,6 +1305,45 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(result, {"applied": 0, "pending": 1})
         self.assertEqual(self.client.config_writes, [])
         self.assertIsNone(self.repository.frigate_binding(self.target.target_id, self.camera_uuid))
+        self.assertEqual(self.repository.frigate_camera_selections(self.target.target_id)[0]["sync_error"], "camera_resource_conflict")
+        del self.client.current_config["cameras"][key]
+        result = reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+        self.assertEqual(result["applied"], 1)
+        self.assertIsNone(self.repository.frigate_camera_selections(self.target.target_id)[0]["sync_error"])
+
+    def test_offline_and_auth_failed_streams_sync_saved_configuration(self):
+        for health in ("offline", "auth_failed"):
+            with self.repository.connect() as connection:
+                connection.execute("UPDATE managed_streams SET health_status=?", (health,))
+                connection.commit()
+            result = reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+            self.assertEqual(result, {"applied": 1, "pending": 0})
+
+    def test_custom_detection_persists_and_default_can_be_restored(self):
+        target, camera = self.target.target_id, self.camera_uuid
+        self.repository.set_frigate_detection_resolution(target, camera, 800, 450)
+        self.repository.migrate()
+        self.repository.select_frigate_camera(target, camera)
+        for _ in range(2):
+            reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+            self.assertEqual(self.client.current_config["cameras"][frigate_camera_key(camera)]["detect"], {"width": 800, "height": 450})
+        self.repository.set_frigate_detection_resolution(target, camera, None, None)
+        reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+        self.assertEqual(self.client.current_config["cameras"][frigate_camera_key(camera)]["detect"], {"width": 640, "height": 360})
+
+    def test_resolution_validation_does_not_write_invalid_values(self):
+        for dimensions in [(640, None), (None, 360), (0, 360), (641, 360), (640, 10000)]:
+            with self.assertRaises(ValueError):
+                self.repository.set_frigate_detection_resolution(self.target.target_id, self.camera_uuid, *dimensions)
+        self.assertIsNone(self.repository.frigate_camera_selections(self.target.target_id)[0]["detect_width"])
+
+    def test_unowned_alias_conflict_is_reported_without_claiming(self):
+        key = frigate_camera_key(self.camera_uuid)
+        self.client.current_raw_paths["go2rtc"]["streams"][key + "_record"] = ["rtsp://synthetic.invalid/live"]
+        reconcile_frigate(self.repository, self.target, client_factory=lambda _: self.client)
+        self.assertEqual(self.repository.frigate_camera_selections(self.target.target_id)[0]["sync_error"], "stream_resource_conflict")
+        self.assertIsNone(self.repository.frigate_binding(self.target.target_id, self.camera_uuid))
+        self.assertEqual(self.client.config_writes, [])
 
     def test_reconcile_preserves_frigate_owned_camera_settings(self) -> None:
         reconcile_frigate(

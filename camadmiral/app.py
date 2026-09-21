@@ -229,6 +229,8 @@ class FrigateTargetUpdateRequest(BaseModel):
 
 class FrigateCameraSyncRequest(BaseModel):
     address_mode: Literal["lan", "localhost"] = "lan"
+    detect_width: int | None = Field(default=None, ge=16, le=8192, multiple_of=2, strict=True)
+    detect_height: int | None = Field(default=None, ge=16, le=8192, multiple_of=2, strict=True)
 
 
 class FrigateTargetAddressRequest(BaseModel):
@@ -340,7 +342,7 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         (
             target,
             {
-                str(selection["camera_uuid"]): str(selection["address_mode"])
+                str(selection["camera_uuid"]): selection
                 for selection in repository.frigate_camera_selections(target.target_id)
             },
             {
@@ -361,7 +363,7 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             address_mode = (
                 str(target.address_mode)
                 if target.address_mode is not None
-                else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+                else selections_by_camera.get(str(adoption["camera_uuid"]), {}).get("address_mode", "lan")
             )
             selected = str(adoption["camera_uuid"]) in selections_by_camera
             target_status = {
@@ -377,6 +379,12 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             }
             if selected and binding is not None and binding.get("last_error_code"):
                 target_status["error_code"] = binding["last_error_code"]
+            selection = selections_by_camera.get(str(camera_uuid), {})
+            if selection.get("detect_width") is not None:
+                target_status["detect_width"] = selection["detect_width"]
+                target_status["detect_height"] = selection["detect_height"]
+            if selected and selection.get("sync_error"):
+                target_status.update(status="error", error_code=selection["sync_error"])
             adoption["frigate"].append(target_status)
 
     matched_adoptions: set[str] = set()
@@ -648,6 +656,8 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
                     media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
                 )
             except FrigateApiError as exc:
+                for selected_uuid in repository.selected_frigate_camera_uuids(target.target_id):
+                    repository.set_frigate_selection_error(target.target_id, selected_uuid, exc.code)
                 repository.record_frigate_target_check(
                     target.target_id,
                     status="error",
@@ -701,6 +711,7 @@ def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
                     camera_uuid=camera_uuid,
                 )
             except FrigateApiError as exc:
+                repository.set_frigate_selection_error(target_id, camera_uuid, exc.code)
                 repository.record_frigate_target_check(
                     target_id,
                     status="error",
@@ -1638,7 +1649,12 @@ def sync_frigate_camera(
         if request is not None
         else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
     )
+    if request is not None and (request.detect_width is None) != (request.detect_height is None):
+        raise HTTPException(status_code=422, detail="Both detection dimensions are required")
     repository.select_frigate_camera(target_id, camera_uuid, address_mode)
+    if request is not None and {"detect_width", "detect_height"} & request.model_fields_set:
+        repository.set_frigate_detection_resolution(target_id, camera_uuid, request.detect_width, request.detect_height)
+    repository.set_frigate_selection_error(target_id, camera_uuid, None)
     repository.mark_frigate_binding_pending(target_id, camera_uuid)
     queued = _queue_frigate_camera_reconciliation(target_id, camera_uuid)
     return _secured_json(

@@ -45,6 +45,46 @@ def driver(stage):
         print('PASS: real high-resolution upstream session exists before disabling', flush=True)
         return
     camera = json.loads(state_path.read_text())
+    if stage.startswith('sync-'):
+        target = request_json('/internal/frigate-targets')['targets'][0]
+        route = f"/internal/frigate-targets/{target['target_id']}/cameras/{camera['id']}"
+        key = 'camadmiral_' + camera['id'].replace('-', '_')
+        def status():
+            return next(s for s in adoption(camera['id'])['frigate'] if s['target_id'] == target['target_id'])
+        def config():
+            return json.load(urllib.request.urlopen('http://frigate:5000/api/config', timeout=5))
+        if stage == 'sync-custom':
+            request_json(route, method='POST', expected=202, payload={'detect_width': 800, 'detect_height': 450},
+                         headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
+        if stage in {'sync-custom', 'sync-persisted', 'sync-offline'}:
+            if stage == 'sync-offline':
+                wait_for('source actually offline', lambda: all(s['health_status'] == 'offline' for s in adoption(camera['id'])['streams']), timeout=180)
+                request_json(route, method='POST', expected=202, headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
+            wait_for('configuration synced independently of video', lambda: status()['status'] == 'applied', timeout=180)
+            actual = config()['cameras'][key]['detect']
+            assert (actual['width'], actual['height']) == (800, 450), actual
+            assert (status()['detect_width'], status()['detect_height']) == (800, 450)
+        elif stage == 'sync-conflict':
+            wait_for('explicit conflict', lambda: status().get('error_code') == 'camera_resource_conflict', timeout=90)
+            assert status()['status'] == 'error'
+            assert config()['cameras'][key]['friendly_name'] == camera['name']
+        elif stage == 'sync-remove-conflict':
+            from camadmiral.frigate import FrigateClient, FrigateTarget
+            import yaml
+            client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate:5000'))
+            raw = client.raw_config()
+            raw['cameras'].pop(key)
+            for alias in ('record', 'detect'):
+                raw.get('go2rtc', {}).get('streams', {}).pop(key + '_' + alias, None)
+            client.save_raw_config(yaml.safe_dump(raw, sort_keys=False))
+            client.restart()
+        elif stage == 'sync-original':
+            request_json(route, method='POST', expected=202, payload={'detect_width': None, 'detect_height': None},
+                         headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
+            wait_for('original detection resolution restored', lambda: status()['status'] == 'applied'
+                     and config()['cameras'][key]['detect']['width'] == 640, timeout=180)
+        print('PASS: ' + stage, flush=True)
+        return
     main = next(s for s in camera['streams'] if 'record' in s['roles'])
     sub = next(s for s in camera['streams'] if 'detect' in s['roles'])
     assert main['id'] != sub['id']
@@ -154,6 +194,18 @@ def host():
         run('restart', 'camadmiral')
         stage('verify')
         stage('reenable')
+        stage('sync-custom')
+        run('restart', 'camadmiral')
+        stage('sync-persisted')
+        run('stop', 'stalled-camera')
+        stage('sync-offline')
+        # Simulate a selected resource whose ownership record is missing.
+        run('exec', '-T', 'camadmiral', 'python', '-c',
+            "import sqlite3; c=sqlite3.connect('/var/lib/camadmiral/camadmiral.db'); c.execute('DELETE FROM frigate_bindings'); c.commit()")
+        stage('sync-conflict')
+        stage('sync-remove-conflict')
+        stage('sync-offline')
+        stage('sync-original')
     finally:
         run('logs', '--no-color', 'camadmiral', 'frigate', check=False)
         run('down', '--volumes', '--remove-orphans', check=False)

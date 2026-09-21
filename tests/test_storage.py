@@ -446,7 +446,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertEqual(
             self.repository.frigate_camera_selections("frigate-synthetic"),
-            [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
+            [{"camera_uuid": camera_uuid, "address_mode": "lan", "detect_width": None, "detect_height": None, "sync_error": None}],
         )
         self.assertTrue(
             self.repository.set_frigate_target_address_mode(

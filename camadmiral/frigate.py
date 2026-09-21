@@ -402,7 +402,7 @@ def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str,
     target = repository.frigate_target(target_id)
     target_address_mode = target.get("address_mode") if target is not None else None
     selections = {
-        str(selection["camera_uuid"]): str(selection["address_mode"])
+        str(selection["camera_uuid"]): selection
         for selection in repository.frigate_camera_selections(target_id)
     }
     if not selections:
@@ -413,8 +413,10 @@ def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str,
             "frigate_address_mode": (
                 str(target_address_mode)
                 if target_address_mode is not None
-                else selections[str(camera["camera_uuid"])]
+                else selections[str(camera["camera_uuid"])]["address_mode"]
             ),
+            "frigate_detect_width": selections[str(camera["camera_uuid"])].get("detect_width"),
+            "frigate_detect_height": selections[str(camera["camera_uuid"])].get("detect_height"),
         }
         for camera in repository.consumer_inventory()
         if str(camera["camera_uuid"]) in selections
@@ -860,7 +862,7 @@ def _stream_for_role(camera: dict[str, Any], role: str) -> dict[str, Any] | None
         stream
         for stream in camera.get("streams", [])
         if role in stream.get("roles", [])
-        and stream.get("health_status") not in {"offline", "auth_failed"}
+        and stream.get("enabled", True)
     ]
     return usable[0] if usable else None
 
@@ -911,7 +913,10 @@ def desired_camera(
     key = frigate_camera_key(camera_uuid)
     record_alias = f"{key}_record"
     detect_alias = f"{key}_detect"
-    width, height = _video_dimensions(detect)
+    if camera.get("frigate_detect_width") is not None:
+        width, height = int(camera["frigate_detect_width"]), int(camera["frigate_detect_height"])
+    else:
+        width, height = _video_dimensions(detect)
     try:
         parsed_media_host = ipaddress.ip_address(media_host)
     except ValueError:
@@ -1173,6 +1178,7 @@ def reconcile_frigate(
     applied = 0
     pending = 0
     for camera in cameras:
+        repository.set_frigate_selection_error(target.target_id, camera["camera_uuid"], None)
         binding = repository.frigate_binding(target.target_id, camera["camera_uuid"])
         if not camera.get("enabled", True):
             if binding is None:
@@ -1231,8 +1237,14 @@ def reconcile_frigate(
             if media_host_resolver is not None
             else media_host
         )
-        desired = desired_camera(camera, password, camera_media_host)
+        try:
+            desired = desired_camera(camera, password, camera_media_host)
+        except FrigateApiError as exc:
+            repository.set_frigate_selection_error(target.target_id, camera["camera_uuid"], exc.code)
+            pending += 1
+            continue
         if desired is None:
+            repository.set_frigate_selection_error(target.target_id, camera["camera_uuid"], "stream_roles_missing")
             pending += 1
             continue
         camera_exists = desired["key"] in config.get("cameras", {})
@@ -1241,6 +1253,10 @@ def reconcile_frigate(
         aliases_exist = any(alias in configured_streams for alias in desired["streams"])
         retired_restore = repository.retired_frigate_cameras(target.target_id).get(desired["key"])
         if binding is None and retired_restore is None and (camera_exists or aliases_exist):
+            repository.set_frigate_selection_error(
+                target.target_id, camera["camera_uuid"],
+                "camera_resource_conflict" if camera_exists else "stream_resource_conflict",
+            )
             pending += 1
             continue
         if retired_restore is not None and not allow_restart:

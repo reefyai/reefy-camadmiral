@@ -96,6 +96,27 @@ def main():
         page.set_viewport_size({'width': 1280, 'height': 1000})
         page.get_by_role('button', name='Streams', exact=True).click()
         expect(page.locator('.stream-roles')).not_to_have_attribute('open', '')
+        page.evaluate('''() => {
+          closeAppModal();
+          window.chooserTest = {target: {target_id: 'synthetic-target'}, cameras: [syntheticCamera],
+            selected: new Set(['synthetic-camera']), initialSelected: new Set(), addressMode: 'lan',
+            progress: new Map(), resolutions: new Map(), running: false};
+          syntheticCamera.adoption.streams.forEach(s => {s.width=1200; s.height=536;});
+          syntheticCamera.adoption.frigate = [{target_id: 'synthetic-target', selected: true,
+            status: 'error', error_code: 'camera_resource_conflict'}];
+          openAppModal('frigate-cameras', 'Synthetic sync', frigateChooserContent(chooserTest), null, 'wide');
+        }''')
+        expect(page.get_by_text('Sync blocked: camera already exists', exact=True)).to_be_visible()
+        expect(page.locator('.inline-spinner')).to_have_count(0)
+        select = page.get_by_label('Detection resolution for Z adopted', exact=True)
+        expect(select).to_have_value('original')
+        select.select_option('custom')
+        expect(page.get_by_label('Width for Z adopted', exact=True)).to_have_value('640')
+        expect(page.get_by_label('Height for Z adopted', exact=True)).to_have_value('360')
+        expect(page.get_by_text('Different aspect ratio:', exact=False)).to_be_visible()
+        page.get_by_label('Width for Z adopted', exact=True).fill('800')
+        page.evaluate('updateFrigateCameraChooser(chooserTest)')
+        expect(page.get_by_label('Width for Z adopted', exact=True)).to_have_value('800')
         browser.close()
     print('Stream layout, masking, role dropdowns, and adopted-first browser checks passed.')
 

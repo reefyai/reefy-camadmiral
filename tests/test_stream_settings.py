@@ -62,7 +62,8 @@ class StreamSettingsTests(unittest.TestCase):
         with self.repo.connect() as connection:
             connection.execute('ALTER TABLE managed_streams DROP COLUMN enabled')
             connection.execute('ALTER TABLE cameras DROP COLUMN stream_settings_custom')
-            connection.execute('DELETE FROM schema_migrations WHERE version=?', (len(MIGRATIONS),))
+            version = next(i for i, sql in enumerate(MIGRATIONS, 1) if 'ADD COLUMN stream_settings_custom' in sql)
+            connection.execute('DELETE FROM schema_migrations WHERE version=?', (version,))
             connection.commit()
         self.repo.migrate()
         self.assertEqual(self.repo.managed_stream_sources(), before)

@@ -264,6 +264,16 @@ its original URL. Disabled streams are omitted from the consumer API.
 
 ## Frigate integration
 
+Frigate sync applies camera configuration independently of camera availability. An offline
+camera can be synced using its saved stream metadata; video health is shown separately.
+Existing cameras or stream aliases that CamAdmiral does not own are reported as conflicts
+and are never overwritten automatically, including disabled camera placeholders.
+
+In **Choose cameras**, each selected camera offers **Detection resolution**: original stream
+size (default), or custom width and height (initially 640 x 360). Custom dimensions are saved
+per camera and Frigate integration and preserved by subsequent syncs. A different aspect ratio
+reshapes the detection image; it does not resize recordings or the original live stream.
+
 Use **Find Frigate** in Settings > Integrations to find local Frigate APIs on
 ports 5000, 8971, and 20000-20999. Choose a result to review its address and
 connect it. Already-added endpoints are marked; searching never adds an
