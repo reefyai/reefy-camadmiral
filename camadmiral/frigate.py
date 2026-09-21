@@ -1001,6 +1001,10 @@ def frigate_camera_configuration(
     )
     if camera is None:
         raise FrigateApiError("camera_not_found")
+    selection = next((item for item in repository.frigate_camera_selections(target.target_id)
+                      if item["camera_uuid"] == camera_uuid), {})
+    camera = {**camera, "frigate_detect_width": selection.get("detect_width"),
+              "frigate_detect_height": selection.get("detect_height")}
     password = repository.rtsp_access_password()
     desired = desired_camera(camera, password, media_host)
     if desired is None:

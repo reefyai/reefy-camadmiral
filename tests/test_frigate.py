@@ -1322,6 +1322,8 @@ class FrigateReconciliationTests(unittest.TestCase):
     def test_custom_detection_persists_and_default_can_be_restored(self):
         target, camera = self.target.target_id, self.camera_uuid
         self.repository.set_frigate_detection_resolution(target, camera, 800, 450)
+        preview = yaml.safe_load(frigate_camera_configuration(self.repository, self.target, camera)["configuration"])
+        self.assertEqual(preview["cameras"][frigate_camera_key(camera)]["detect"], {"width": 800, "height": 450})
         self.repository.migrate()
         self.repository.select_frigate_camera(target, camera)
         for _ in range(2):
