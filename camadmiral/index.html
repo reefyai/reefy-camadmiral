@@ -164,6 +164,25 @@
     .frigate-camera-state.error { color: #fcd34d; }
     .frigate-camera-state.removed { color: #7890a4; }
     .frigate-camera-help { margin-top: 4px; color: #7890a4; font-size: 11px; line-height: 1.35; }
+    .frigate-detection-resolution { display: grid; gap: 9px; margin-top: 14px; cursor: default; }
+    .frigate-resolution-field { display: grid; gap: 6px; min-width: 0; color: #b8c7d2; font-size: 12px; }
+    .frigate-detection-resolution select, .frigate-detection-resolution input {
+      box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border-radius: 7px;
+      border: 1px solid #2a3c4c; background: #0c1a2a; color: #e0eaf0; font: inherit;
+    }
+    .frigate-detection-resolution select {
+      max-width: 240px; appearance: none; -webkit-appearance: none; padding-right: 30px;
+      background-image: linear-gradient(45deg, transparent 50%, #8ea2b3 50%), linear-gradient(135deg, #8ea2b3 50%, transparent 50%);
+      background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+      background-size: 5px 5px; background-repeat: no-repeat;
+    }
+    .frigate-detection-resolution :is(select, input):focus-visible { outline: 2px solid #2dd4bf; outline-offset: 2px; }
+    .frigate-detection-resolution :is(select, input):disabled { opacity: .6; }
+    .frigate-resolution-dimensions { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: end; max-width: 240px; }
+    .frigate-resolution-separator { padding-bottom: 9px; color: #7890a4; }
+    .frigate-detection-resolution .frigate-camera-help { margin: 0; }
+    .frigate-resolution-warning { color: #fcd34d; }
+    .frigate-resolution-warning:empty { display: none; }
     .frigate-camera-streams { display: grid; gap: 5px; margin-top: 8px; }
     .frigate-camera-stream {
       display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 4px 8px;
@@ -1871,7 +1890,7 @@
           });
           const resolution = state.resolutions.get(cameraUuid);
           const controls = addText(identity, "div", "frigate-detection-resolution", "");
-          const label = addText(controls, "label", "", "Detection resolution ");
+          const label = addText(controls, "label", "frigate-resolution-field", "Detection resolution");
           const select = document.createElement("select");
           select.setAttribute("aria-label", `Detection resolution for ${device.display_name}`);
           [["original", "Original stream size"], ["custom", "Custom"]].forEach(([value, text]) => {
@@ -1885,10 +1904,11 @@
             updateFrigateCameraChooser(state);
           });
           label.append(select);
-          addText(controls, "div", "frigate-camera-help", "After changing dimensions for an existing camera, restart Frigate to apply them to video processing. Sync saves the configuration without restarting Frigate for this change.");
           if (resolution.custom) {
+            const dimensions = addText(controls, "div", "frigate-resolution-dimensions", "");
             const warning = document.createElement("div");
-            warning.className = "frigate-camera-help";
+            warning.className = "frigate-camera-help frigate-resolution-warning";
+            warning.setAttribute("aria-live", "polite");
             const updateWarning = () => {
               const stream = (device.adoption.streams || []).find(s => s.stream_uuid === device.adoption.roles?.detect);
               const width = stream?.probed_width || stream?.width;
@@ -1897,10 +1917,10 @@
                 ? "Different aspect ratio: Frigate will reshape the detection image. Live video and recordings keep their original proportions." : "";
             };
             [["width", "Width"], ["height", "Height"]].forEach(([field, text]) => {
-              const fieldLabel = addText(controls, "label", "", `${text} `);
+              if (field === "height") addText(dimensions, "span", "frigate-resolution-separator", "×").setAttribute("aria-hidden", "true");
+              const fieldLabel = addText(dimensions, "label", "frigate-resolution-field", text);
               const input = document.createElement("input");
               input.type = "number"; input.min = "16"; input.max = "8192"; input.step = "2";
-              input.style.width = "7em";
               input.value = resolution[field]; input.disabled = state.running;
               input.setAttribute("aria-label", `${text} for ${device.display_name}`);
               input.addEventListener("input", () => { resolution[field] = Number(input.value); updateWarning(); });
@@ -1909,6 +1929,7 @@
             controls.append(warning);
             updateWarning();
           }
+          addText(controls, "div", "frigate-camera-help", "Restart Frigate after syncing to apply changed dimensions.");
         }
       });
       const actions = addText(content, "div", "frigate-camera-chooser-actions", "");

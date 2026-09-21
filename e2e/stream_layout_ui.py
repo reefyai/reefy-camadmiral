@@ -117,6 +117,25 @@ def main():
         page.get_by_label('Width for Z adopted', exact=True).fill('800')
         page.evaluate('updateFrigateCameraChooser(chooserTest)')
         expect(page.get_by_label('Width for Z adopted', exact=True)).to_have_value('800')
+        for width in (1280, 390):
+            page.set_viewport_size({'width': width, 'height': 1000})
+            assert page.evaluate('''() => {
+              const root = document.querySelector('.frigate-detection-resolution');
+              const select = root.querySelector('select');
+              const inputs = [...root.querySelectorAll('input')];
+              const [w, h] = inputs.map(el => el.getBoundingClientRect());
+              const bounds = root.getBoundingClientRect();
+              return w.right < h.left && Math.abs(w.top - h.top) < 1
+                && w.top > select.getBoundingClientRect().bottom
+                && h.right <= bounds.right + 1
+                && [select, ...inputs].every(el =>
+                  getComputedStyle(el).backgroundColor === 'rgb(12, 26, 42)'
+                  && getComputedStyle(el).borderRadius === '7px');
+            }'''), f'Resolution controls overlap, overflow, or lack styling at {width}px'
+            page.screenshot(path=f'/tmp/camadmiral-resolution-{width}.png', full_page=True)
+        expect(page.get_by_text('Restart Frigate after syncing to apply changed dimensions.', exact=True)).to_be_visible()
+        select.select_option('original')
+        expect(page.get_by_label('Width for Z adopted', exact=True)).to_have_count(0)
         browser.close()
     print('Stream layout, masking, role dropdowns, and adopted-first browser checks passed.')
 
