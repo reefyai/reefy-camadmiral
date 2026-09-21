@@ -1337,6 +1337,26 @@ class FrigateReconciliationTests(unittest.TestCase):
                 self.repository.set_frigate_detection_resolution(self.target.target_id, self.camera_uuid, *dimensions)
         self.assertIsNone(self.repository.frigate_camera_selections(self.target.target_id)[0]["detect_width"])
 
+    def test_upgrade_preserves_existing_selection_and_streams(self):
+        from camadmiral.storage import MIGRATIONS
+        before = self.repository.consumer_inventory()
+        with self.repository.connect() as connection:
+            for field in ('detect_width', 'detect_height', 'sync_error'):
+                connection.execute('ALTER TABLE frigate_camera_selections DROP COLUMN ' + field)
+            connection.execute('DELETE FROM schema_migrations WHERE version=?', (len(MIGRATIONS),))
+            connection.commit()
+        self.repository.migrate()
+        self.assertEqual(self.repository.consumer_inventory(), before)
+        selection = self.repository.frigate_camera_selections(self.target.target_id)[0]
+        self.assertEqual(selection['camera_uuid'], self.camera_uuid)
+        self.assertIsNone(selection['detect_width'])
+
+    def test_override_is_per_target_not_per_camera(self):
+        self.repository.save_frigate_target('other', 'Other', 'http://127.0.0.1:20002')
+        self.repository.select_frigate_camera('other', self.camera_uuid)
+        self.repository.set_frigate_detection_resolution(self.target.target_id, self.camera_uuid, 800, 450)
+        self.assertIsNone(self.repository.frigate_camera_selections('other')[0]['detect_width'])
+
     def test_unowned_alias_conflict_is_reported_without_claiming(self):
         key = frigate_camera_key(self.camera_uuid)
         self.client.current_raw_paths["go2rtc"]["streams"][key + "_record"] = ["rtsp://synthetic.invalid/live"]

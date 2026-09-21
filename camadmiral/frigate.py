@@ -1250,7 +1250,7 @@ def reconcile_frigate(
         camera_exists = desired["key"] in config.get("cameras", {})
         camera_running = desired["key"] in stats
         configured_streams = raw_paths.get("go2rtc", {}).get("streams", {})
-        aliases_exist = any(alias in configured_streams for alias in desired["streams"])
+        aliases_exist = any(alias in configured_streams or alias in runtime_streams for alias in desired["streams"])
         retired_restore = repository.retired_frigate_cameras(target.target_id).get(desired["key"])
         if binding is None and retired_restore is None and (camera_exists or aliases_exist):
             repository.set_frigate_selection_error(
