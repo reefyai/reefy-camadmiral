@@ -1885,6 +1885,7 @@
             updateFrigateCameraChooser(state);
           });
           label.append(select);
+          addText(controls, "div", "frigate-camera-help", "After changing dimensions for an existing camera, restart Frigate to apply them to video processing. Sync saves the configuration without restarting Frigate for this change.");
           if (resolution.custom) {
             const warning = document.createElement("div");
             warning.className = "frigate-camera-help";

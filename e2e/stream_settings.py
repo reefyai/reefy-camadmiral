@@ -83,6 +83,13 @@ def driver(stage):
                          headers={'X-CamAdmiral-Action': 'sync-frigate-camera'})
             wait_for('original detection resolution restored', lambda: status()['status'] == 'applied'
                      and config()['cameras'][key]['detect']['width'] == 640, timeout=180)
+        elif stage == 'sync-processed-frame':
+            def frame_resized():
+                data = urllib.request.urlopen(f'http://frigate:5000/api/{key}/latest.jpg', timeout=10).read()
+                result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=width,height',
+                                         '-of', 'json', '-i', 'pipe:0'], input=data, capture_output=True, timeout=10)
+                return json.loads(result.stdout).get('streams', [{}])[0] == {'width': 800, 'height': 450}
+            wait_for('real processed frame uses custom dimensions after restart', frame_resized, timeout=120)
         print('PASS: ' + stage, flush=True)
         return
     main = next(s for s in camera['streams'] if 'record' in s['roles'])
@@ -217,6 +224,8 @@ def host():
             page.screenshot(path=str(artifacts / 'detection-resolution.png'))
             browser.close()
         stage('sync-persisted')
+        run('restart', 'frigate')
+        stage('sync-processed-frame')
         run('restart', 'camadmiral')
         stage('sync-persisted')
         run('stop', 'stalled-camera')

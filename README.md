@@ -273,6 +273,8 @@ In **Choose cameras**, each selected camera offers **Detection resolution**: ori
 size (default), or custom width and height (initially 640 x 360). Custom dimensions are saved
 per camera and Frigate integration and preserved by subsequent syncs. A different aspect ratio
 reshapes the detection image; it does not resize recordings or the original live stream.
+After changing dimensions for an existing camera, restart Frigate to apply them to its video
+processing pipeline. Sync saves the configuration without triggering a restart for this change.
 
 Use **Find Frigate** in Settings > Integrations to find local Frigate APIs on
 ports 5000, 8971, and 20000-20999. Choose a result to review its address and
