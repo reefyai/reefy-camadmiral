@@ -184,6 +184,10 @@ class CameraEnabledRequest(BaseModel):
     enabled: bool
 
 
+class CameraNotificationsRequest(BaseModel):
+    silenced: bool
+
+
 class CameraStreamAddressRequest(BaseModel):
     address_mode: Literal["lan", "localhost"]
 
@@ -1852,6 +1856,26 @@ def set_camera_enabled(
     return _secured_json(
         {
             "status": "enabled" if request.enabled else "disabled",
+            "camera": _camera_adoption(repository, camera_uuid),
+        }
+    )
+
+
+@app.post("/internal/cameras/{camera_uuid}/notifications", include_in_schema=False)
+def set_camera_notifications(
+    camera_uuid: str,
+    request: CameraNotificationsRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-camera-notifications":
+        raise HTTPException(status_code=400, detail="Missing camera notifications action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if not repository.set_camera_notifications_silenced(camera_uuid, request.silenced):
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    return _secured_json(
+        {
+            "status": "silenced" if request.silenced else "unsilenced",
             "camera": _camera_adoption(repository, camera_uuid),
         }
     )

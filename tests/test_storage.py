@@ -745,6 +745,74 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn("192.0.2.60", str(notifications))
         self.assertNotIn("synthetic-secret", str(notifications))
 
+    def test_silenced_camera_records_incidents_without_notifications(self) -> None:
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-silenced", "display_name": "Synthetic driveway"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.61/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        camera_uuid = adoption["camera_uuid"]
+        stream_uuid = adoption["streams"][0]["stream_uuid"]
+        self.assertFalse(adoption["notifications_silenced"])
+        self.repository.save_telegram_settings(
+            enabled=True,
+            bot_token="123456:synthetic-bot-token-value",
+            bot_id="123456",
+            bot_username="synthetic_alert_bot",
+            pairing_token="synthetic-pairing-token",
+            pairing_expires_at="2099-01-01T00:00:00+00:00",
+        )
+        self.repository.complete_telegram_pairing(
+            chat_id="100200300",
+            chat_label="Synthetic operator",
+            update_offset=7,
+        )
+
+        def flap() -> None:
+            for _ in range(3):
+                self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 10)})
+            self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        for _ in range(3):
+            self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 10)})
+        self.assertEqual(
+            [item["event_type"] for item in self.repository.due_notifications()],
+            ["incident_opened"],
+        )
+
+        self.assertTrue(self.repository.set_camera_notifications_silenced(camera_uuid, True))
+        self.assertTrue(self.repository.camera(camera_uuid)["notifications_silenced"])
+        self.assertTrue(
+            self.repository.adoption_for_candidate("candidate-silenced")["notifications_silenced"]
+        )
+        self.assertEqual(self.repository.due_notifications(), [])
+
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        flap()
+        self.assertEqual(self.repository.due_notifications(), [])
+        self.assertEqual(self.repository.incidents(status="resolved")["open_count"], 0)
+        self.assertEqual(len(self.repository.incidents(status="resolved")["incidents"]), 2)
+
+        for _ in range(3):
+            self.repository.record_probe_results({stream_uuid: ProbeResult("unavailable", 10)})
+        self.assertTrue(self.repository.set_camera_notifications_silenced(camera_uuid, False))
+        self.repository.record_probe_results({stream_uuid: ProbeResult("ready", 10)})
+        self.assertEqual(self.repository.due_notifications(), [])
+
+        flap()
+        self.assertEqual(
+            [item["event_type"] for item in self.repository.due_notifications()],
+            ["incident_opened", "incident_resolved"],
+        )
+        self.assertFalse(self.repository.set_camera_notifications_silenced("missing-camera", True))
+
     def test_incident_schema_migration_preserves_existing_rows_and_foreign_keys(self) -> None:
         legacy_database = Path(self.temporary.name) / "legacy-incidents.db"
         with sqlite3.connect(legacy_database) as connection:

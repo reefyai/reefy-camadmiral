@@ -3133,6 +3133,25 @@
       renderRows();
     }
 
+    async function setCameraNotificationsSilenced(device, silenced) {
+      lifecycleErrors.delete(device.candidate_uuid);
+      try {
+        const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/notifications`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "set-camera-notifications"},
+          body: JSON.stringify({silenced})
+        });
+        const result = await response.json();
+        if (!response.ok || !result.camera) throw new Error(result.message || result.detail || "Camera alerts could not be changed.");
+        device.adoption = {...device.adoption, ...result.camera};
+        const inspection = inspections.get(device.candidate_uuid);
+        if (inspection?.adoption) inspection.adoption = device.adoption;
+      } catch (error) {
+        lifecycleErrors.set(device.candidate_uuid, error.message || "Camera alerts could not be changed.");
+      }
+      renderRows();
+    }
+
     function addCameraManagement(parent, device, adoption) {
       const management = addText(parent, "form", "camera-management", "");
       const name = addText(management, "label", "setup-field", "Camera name");
@@ -3905,6 +3924,11 @@
             enableLegacyCamera(device);
           });
         }
+        const silenced = device.adoption.notifications_silenced === true;
+        addCameraMenuAction(silenced ? "Unsilence alerts" : "Silence alerts", () => {
+          closeCameraActionMenu(false);
+          setCameraNotificationsSilenced(device, !silenced);
+        });
         addCameraMenuAction("Unadopt", () => {
           closeCameraActionMenu(false);
           showConfirmation({
@@ -4013,7 +4037,8 @@
         const identityMeta = [
           device.camera_origin === "direct" ? "Direct RTSP" : null,
           device.onvif?.model && device.onvif.model !== device.display_name ? device.onvif.model : null,
-          device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null
+          device.identity_conflict ? (device.identity_conflict_reason || "Identity conflict") : null,
+          device.adoption?.notifications_silenced ? "Alerts silenced" : null
         ].filter(Boolean).join(" · ");
         if (identityMeta) addClippedText(identityStack, "div", "camera-model", identityMeta);
         addClippedText(identityStack, "div", "camera-mobile-ip", device.ip);

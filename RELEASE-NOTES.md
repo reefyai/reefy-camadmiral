@@ -1,13 +1,15 @@
-# CamAdmiral v2026.09.14-02
+# CamAdmiral v2026.10.01-00
 
-- Allow up to 30 seconds to obtain a snapshot, accommodating slower stream startup.
-- Monitor selected streams independently; a failed detect-stream snapshot no longer
-  marks the record stream offline.
-- Run background snapshots in a bounded worker pool without blocking active-stream
-  monitoring. Local worker exhaustion is not treated as a camera failure.
-- Retain bounded, killable FFmpeg snapshot processes from the previous update,
-  preventing abandoned go2rtc keyframe consumers and memory growth on stalled sources.
+- Silence alerts for a single camera from its actions menu ("Silence alerts" /
+  "Unsilence alerts"). Use it for a camera that flaps between offline and recovered
+  while its hardware or cabling is being fixed. Silenced cameras show "Alerts
+  silenced" in the camera list.
+- Silenced cameras keep recording incidents, so availability history and the
+  incident list stay complete. Alerts already queued when a camera is silenced are
+  discarded.
+- A "recovered" alert is sent only when its matching "offline" alert was sent, so
+  unsilencing a camera during an outage never produces an unexpected recovery.
 - Preserve existing camera identities, RTSP URLs, credentials and Frigate bindings.
 
-Validation covers delayed real RTSP frames, an isolated profile outage and recovery,
-snapshot cancellation cleanup, production memory/PID limits, and the full release gate.
+Validation covers silenced, unsilenced and in-progress outages through the incident
+pipeline, the new camera notifications endpoint, and the full release gate.

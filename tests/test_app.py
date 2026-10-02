@@ -1756,6 +1756,61 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         reconcile.assert_called_once_with()
         reconcile_frigate_now.assert_called_once_with()
 
+    def test_silence_notifications_changes_only_alert_state(self) -> None:
+        repository = Mock()
+        repository.set_camera_notifications_silenced.return_value = True
+        repository.camera.return_value = {
+            "camera_uuid": "camera-1",
+            "candidate_uuid": "candidate-1",
+            "enabled": True,
+            "notifications_silenced": True,
+        }
+        repository.adoption_for_candidate.return_value = {
+            "camera_uuid": "camera-1",
+            "notifications_silenced": True,
+        }
+        with (
+            patch.object(app_module, "_repository", return_value=repository),
+            patch.object(app_module, "_reconcile_media") as reconcile,
+            patch.object(app_module, "_reconcile_frigate") as reconcile_frigate_now,
+        ):
+            response = app_module.set_camera_notifications(
+                "camera-1",
+                app_module.CameraNotificationsRequest(silenced=True),
+                "set-camera-notifications",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = self.payload(response)
+        self.assertEqual(payload["status"], "silenced")
+        self.assertTrue(payload["camera"]["notifications_silenced"])
+        repository.set_camera_notifications_silenced.assert_called_once_with("camera-1", True)
+        reconcile.assert_not_called()
+        reconcile_frigate_now.assert_not_called()
+
+    def test_silence_notifications_requires_action_header_and_known_camera(self) -> None:
+        repository = Mock()
+        repository.set_camera_notifications_silenced.return_value = False
+        with patch.object(app_module, "_repository", return_value=repository):
+            with self.assertRaises(app_module.HTTPException) as missing_header:
+                app_module.set_camera_notifications(
+                    "camera-1",
+                    app_module.CameraNotificationsRequest(silenced=True),
+                    None,
+                )
+            with self.assertRaises(app_module.HTTPException) as missing_camera:
+                app_module.set_camera_notifications(
+                    "missing-camera",
+                    app_module.CameraNotificationsRequest(silenced=False),
+                    "set-camera-notifications",
+                )
+
+        self.assertEqual(missing_header.exception.status_code, 400)
+        self.assertEqual(missing_camera.exception.status_code, 404)
+        repository.set_camera_notifications_silenced.assert_called_once_with(
+            "missing-camera", False
+        )
+
     def test_enable_validates_saved_streams_before_changing_state(self) -> None:
         repository = Mock()
         repository.camera.return_value = {
