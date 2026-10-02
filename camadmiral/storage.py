@@ -414,6 +414,10 @@ MIGRATIONS: tuple[str, ...] = (
         PRIMARY KEY(target_id, camera_key)
     );
     """,
+    """
+    ALTER TABLE cameras ADD COLUMN notifications_silenced INTEGER NOT NULL DEFAULT 0
+        CHECK(notifications_silenced IN (0, 1));
+    """,
 
 )
 
@@ -693,10 +697,15 @@ class CameraRepository:
         if settings_row is None or not bool(settings_row["enabled"]) or not settings_row["chat_id"]:
             return
         camera = connection.execute(
-            "SELECT display_name FROM cameras WHERE camera_uuid = ?",
+            "SELECT display_name, notifications_silenced FROM cameras WHERE camera_uuid = ?",
             (camera_uuid,),
         ).fetchone()
-        if camera is None:
+        if camera is None or bool(camera["notifications_silenced"]):
+            return
+        if event_type == "incident_resolved" and connection.execute(
+            "SELECT 1 FROM notification_outbox WHERE idempotency_key = ?",
+            (f"{incident_uuid}:incident_opened",),
+        ).fetchone() is None:
             return
         payload_data = {
             "camera_id": camera_uuid,
@@ -1249,7 +1258,7 @@ class CameraRepository:
         with self.connect() as connection:
             camera = connection.execute(
                 "SELECT camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, enabled, "
-                "stream_address_mode, camera_origin "
+                "stream_address_mode, camera_origin, notifications_silenced "
                 "FROM cameras WHERE candidate_uuid = ?",
                 (candidate_uuid,),
             ).fetchone()
@@ -1290,6 +1299,7 @@ class CameraRepository:
                 "display_name": camera["display_name"],
                 "camera_origin": str(camera["camera_origin"]),
                 "enabled": bool(camera["enabled"]),
+                "notifications_silenced": bool(camera["notifications_silenced"]),
                 "stream_address_mode": str(camera["stream_address_mode"]),
                 "adopted_at": camera["adopted_at"],
                 "roles": roles,
@@ -1652,14 +1662,15 @@ class CameraRepository:
     def camera(self, camera_uuid: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT camera_uuid, candidate_uuid, display_name, enabled, camera_origin "
-                "FROM cameras WHERE camera_uuid = ?",
+                "SELECT camera_uuid, candidate_uuid, display_name, enabled, camera_origin, "
+                "notifications_silenced FROM cameras WHERE camera_uuid = ?",
                 (camera_uuid,),
             ).fetchone()
         if row is None:
             return None
         result = dict(row)
         result["enabled"] = bool(result["enabled"])
+        result["notifications_silenced"] = bool(result["notifications_silenced"])
         return result
 
     def update_camera_name(self, camera_uuid: str, display_name: str) -> bool:
@@ -1680,6 +1691,23 @@ class CameraRepository:
             )
             if cursor.rowcount == 1:
                 self._record_camera_health_transition(connection, camera_uuid, timestamp)
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def set_camera_notifications_silenced(self, camera_uuid: str, silenced: bool) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE cameras SET notifications_silenced = ?, updated_at = ? WHERE camera_uuid = ?",
+                (int(silenced), _now(), camera_uuid),
+            )
+            if cursor.rowcount == 1 and silenced:
+                # Drop alerts already queued for this camera so a flap in progress stops immediately.
+                connection.execute(
+                    "DELETE FROM notification_outbox WHERE status IN ('pending', 'retry') "
+                    "AND incident_uuid IN "
+                    "(SELECT incident_uuid FROM camera_incidents WHERE camera_uuid = ?)",
+                    (camera_uuid,),
+                )
             connection.commit()
         return cursor.rowcount == 1
 

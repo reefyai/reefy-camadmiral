@@ -204,6 +204,12 @@ class DiscoveryUiTests(unittest.TestCase):
         self.assertIn('headers: {"X-CamAdmiral-Action": "block-camera"}', self.html)
         self.assertIn('addText(actionStack, "button", "row-action", "Unblock")', self.html)
 
+    def test_camera_alerts_can_be_silenced_from_action_menu(self) -> None:
+        self.assertIn('silenced ? "Unsilence alerts" : "Silence alerts"', self.html)
+        self.assertIn('"X-CamAdmiral-Action": "set-camera-notifications"', self.html)
+        self.assertIn("body: JSON.stringify({silenced})", self.html)
+        self.assertIn('device.adoption?.notifications_silenced ? "Alerts silenced" : null', self.html)
+
     def test_new_camera_disable_action_is_not_offered(self) -> None:
         self.assertNotIn('"Disable camera"', self.html)
         self.assertIn('addCameraMenuAction("Enable camera"', self.html)
