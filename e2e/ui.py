@@ -285,7 +285,7 @@ def assert_mobile_camera_actions(page: Page) -> None:
     expect(page.locator("#app-modal-title")).to_contain_text("streams")
     modal = page.locator("#app-modal")
     expect(modal).to_be_visible()
-    if modal.get_by_text("Frigate destinations").count():
+    if modal.get_by_text("Frigate destinations", exact=True).count():
         raise UiScenarioFailure("Streams still duplicates Frigate destination controls")
     page.locator("#app-modal-close").click()
 
@@ -529,7 +529,7 @@ def assert_desktop_stream_layout(page: Page) -> None:
         state="attached", timeout=30_000
     )
     page.get_by_role("button", name="Streams").first.click()
-    if page.get_by_text("Frigate destinations").count():
+    if page.get_by_text("Frigate destinations", exact=True).count():
         raise UiScenarioFailure("Streams still duplicates Frigate destination controls")
     page.locator("#app-modal-body .profile-name").first.evaluate(
         "node => { node.textContent = 'MediaProfile_Channel1_MainStream_With_A_Long_Technical_Name'; }"

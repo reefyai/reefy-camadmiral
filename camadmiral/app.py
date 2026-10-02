@@ -52,6 +52,7 @@ from .frigate import (
     remove_frigate_camera,
 )
 from .media import (
+    authenticated_rtsp_uri,
     ProbeResult,
     RelayHealthMonitor,
     RelayRuntimeActivityMonitor,
@@ -60,6 +61,8 @@ from .media import (
     probe_source,
     reconcile_and_probe,
     reconcile_runtime_drift,
+    reconcile_streams,
+    replace_streams,
     snapshot_frame,
 )
 from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
@@ -192,6 +195,11 @@ class CameraStreamAddressRequest(BaseModel):
     address_mode: Literal["lan", "localhost"]
 
 
+class CameraStreamSettingsRequest(BaseModel):
+    enabled: list[str] = Field(max_length=128)
+    roles: dict[str, str]
+
+
 class CameraCredentialRequest(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
@@ -225,6 +233,8 @@ class FrigateTargetUpdateRequest(BaseModel):
 
 class FrigateCameraSyncRequest(BaseModel):
     address_mode: Literal["lan", "localhost"] = "lan"
+    detect_width: int | None = Field(default=None, ge=16, le=8192, multiple_of=2, strict=True)
+    detect_height: int | None = Field(default=None, ge=16, le=8192, multiple_of=2, strict=True)
 
 
 class FrigateTargetAddressRequest(BaseModel):
@@ -336,7 +346,7 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         (
             target,
             {
-                str(selection["camera_uuid"]): str(selection["address_mode"])
+                str(selection["camera_uuid"]): selection
                 for selection in repository.frigate_camera_selections(target.target_id)
             },
             {
@@ -357,7 +367,7 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             address_mode = (
                 str(target.address_mode)
                 if target.address_mode is not None
-                else selections_by_camera.get(str(adoption["camera_uuid"]), "lan")
+                else selections_by_camera.get(str(adoption["camera_uuid"]), {}).get("address_mode", "lan")
             )
             selected = str(adoption["camera_uuid"]) in selections_by_camera
             target_status = {
@@ -373,6 +383,12 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
             }
             if selected and binding is not None and binding.get("last_error_code"):
                 target_status["error_code"] = binding["last_error_code"]
+            selection = selections_by_camera.get(str(camera_uuid), {})
+            if selection.get("detect_width") is not None:
+                target_status["detect_width"] = selection["detect_width"]
+                target_status["detect_height"] = selection["detect_height"]
+            if selected and selection.get("sync_error"):
+                target_status.update(status="error", error_code=selection["sync_error"])
             adoption["frigate"].append(target_status)
 
     matched_adoptions: set[str] = set()
@@ -559,6 +575,8 @@ def _observation_matches_saved_sources(
         return False
     source_hosts: list[str] = []
     for stream in streams:
+        if isinstance(stream, dict) and not stream.get("enabled", True):
+            continue
         if not isinstance(stream, dict) or not stream.get("uri"):
             return False
         try:
@@ -642,6 +660,8 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
                     media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
                 )
             except FrigateApiError as exc:
+                for selected_uuid in repository.selected_frigate_camera_uuids(target.target_id):
+                    repository.set_frigate_selection_error(target.target_id, selected_uuid, exc.code)
                 repository.record_frigate_target_check(
                     target.target_id,
                     status="error",
@@ -695,6 +715,7 @@ def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
                     camera_uuid=camera_uuid,
                 )
             except FrigateApiError as exc:
+                repository.set_frigate_selection_error(target_id, camera_uuid, exc.code)
                 repository.record_frigate_target_check(
                     target_id,
                     status="error",
@@ -878,7 +899,7 @@ def _queue_targeted_recovery_scan(
             RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
             continue
         candidate = candidates.get(candidate_uuid) or {}
-        streams = adoption.get("streams", [])
+        streams = [stream for stream in adoption.get("streams", []) if stream.get("enabled", True)]
         candidate_offline = candidate.get("status") == "offline"
         runtime_stalled = (
             str(adoption.get("camera_uuid")) in runtime_stalled_camera_uuids
@@ -1632,7 +1653,12 @@ def sync_frigate_camera(
         if request is not None
         else repository.frigate_camera_address_mode(target_id, camera_uuid) or "lan"
     )
+    if request is not None and (request.detect_width is None) != (request.detect_height is None):
+        raise HTTPException(status_code=422, detail="Both detection dimensions are required")
     repository.select_frigate_camera(target_id, camera_uuid, address_mode)
+    if request is not None and {"detect_width", "detect_height"} & request.model_fields_set:
+        repository.set_frigate_detection_resolution(target_id, camera_uuid, request.detect_width, request.detect_height)
+    repository.set_frigate_selection_error(target_id, camera_uuid, None)
     repository.mark_frigate_binding_pending(target_id, camera_uuid)
     queued = _queue_frigate_camera_reconciliation(target_id, camera_uuid)
     return _secured_json(
@@ -1961,6 +1987,59 @@ def set_camera_stream_address(
             "address_mode": request.address_mode,
         }
     )
+
+
+@app.post("/internal/cameras/{camera_uuid}/streams/{stream_uuid}/source-access", include_in_schema=False)
+def camera_source_access(
+    camera_uuid: str,
+    stream_uuid: str,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "reveal-camera-source":
+        raise HTTPException(status_code=400, detail="Missing camera source action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    sources = repository.managed_stream_sources(camera_uuid=camera_uuid, include_disabled=True)
+    source = next((item for item in sources if item["stream_uuid"] == stream_uuid), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return _secured_json({"uri": authenticated_rtsp_uri(
+        source["uri"], source["username"], source["password"]
+    )})
+
+
+@app.post("/internal/cameras/{camera_uuid}/stream-settings", include_in_schema=False)
+def set_camera_stream_settings(
+    camera_uuid: str,
+    request: CameraStreamSettingsRequest,
+    x_camadmiral_action: str | None = Header(default=None),
+) -> JSONResponse:
+    if x_camadmiral_action != "set-camera-stream-settings":
+        raise HTTPException(status_code=400, detail="Missing stream settings action header")
+    repository = _repository(required=True)
+    assert repository is not None
+    if repository.camera(camera_uuid) is None:
+        raise HTTPException(status_code=404, detail="Adopted camera not found")
+    with MEDIA_LOCK:
+        try:
+            repository.set_stream_settings(camera_uuid, request.enabled, request.roles)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            sources = repository.managed_stream_sources()
+            revision, _ = repository.record_desired_media_revision(sources)
+            # DELETE also removes persisted config. The subsequent shared restart
+            # closes orphaned consumers still attached to removed stream objects.
+            reconcile_streams(sources)
+            replace_streams(sources)
+            repository.complete_media_revision(revision, "applied")
+            repository.enqueue_relay_restart_notification(reason="stream_settings_changed", camera_count=0)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=(
+                "Settings saved, but media relay update failed. Save again to retry."
+            )) from exc
+    _queue_frigate_reconciliation()
+    return _secured_json({"status": "updated"})
 
 
 @app.post("/internal/cameras/{camera_uuid}/credentials", include_in_schema=False)

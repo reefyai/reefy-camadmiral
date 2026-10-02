@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 import secrets
 import urllib.parse
 import uuid
@@ -421,12 +422,34 @@ MIGRATIONS: tuple[str, ...] = (
 # diverge after version 25, so a recorded version number no longer proves which
 # change was applied. Later schema changes are applied by inspecting the live
 # schema on every start, which is correct regardless of recorded versions.
+SCHEMA_TABLES: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS stream_auth_retries (
+        stream_uuid TEXT PRIMARY KEY REFERENCES managed_streams(stream_uuid) ON DELETE CASCADE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt REAL NOT NULL
+    );
+    """,
+)
 SCHEMA_COLUMNS: tuple[tuple[str, str, str], ...] = (
     (
         "cameras",
         "notifications_silenced",
         "INTEGER NOT NULL DEFAULT 0 CHECK(notifications_silenced IN (0, 1))",
     ),
+    (
+        "managed_streams",
+        "enabled",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1))",
+    ),
+    (
+        "cameras",
+        "stream_settings_custom",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(stream_settings_custom IN (0, 1))",
+    ),
+    ("frigate_camera_selections", "detect_width", "INTEGER"),
+    ("frigate_camera_selections", "detect_height", "INTEGER"),
+    ("frigate_camera_selections", "sync_error", "TEXT"),
 )
 
 
@@ -539,6 +562,8 @@ class CameraRepository:
                             timestamp,
                         )
                 connection.commit()
+            for statement in SCHEMA_TABLES:
+                connection.execute(statement)
             for table, column, definition in SCHEMA_COLUMNS:
                 existing = {
                     str(row["name"])
@@ -1301,7 +1326,7 @@ class CameraRepository:
                 for row in connection.execute(
                     "SELECT p.profile_token, p.source_kind, p.name, p.width, p.height, p.encoding, p.fps, p.uri, "
                     "p.catalog_revision, p.catalog_rule_id, p.catalog_source_url, "
-                    "s.stream_uuid, s.stream_key, s.probe_status, s.probed_at, "
+                    "s.stream_uuid, s.stream_key, s.enabled, s.probe_status, s.probed_at, "
                     "s.probe_latency_ms, s.video_codec, s.audio_codec, s.probed_width, s.probed_height, s.probed_fps, "
                     "s.health_status, s.consecutive_failures, s.last_ready_at, s.last_failure_at "
                     "FROM managed_streams s JOIN onvif_profiles p USING (profile_uuid) "
@@ -1642,7 +1667,7 @@ class CameraRepository:
                     "s.video_codec, s.probed_width, s.probed_height, s.probed_fps, "
                     "p.encoding, p.width, p.height, p.fps "
                     "FROM managed_streams s JOIN onvif_profiles p USING (profile_uuid) "
-                    "WHERE s.camera_uuid = ? ORDER BY s.stream_uuid",
+                    "WHERE s.camera_uuid = ? AND s.enabled = 1 ORDER BY s.stream_uuid",
                     (camera["camera_uuid"],),
                 ):
                     stream = dict(row)
@@ -1667,7 +1692,7 @@ class CameraRepository:
                 "JOIN cameras c ON c.camera_uuid = s.camera_uuid "
                 "LEFT JOIN consumer_bindings b ON b.camera_uuid = s.camera_uuid "
                 "AND b.stream_uuid = s.stream_uuid "
-                "WHERE s.camera_uuid = ? AND c.enabled = 1 "
+                "WHERE s.camera_uuid = ? AND c.enabled = 1 AND s.enabled = 1 "
                 "ORDER BY CASE s.health_status WHEN 'healthy' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, "
                 "CASE b.role WHEN 'detect' THEN 0 WHEN 'record' THEN 1 ELSE 2 END, s.stream_key "
                 "LIMIT 1",
@@ -1953,7 +1978,7 @@ class CameraRepository:
     def frigate_camera_selections(self, target_id: str) -> list[dict[str, str]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT camera_uuid, address_mode FROM frigate_camera_selections "
+                "SELECT camera_uuid, address_mode, detect_width, detect_height, sync_error FROM frigate_camera_selections "
                 "WHERE target_id = ? ORDER BY selected_at, camera_uuid",
                 (target_id,),
             ).fetchall()
@@ -1961,9 +1986,33 @@ class CameraRepository:
             {
                 "camera_uuid": str(row["camera_uuid"]),
                 "address_mode": str(row["address_mode"]),
+                "detect_width": row["detect_width"],
+                "detect_height": row["detect_height"],
+                "sync_error": row["sync_error"],
             }
             for row in rows
         ]
+
+    def set_frigate_detection_resolution(self, target_id, camera_uuid, width, height):
+        if (width is None) != (height is None) or (
+            width is not None and any(type(v) is not int or not 16 <= v <= 8192 or v % 2 for v in (width, height))
+        ):
+            raise ValueError("Detection dimensions must both be even integers from 16 to 8192")
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET detect_width=?, detect_height=? WHERE target_id=? AND camera_uuid=?",
+                (width, height, target_id, camera_uuid),
+            )
+            connection.commit()
+
+    def set_frigate_selection_error(self, target_id, camera_uuid, code):
+        # An error on a selection must not create an ownership binding.
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE frigate_camera_selections SET sync_error=? WHERE target_id=? AND camera_uuid=?",
+                (code, target_id, camera_uuid),
+            )
+            connection.commit()
 
     def frigate_camera_address_mode(
         self,
@@ -2230,11 +2279,23 @@ class CameraRepository:
                     timestamp,
                 )
             current_tokens = {str(profile["token"]) for profile in profiles}
+            custom = connection.execute(
+                "SELECT stream_settings_custom FROM cameras WHERE camera_uuid=?", (camera_uuid,)
+            ).fetchone()[0]
+            if custom:
+                roles = {str(row[0]): str(row[1]) for row in connection.execute(
+                    "SELECT b.role, p.profile_token FROM consumer_bindings b "
+                    "JOIN managed_streams s USING(stream_uuid) JOIN onvif_profiles p USING(profile_uuid) "
+                    "WHERE b.camera_uuid=?", (camera_uuid,)
+                )}
+                if not set(roles.values()).issubset(current_tokens):
+                    raise ValueError("Selected stream profiles are missing; existing settings were preserved")
             connection.execute("DELETE FROM consumer_bindings WHERE camera_uuid = ?", (camera_uuid,))
             if current_tokens:
                 placeholders = ",".join("?" for _ in current_tokens)
                 connection.execute(
-                    f"DELETE FROM onvif_profiles WHERE camera_uuid = ? AND profile_token NOT IN ({placeholders})",
+                    f"DELETE FROM onvif_profiles WHERE camera_uuid = ? AND profile_token NOT IN ({placeholders}) "
+                    "AND profile_uuid NOT IN (SELECT profile_uuid FROM managed_streams WHERE enabled=0)",
                     (camera_uuid, *sorted(current_tokens)),
                 )
             streams_by_token: dict[str, str] = {}
@@ -2291,9 +2352,9 @@ class CameraRepository:
                 stream_uuid = str(stream["stream_uuid"]) if stream else str(uuid.uuid4())
                 if stream is None:
                     connection.execute(
-                        "INSERT INTO managed_streams(stream_uuid, camera_uuid, profile_uuid, stream_key, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (stream_uuid, camera_uuid, profile_uuid, f"stream_{stream_uuid}", timestamp),
+                        "INSERT INTO managed_streams(stream_uuid, camera_uuid, profile_uuid, stream_key, created_at, enabled) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (stream_uuid, camera_uuid, profile_uuid, f"stream_{stream_uuid}", timestamp, int(not custom)),
                     )
                 else:
                     connection.execute(
@@ -2318,6 +2379,32 @@ class CameraRepository:
         assert adoption is not None
         return adoption
 
+    def set_stream_settings(self, camera_uuid: str, enabled: list[str], roles: dict[str, str]) -> None:
+        """Validate and save all stream choices in one transaction."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            stream_ids = {str(row[0]) for row in connection.execute(
+                "SELECT stream_uuid FROM managed_streams WHERE camera_uuid=?", (camera_uuid,)
+            )}
+            if not stream_ids:
+                raise ValueError("Adopted camera not found")
+            if len(enabled) != len(set(enabled)) or not set(enabled).issubset(stream_ids):
+                raise ValueError("Invalid enabled stream selection")
+            if set(roles) != {"record", "detect"} or not set(roles.values()).issubset(enabled):
+                raise ValueError("Record and Detect must each use an enabled stream")
+            for stream_uuid in stream_ids:
+                connection.execute("UPDATE managed_streams SET enabled=? WHERE stream_uuid=?",
+                                   (int(stream_uuid in enabled), stream_uuid))
+            for role, stream_uuid in roles.items():
+                connection.execute(
+                    "INSERT INTO consumer_bindings(camera_uuid, role, stream_uuid, updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(camera_uuid, role) DO UPDATE SET stream_uuid=excluded.stream_uuid, updated_at=excluded.updated_at",
+                    (camera_uuid, role, stream_uuid, _now()),
+                )
+            connection.execute("UPDATE cameras SET stream_settings_custom=1 WHERE camera_uuid=?", (camera_uuid,))
+            self._record_camera_health_transition(connection, camera_uuid, _now())
+            connection.commit()
+
     def managed_stream_sources(
         self,
         *,
@@ -2328,7 +2415,7 @@ class CameraRepository:
         bound_role: str | None = None,
     ) -> list[dict[str, str]]:
         health_filter = "" if include_auth_failed else "AND s.health_status != 'auth_failed' "
-        enabled_filter = "" if include_disabled else "AND a.enabled = 1 "
+        enabled_filter = "" if include_disabled else "AND a.enabled = 1 AND s.enabled = 1 "
         camera_filter = "AND s.camera_uuid = ? " if camera_uuid is not None else ""
         role_join = (
             "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
@@ -2374,7 +2461,7 @@ class CameraRepository:
                 "JOIN onvif_profiles p USING (profile_uuid) "
                 "JOIN cameras a USING (camera_uuid) "
                 "JOIN consumer_bindings b ON b.stream_uuid = s.stream_uuid "
-                "WHERE p.uri IS NOT NULL AND a.enabled = 1 "
+                "WHERE p.uri IS NOT NULL AND a.enabled = 1 AND s.enabled = 1 "
                 "AND s.health_status != 'auth_failed' "
                 "ORDER BY s.camera_uuid, s.stream_key"
             ).fetchall()
@@ -2539,6 +2626,13 @@ class CameraRepository:
                 ).fetchone()
                 if current is None:
                     continue
+                if result.status == "auth_failed":
+                    connection.execute(
+                        "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) VALUES (?, ?)",
+                        (stream_uuid, time.time() + 60),
+                    )
+                elif result.status == "ready":
+                    connection.execute("DELETE FROM stream_auth_retries WHERE stream_uuid=?", (stream_uuid,))
                 affected_cameras.add(str(current["camera_uuid"]))
                 failures = 0 if result.status in {"ready", "idle"} else int(current["consecutive_failures"]) + 1
                 if result.status == "ready":
@@ -2607,3 +2701,36 @@ class CameraRepository:
                 )
             ]
         self.record_probe_results({stream_uuid: result for stream_uuid in stream_ids})
+
+    def auth_retry_schedule(self) -> dict[str, float]:
+        with self.connect() as connection:
+            # Also enroll streams already stuck before this feature was installed.
+            connection.execute(
+                "DELETE FROM stream_auth_retries WHERE stream_uuid IN "
+                "(SELECT stream_uuid FROM managed_streams WHERE health_status != 'auth_failed' OR enabled=0)"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) "
+                "SELECT stream_uuid, ? FROM managed_streams WHERE health_status='auth_failed' AND enabled=1",
+                (time.time() + 60,),
+            )
+            rows = connection.execute("SELECT stream_uuid, next_attempt FROM stream_auth_retries").fetchall()
+            connection.commit()
+        return {str(row['stream_uuid']): float(row['next_attempt']) for row in rows}
+
+    def claim_auth_retry(self, stream_uuid: str, now: float) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT attempts FROM stream_auth_retries WHERE stream_uuid=? AND next_attempt<=?",
+                (stream_uuid, now),
+            ).fetchone()
+            if row is None:
+                return False
+            delay = (300, 900, 1800)[min(int(row['attempts']), 2)]
+            connection.execute(
+                "UPDATE stream_auth_retries SET attempts=attempts+1, next_attempt=? WHERE stream_uuid=?",
+                (now + delay, stream_uuid),
+            )
+            connection.commit()
+        return True
