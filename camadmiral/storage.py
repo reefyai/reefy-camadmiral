@@ -414,11 +414,19 @@ MIGRATIONS: tuple[str, ...] = (
         PRIMARY KEY(target_id, camera_key)
     );
     """,
-    """
-    ALTER TABLE cameras ADD COLUMN notifications_silenced INTEGER NOT NULL DEFAULT 0
-        CHECK(notifications_silenced IN (0, 1));
-    """,
 
+)
+
+# MIGRATIONS is frozen. Dev devices run branch builds whose numbered migrations
+# diverge after version 25, so a recorded version number no longer proves which
+# change was applied. Later schema changes are applied by inspecting the live
+# schema on every start, which is correct regardless of recorded versions.
+SCHEMA_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    (
+        "cameras",
+        "notifications_silenced",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(notifications_silenced IN (0, 1))",
+    ),
 )
 
 
@@ -531,6 +539,14 @@ class CameraRepository:
                             timestamp,
                         )
                 connection.commit()
+            for table, column, definition in SCHEMA_COLUMNS:
+                existing = {
+                    str(row["name"])
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            connection.commit()
 
     @staticmethod
     def _camera_health_state(

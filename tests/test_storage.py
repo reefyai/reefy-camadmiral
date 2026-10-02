@@ -813,6 +813,91 @@ class CameraRepositoryTests(unittest.TestCase):
         )
         self.assertFalse(self.repository.set_camera_notifications_silenced("missing-camera", True))
 
+    def legacy_database(self, name: str, extra_migrations: tuple[str, ...]) -> Path:
+        database = Path(self.temporary.name) / name
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "CREATE TABLE schema_migrations "
+                "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            for version, migration in enumerate(MIGRATIONS + extra_migrations, start=1):
+                connection.executescript(migration)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (version, "2026-09-21T00:00:00+00:00"),
+                )
+            connection.commit()
+        return database
+
+    def test_numbered_migrations_are_frozen(self) -> None:
+        self.assertEqual(
+            len(MIGRATIONS),
+            25,
+            "Add new schema changes to SCHEMA_COLUMNS; numbered migrations collide "
+            "with branch builds already installed on dev devices.",
+        )
+
+    def test_branch_build_database_gains_columns_its_versions_claim(self) -> None:
+        database = self.legacy_database(
+            "branch-build.db",
+            (
+                """
+                CREATE TABLE stream_auth_retries (
+                    stream_uuid TEXT PRIMARY KEY REFERENCES managed_streams(stream_uuid) ON DELETE CASCADE,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt REAL NOT NULL
+                );
+                """,
+                """
+                ALTER TABLE managed_streams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1
+                    CHECK(enabled IN (0, 1));
+                ALTER TABLE cameras ADD COLUMN stream_settings_custom INTEGER NOT NULL DEFAULT 0
+                    CHECK(stream_settings_custom IN (0, 1));
+                """,
+                """
+                ALTER TABLE frigate_camera_selections ADD COLUMN detect_width INTEGER;
+                """,
+            ),
+        )
+        repository = CameraRepository(database, b"k" * 32)
+        repository.migrate()
+
+        adoption = repository.adopt(
+            {"candidate_uuid": "candidate-branch", "display_name": "Synthetic gate"},
+            "operator",
+            "synthetic-secret",
+            [{
+                "token": "stream", "name": "Stream", "uri": "rtsp://192.0.2.62/live",
+                "width": 1280, "height": 720, "encoding": "H264", "fps": 15,
+                "bitrate_kbps": 0,
+            }],
+            {"record": "stream", "detect": "stream"},
+        )
+        self.assertFalse(adoption["notifications_silenced"])
+        self.assertTrue(repository.set_camera_notifications_silenced(adoption["camera_uuid"], True))
+        self.assertTrue(repository.adoption_map()["candidate-branch"]["notifications_silenced"])
+        with repository.connect() as connection:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(cameras)")}
+        self.assertIn("stream_settings_custom", columns)
+
+    def test_schema_columns_skip_database_that_already_has_them(self) -> None:
+        database = self.legacy_database(
+            "numbered-release.db",
+            (
+                """
+                ALTER TABLE cameras ADD COLUMN notifications_silenced INTEGER NOT NULL DEFAULT 0
+                    CHECK(notifications_silenced IN (0, 1));
+                """,
+            ),
+        )
+        repository = CameraRepository(database, b"k" * 32)
+        repository.migrate()
+        repository.migrate()
+
+        with repository.connect() as connection:
+            columns = [row["name"] for row in connection.execute("PRAGMA table_info(cameras)")]
+        self.assertEqual(columns.count("notifications_silenced"), 1)
+
     def test_incident_schema_migration_preserves_existing_rows_and_foreign_keys(self) -> None:
         legacy_database = Path(self.temporary.name) / "legacy-incidents.db"
         with sqlite3.connect(legacy_database) as connection:
