@@ -446,7 +446,7 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertFalse(self.repository.select_frigate_camera("frigate-synthetic", camera_uuid))
         self.assertEqual(
             self.repository.frigate_camera_selections("frigate-synthetic"),
-            [{"camera_uuid": camera_uuid, "address_mode": "lan"}],
+            [{"camera_uuid": camera_uuid, "address_mode": "lan", "detect_width": None, "detect_height": None, "sync_error": None}],
         )
         self.assertTrue(
             self.repository.set_frigate_target_address_mode(
@@ -895,8 +895,19 @@ class CameraRepositoryTests(unittest.TestCase):
         repository.migrate()
 
         with repository.connect() as connection:
-            columns = [row["name"] for row in connection.execute("PRAGMA table_info(cameras)")]
-        self.assertEqual(columns.count("notifications_silenced"), 1)
+            def columns(table: str) -> list[str]:
+                return [row["name"] for row in connection.execute(f"PRAGMA table_info({table})")]
+
+            self.assertEqual(columns("cameras").count("notifications_silenced"), 1)
+            self.assertIn("stream_settings_custom", columns("cameras"))
+            self.assertIn("enabled", columns("managed_streams"))
+            self.assertTrue(
+                {"detect_width", "detect_height", "sync_error"}
+                <= set(columns("frigate_camera_selections"))
+            )
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stream_auth_retries'"
+            ).fetchone())
 
     def test_incident_schema_migration_preserves_existing_rows_and_foreign_keys(self) -> None:
         legacy_database = Path(self.temporary.name) / "legacy-incidents.db"

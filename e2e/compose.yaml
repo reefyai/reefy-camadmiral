@@ -44,7 +44,7 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
 
   frigate:
-    image: ghcr.io/blakeblackshear/frigate:0.17.1
+    image: ghcr.io/blakeblackshear/frigate:0.17.2
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command: ["test -f /config/config.yml || cp /e2e/frigate.yml /config/config.yml; exec /init"]

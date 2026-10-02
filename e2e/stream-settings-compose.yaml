@@ -1,0 +1,4 @@
+services:
+  frigate:
+    volumes:
+      - ./fixtures/frigate-stream-settings.yml:/e2e/frigate.yml:ro

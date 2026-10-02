@@ -97,6 +97,7 @@ def _validated_updates(
     results_by_token: dict[str, ProbeResult] | None = None,
 ) -> tuple[dict[str, str], str]:
     streams = adoption.get("streams", [])
+    enabled_tokens = {str(stream["profile_token"]) for stream in streams if stream.get("enabled", True)}
     source_kinds = {str(stream.get("source_kind") or "onvif") for stream in streams}
     address = str(candidate.get("ip") or "")
     if source_kinds == {"onvif"}:
@@ -114,9 +115,9 @@ def _validated_updates(
             if profile.get("token") and profile.get("uri")
         }
         tokens = {str(stream["profile_token"]) for stream in streams}
-        if not tokens or not tokens.issubset(discovered):
+        if not enabled_tokens or not enabled_tokens.issubset(discovered):
             return {}, "profiles_changed"
-        updates = {token: discovered[token] for token in tokens}
+        updates = {token: discovered[token] for token in tokens if token in discovered}
         if any(_source_host(uri) != address for uri in updates.values()):
             return {}, "endpoint_mismatch"
     elif source_kinds.issubset({"manual_rtsp", "catalog_rtsp"}):
@@ -132,6 +133,7 @@ def _validated_updates(
         pending = {
             executor.submit(probe_source, uri, username, password): token
             for token, uri in updates.items()
+            if token in enabled_tokens
         }
         for future in as_completed(pending):
             token = pending[future]
@@ -174,7 +176,7 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
         previous_hosts = {
             _source_host(str(stream.get("uri") or ""))
             for stream in streams
-            if stream.get("uri")
+            if stream.get("uri") and stream.get("enabled", True)
         }
         previous_hosts.discard("")
         if not address or len(previous_hosts) != 1:

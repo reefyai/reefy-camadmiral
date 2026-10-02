@@ -154,6 +154,13 @@ Snapshots wait up to 30 seconds for a decoded frame (configurable with
 so slow snapshots do not block active-stream monitoring. Selected streams are
 checked independently: a failed thumbnail does not mark another stream offline.
 
+Authentication errors are retried automatically after one minute, then five,
+fifteen, and thirty minutes, with subsequent attempts every thirty minutes.
+Retry timing survives restarts. Recovery checks are bounded and run one at a time
+per camera; a decoded video frame is required before clearing the error.
+Updating credentials uses the existing immediate validation flow. Working sibling
+streams keep their own health status, and camera URLs are not rewritten.
+
 Stop CamAdmiral without removing its container, credentials, or data:
 
 ```console
@@ -244,7 +251,30 @@ Documentation screenshots use synthetic device identities and TEST-NET addresses
 
 **Need another notification service?** Please open a PR with the provider.
 
+## Stream settings
+
+Open a camera's **Streams** dialog to enable or disable each stream. In **Roles**, choose
+the **Record** and **Detect** streams from the dropdowns. Both roles can use the same stream. For a limited-bandwidth
+connection, disable the high-resolution stream and assign both roles to the low-resolution one.
+
+**Save stream settings** stops disabled streams, including health probes, and updates
+existing Frigate selections. Saving briefly reconnects all streams through the shared media
+relay. Settings survive restarts and camera address recovery; re-enabling a stream restores
+its original URL. Disabled streams are omitted from the consumer API.
+
 ## Frigate integration
+
+Frigate sync applies camera configuration independently of camera availability. An offline
+camera can be synced using its saved stream metadata; video health is shown separately.
+Existing cameras or stream aliases that CamAdmiral does not own are reported as conflicts
+and are never overwritten automatically, including disabled camera placeholders.
+
+In **Choose cameras**, each selected camera offers **Detection resolution**: original stream
+size (default), or custom width and height (initially 640 x 360). Custom dimensions are saved
+per camera and Frigate integration and preserved by subsequent syncs. A different aspect ratio
+reshapes the detection image; it does not resize recordings or the original live stream.
+After changing dimensions for an existing camera, restart Frigate to apply them to its video
+processing pipeline. Sync saves the configuration without triggering a restart for this change.
 
 Use **Find Frigate** in Settings > Integrations to find local Frigate APIs on
 ports 5000, 8971, and 20000-20999. Choose a result to review its address and

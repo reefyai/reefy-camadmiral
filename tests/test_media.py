@@ -46,6 +46,7 @@ class MediaTests(unittest.TestCase):
     @patch("camadmiral.media._request")
     def test_runtime_activity_skips_go2rtc_without_managed_streams(self, request) -> None:
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_runtime_sources.return_value = []
 
         monitor = RelayRuntimeActivityMonitor()
@@ -82,6 +83,7 @@ class MediaTests(unittest.TestCase):
         }
         request.side_effect = lambda *_args: json.dumps(runtime).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_runtime_sources.return_value = [
             {
                 "stream_uuid": "stream-1",
@@ -128,6 +130,7 @@ class MediaTests(unittest.TestCase):
         }
         request.side_effect = lambda *_args: json.dumps(runtime).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_runtime_sources.return_value = [
             {
                 "stream_uuid": "stream-1",
@@ -173,6 +176,7 @@ class MediaTests(unittest.TestCase):
         }
         request.side_effect = lambda *_args: json.dumps(runtime).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_runtime_sources.return_value = [
             {
                 "stream_uuid": "stream-1",
@@ -228,6 +232,7 @@ class MediaTests(unittest.TestCase):
         }
         request.side_effect = lambda *_args: json.dumps(runtime).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         sources = [
             {
                 "stream_uuid": "active",
@@ -289,6 +294,7 @@ class MediaTests(unittest.TestCase):
             for index in range(3)
         ]
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = sources
         monitor = RelayHealthMonitor(
             frame_probe_interval=3600,
@@ -325,6 +331,7 @@ class MediaTests(unittest.TestCase):
             "password": "",
         }
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = [source]
         monitor = RelayHealthMonitor(frame_probe_interval=60)
 
@@ -364,6 +371,7 @@ class MediaTests(unittest.TestCase):
             for index in range(3)
         ]
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = sources
         monitor = RelayHealthMonitor(
             frame_probe_interval=60,
@@ -407,6 +415,7 @@ class MediaTests(unittest.TestCase):
             },
         ]
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.side_effect = [sources, [sources[0]]]
         monitor = RelayHealthMonitor()
 
@@ -462,6 +471,7 @@ class MediaTests(unittest.TestCase):
         }
         request.return_value = json.dumps(runtime).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.side_effect = [sources, [sources[0]]]
         monitor = RelayHealthMonitor()
 
@@ -511,6 +521,7 @@ class MediaTests(unittest.TestCase):
             {"stream_detect": {}} if path == "/api/preload" else runtime
         ).encode()
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = sources
         monitor = RelayHealthMonitor()
 
@@ -522,10 +533,9 @@ class MediaTests(unittest.TestCase):
             sources[0]["username"],
             sources[0]["password"],
         )
-        repository.record_camera_auth_failure.assert_called_once_with(
-            "camera-1",
-            ProbeResult("auth_failed", 20),
-        )
+        repository.record_camera_auth_failure.assert_not_called()
+        self.assertEqual(repository.record_probe_results.call_args.args[0][sources[0]['stream_uuid']],
+                         ProbeResult('auth_failed', 20))
 
     @patch("camadmiral.media._request")
     def test_failed_camera_preload_does_not_block_other_cameras(self, request) -> None:
@@ -840,7 +850,7 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(result.status, "auth_failed")
 
     @patch("camadmiral.media._probe_source_entries")
-    def test_upstream_auth_failure_marks_whole_camera_and_stops_more_probes(self, probe_entries) -> None:
+    def test_upstream_auth_failure_does_not_mark_working_sibling(self, probe_entries) -> None:
         sources = [
             {
                 "camera_uuid": "camera-1",
@@ -860,14 +870,17 @@ class MediaTests(unittest.TestCase):
             },
         ]
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = sources
-        probe_entries.return_value = {"stream-1": ProbeResult("auth_failed", 50)}
+        probe_entries.side_effect = [{"stream-1": ProbeResult("auth_failed", 50)},
+                                     {"stream-2": ProbeResult("ready", 50)}]
 
         probe_upstreams(repository)
 
-        probe_entries.assert_called_once_with([sources[0]])
-        repository.record_camera_auth_failure.assert_called_once()
-        repository.record_probe_results.assert_called_once_with({})
+        self.assertEqual(probe_entries.call_count, 2)
+        repository.record_camera_auth_failure.assert_not_called()
+        repository.record_probe_results.assert_called_once_with({
+            'stream-1': ProbeResult('auth_failed', 50), 'stream-2': ProbeResult('ready', 50)})
 
     @patch("camadmiral.media.probe_streams", return_value={})
     @patch("camadmiral.media.runtime_stream_keys", return_value={"stream_one"})
@@ -889,6 +902,7 @@ class MediaTests(unittest.TestCase):
             "credential_uuid": "credential-1",
         }
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = [source]
         repository.record_desired_media_revision.return_value = (7, "desired")
         repository.rtsp_access_password.return_value = "synthetic-media-secret"
@@ -902,6 +916,7 @@ class MediaTests(unittest.TestCase):
     @patch("camadmiral.media.reconcile_streams", side_effect=RuntimeError("synthetic failure"))
     def test_reconcile_failure_does_not_promote_desired_revision(self, _reconcile) -> None:
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = []
         repository.record_desired_media_revision.return_value = (8, "desired")
 
@@ -922,6 +937,7 @@ class MediaTests(unittest.TestCase):
         reconcile,
     ) -> None:
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = [{"stream_key": "stream_one"}]
 
         changed = reconcile_runtime_drift(repository)
@@ -937,6 +953,7 @@ class MediaTests(unittest.TestCase):
         reconcile,
     ) -> None:
         repository = Mock()
+        repository.auth_retry_schedule.return_value = {}
         repository.managed_stream_sources.return_value = [{"stream_key": "stream_one"}]
 
         changed = reconcile_runtime_drift(repository)
