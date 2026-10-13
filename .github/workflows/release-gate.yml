@@ -24,8 +24,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: camadmiral-release-gate-${{ github.ref }}
-  cancel-in-progress: true
+  group: camadmiral-release-gate-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
   stalled-snapshot:
@@ -61,7 +61,7 @@ jobs:
 
   classify-changes:
     name: Classify changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     outputs:
       runtime: ${{ steps.classify.outputs.runtime }}
       e2e: ${{ steps.classify.outputs.e2e }}
