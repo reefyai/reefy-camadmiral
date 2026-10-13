@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: camadmiral-relay-latency
-  cancel-in-progress: true
+  group: camadmiral-relay-latency-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
   benchmark:
