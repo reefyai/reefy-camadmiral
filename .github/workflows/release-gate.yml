@@ -35,7 +35,7 @@ jobs:
     concurrency:
       group: camadmiral-frigate-identity
       cancel-in-progress: false
-    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +78,7 @@ jobs:
       cancel-in-progress: false
     needs: classify-changes
     if: needs.classify-changes.outputs.e2e == 'true'
-    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -158,9 +158,9 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.runtime == 'true'
     # Never execute code from a fork on Reefy's persistent infrastructure.
-    # Trusted branches use the large runner so Docker and browser caches are
-    # retained between release-gate runs.
-    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
+    # Trusted branches use the general runner pool, retaining Docker and browser
+    # caches between release-gate runs.
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

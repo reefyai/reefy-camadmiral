@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   memory:
-    runs-on: [self-hosted, Linux, X64, big-bird, large]
+    runs-on: [self-hosted, Linux, X64, big-bird]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
