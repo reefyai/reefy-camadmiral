@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import yaml
+
 from e2e.scenarios import recovered_streams_ready
 
 
@@ -53,13 +55,30 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("docker/setup-qemu-action", publish)
         self.assertNotIn("uses: ./.github/workflows/release-gate.yml", publish)
 
-    def test_release_gate_uses_big_runner_only_for_trusted_code(self) -> None:
+    def test_release_gate_uses_general_runner_only_for_trusted_code(self) -> None:
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
 
-        self.assertIn('"self-hosted","Linux","X64","big-bird","large"', gate)
-        self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", gate)
-        self.assertIn('["ubuntu-latest"]', gate)
+        for workflow in ("release-gate.yml", "stalled-snapshot.yml"):
+            jobs = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text())["jobs"]
+            for job_id, job in jobs.items():
+                if "runs-on" not in job:
+                    continue
+                with self.subTest(workflow=workflow, job=job_id):
+                    selector = job["runs-on"]
+                    self.assertIsInstance(selector, str)
+                    self.assertIn('"self-hosted","Linux","X64","big-bird"', selector)
+                    self.assertNotIn('"large"', selector)
+                    self.assertIn("inputs.github_hosted", selector)
+                    self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", selector)
+                    self.assertIn('["ubuntu-latest"]', selector)
         self.assertNotIn('tags: ["v*"]', gate)
+
+    def test_standalone_media_jobs_use_general_runners(self) -> None:
+        for workflow in ("memory-pressure.yml", "relay-latency.yml"):
+            jobs = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text())["jobs"]
+            for job_id, job in jobs.items():
+                with self.subTest(workflow=workflow, job=job_id):
+                    self.assertEqual(job["runs-on"], ["self-hosted", "Linux", "X64", "big-bird"])
 
     def test_release_gate_runs_e2e_for_releases_and_relay_runtime_changes(self) -> None:
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
