@@ -53,10 +53,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("docker/setup-qemu-action", publish)
         self.assertNotIn("uses: ./.github/workflows/release-gate.yml", publish)
 
-    def test_release_gate_uses_big_runner_only_for_trusted_code(self) -> None:
+    def test_release_gate_uses_general_runner_only_for_trusted_code(self) -> None:
         gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
 
-        self.assertIn('"self-hosted","Linux","X64","big-bird","large"', gate)
+        self.assertIn('"self-hosted","Linux","X64","big-bird"', gate)
+        self.assertNotIn('"large"', gate)
         self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", gate)
         self.assertIn('["ubuntu-latest"]', gate)
         self.assertNotIn('tags: ["v*"]', gate)
