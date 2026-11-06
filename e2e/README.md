@@ -179,3 +179,44 @@ The workaround retains the original camera key with the camera, recording,
 and dashboard visibility disabled. The recording-continuity assertion is unchanged;
 the test must now pass without modifying Frigate. CamAdmiral preserves overridden
 settings in its database for re-selection, including inherited configuration values.
+
+## Frigate import and takeover regression
+
+`python3 e2e/frigate_import.py` runs the committed migration lab with real
+Frigate 0.17.2, synthetic authenticated/open media, persistent recording cache,
+and disposable volumes. The release gate runs it before the main lab and
+uploads its evidence on success or failure. These labs share private subnets
+and must not be launched together; the workflow preserves the existing parallel
+jobs and runs the new lab within the established sequential lab job.
+
+The fixture mixes a new camera, an existing CamAdmiral camera with a different
+display name, authenticated Record/Detect sources, and disabled, offline, and
+unsupported entries. The test exercises browser preview, cancellation,
+selection, restart acknowledgement, takeover, repeat execution, full sync,
+stream-role changes, application restarts, and restoration. It checks unchanged
+Frigate keys, display names, masks, zones, detection FPS, recording settings,
+groups, and untouched cameras. Real recordings are saved before and after
+migration, historical playback is decoded, and synthetic event/review fixture
+rows must survive. Unit/component tests in `tests/test_frigate_import.py` cover
+source resolution, ambiguous matches, encryption/redaction, source validation
+failure, stale previews, interrupted-save retry, and ownership boundaries.
+
+Evidence is retained in `e2e-artifacts/frigate-import/`: `result.json` includes
+source revision, historical recording identities, event/review snapshots, and
+playback results; `transcript.log` retains the lab output and container logs;
+browser screenshots show only synthetic data. Set `CAMADMIRAL_E2E_KEEP=1` to
+retain a failed lab. Cleanup uses the same three Compose files with project
+`camadmiral-frigate-import` and `down --volumes --remove-orphans`.
+
+The import fixture also injects a deterministic stalled-media fault. The test
+restarts CamAdmiral while an import is probing that source, requires the durable
+job to become retryable with Frigate unchanged, resumes media, and retries the
+same journal without creating duplicate cameras. This exercises process-crash
+recovery through container and HTTP boundaries rather than an in-process mock.
+
+After takeover, the authenticated synthetic source moves to a new private
+address under the same DNS name and emits a different frame size. The test must
+decode that new size through Frigate's recording alias while preserving camera
+and stream IDs, downstream URLs, Frigate display name, and detection tuning.
+The browser also exercises explicit acceptance of existing CamAdmiral settings
+when imported credentials differ, and leaves ambiguous profile matches alone.
