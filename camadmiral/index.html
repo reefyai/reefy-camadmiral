@@ -136,6 +136,12 @@
     .frigate-target-state.error { color: #fda4af; }
     .frigate-target-error { margin-top: 6px; color: #fda4af; font-size: 11px; overflow-wrap: anywhere; }
     .frigate-target-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+    .frigate-target.frigate-import-camera { display: block; padding: 8px 12px; }
+    .frigate-import-summary { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+    .frigate-import-name { display: flex; align-items: center; gap: 6px; flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }
+    .frigate-import-name input { flex: 0 0 auto; margin: 0; }
+    .frigate-import-status { flex: 0 0 auto; color: #8ea2b3; font-size: 12px; }
+    .frigate-import-summary > .row-action { flex: 0 0 auto; }
     .frigate-camera-chooser { display: grid; gap: 12px; }
     .frigate-camera-chooser-copy { margin: 0; color: #8ea2b3; font-size: 12px; line-height: 1.45; }
     .frigate-camera-address-choice { margin: 0; }
@@ -621,6 +627,10 @@
       border: 2px solid rgba(251, 191, 36, .28);
       border-top-color: #fbbf24; border-radius: 50%; animation: spin .75s linear infinite;
     }
+    .import-progress { width: 100%; height: 8px; margin: 8px 0 12px; accent-color: #75f4e2; }
+    .import-progress-header { position: sticky; top: 0; z-index: 1; padding: 12px 0; background: #081421; border-bottom: 1px solid rgba(148, 163, 184, .12); }
+    .import-controls { margin: 8px 0 12px; }
+    @media (prefers-reduced-motion: reduce) { .import-status .inline-spinner { animation: none; } }
     @keyframes spin { to { transform: rotate(360deg); } }
     .media-state { margin-top: 4px; color: #7890a4; font: 11px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
     .media-state.ready { color: #86efac; }
@@ -2229,6 +2239,244 @@
       cameraActionMenu.querySelector("button")?.focus();
     }
 
+    async function openFrigateImport(target, trigger) {
+      const content = document.createElement("div");
+      const progressHeader = addText(content, "div", "import-progress-header", "");
+      const statusLine = addText(progressHeader, "div", "adoption-progress import-status", "");
+      statusLine.setAttribute("role", "status");
+      statusLine.setAttribute("aria-live", "polite");
+      statusLine.setAttribute("aria-atomic", "true");
+      const spinner = addText(statusLine, "span", "inline-spinner", "");
+      spinner.setAttribute("aria-hidden", "true");
+      const status = addText(statusLine, "span", "", "Reading Frigate cameras…");
+      const progressBar = document.createElement("progress");
+      progressBar.className = "import-progress";
+      progressBar.setAttribute("aria-label", "Camera import progress");
+      progressBar.hidden = true;
+      progressHeader.append(progressBar);
+      const controls = addText(content, "div", "import-controls", "");
+      const selectAll = addText(controls, "button", "row-action", "Select all");
+      selectAll.type = "button";
+      selectAll.disabled = true;
+      const rows = addText(content, "div", "", "");
+      const restartLabel = addText(content, "label", "", "");
+      const restart = document.createElement("input");
+      restart.type = "checkbox";
+      restartLabel.append(restart, document.createTextNode(" Allow Frigate restart"));
+      addText(content, "p", "integration-help", "Selected cameras will use CamAdmiral video. Their Frigate names, history, masks, zones, groups, recording policy, and tuning stay in place. A camera with no free connection slot is temporarily paused before validation; failed validation restores its original Frigate configuration. Other recorders or clients may still occupy the camera's connections, leaving video unavailable after restoration. This may require an extra Frigate restart, briefly interrupting recording on all cameras. Disabled and offline cameras stay unchanged.");
+      const apply = addText(content, "button", "row-action", "Import and manage selected");
+      apply.type = "button";
+      apply.disabled = true;
+      const endpoint = `/internal/frigate-targets/${encodeURIComponent(target.target_id)}`;
+      let job;
+      let choices = new Map();
+      let lastSelected = [];
+      let lastKeep = [];
+      let submitting = false;
+      let restoring = "";
+      const storageKey = `frigate-import-${target.target_id}`;
+      openAppModal("frigate-import", `Import from ${target.name}`, content, trigger, "wide");
+      function busy() { return submitting || Boolean(restoring) || job?.status === "running"; }
+      function setMessage(message, running = false) {
+        if (status.textContent !== message) status.textContent = message;
+        spinner.hidden = !running;
+        rows.setAttribute("aria-busy", String(running));
+      }
+      function captureSelections() {
+        if (!choices.size) return;
+        lastSelected = Array.from(choices).filter(([, choice]) => choice.checked).map(([key]) => key);
+        lastKeep = Array.from(choices).filter(([, choice]) => choice.keepSettings?.checked).map(([key]) => key);
+      }
+      function restoreSelections() {
+        lastSelected = [...new Set([...(job.selected || []), ...job.cameras.filter(row => row.status === "applied").map(row => row.key)])];
+        lastKeep = job.keep_existing || [];
+      }
+      const phases = {
+        checking_configuration: "Checking the saved Frigate configuration",
+        releasing_original: "Releasing Frigate's camera connection before validating CamAdmiral video",
+        validating_source: "Validating camera video",
+        adding_camera: "Adding the camera to CamAdmiral",
+        preparing_relay: "Preparing CamAdmiral video",
+        validating_relay: "Validating video through CamAdmiral",
+        saving_frigate: "Updating the Frigate connection",
+        waiting_for_frigate: "Waiting for Frigate to restart and video to resume",
+        learning_identity: "Learning the camera's stable device identity",
+        restoring_original: "Restoring the original Frigate connection",
+      };
+      function updateStatus() {
+        const selected = new Set(submitting ? lastSelected : job.selected?.length ? job.selected : lastSelected);
+        const attempt = job.cameras.filter(row => selected.has(row.key));
+        const finished = submitting ? [] : attempt.filter(row => ["applied", "already_managed", "error", "pending"].includes(row.status));
+        progressBar.hidden = !busy() || Boolean(restoring);
+        progressBar.max = Math.max(1, attempt.length);
+        progressBar.value = finished.length;
+        if (restoring) { setMessage(`Restoring the original connection for ${restoring}…`, true); return; }
+        if (busy()) {
+          if (!attempt.length) { progressBar.removeAttribute("value"); setMessage("Import is running. Waiting for camera progress…", true); return; }
+          const current = submitting ? null : attempt.find(row => row.status === "running");
+          const ordinal = current ? attempt.indexOf(current) + 1 : Math.min(finished.length + 1, attempt.length);
+          const stage = phases[current?.phase] || "Preparing the selected cameras";
+          const stream = current?.stream_total ? ` Stream ${current.stream_index} of ${current.stream_total}.` : "";
+          setMessage(`Importing ${ordinal} of ${attempt.length} selected cameras. ${current ? current.name + ": " : ""}${stage}.${stream}`, true);
+          return;
+        }
+        if (job.status === "preview") { setMessage("Review matches and changes before importing. Unchecked cameras stay unchanged."); return; }
+        const relevant = job.cameras.filter(row => selected.has(row.key) || row.status === "applied");
+        const managed = relevant.filter(row => ["applied", "already_managed"].includes(row.status)).length;
+        const failed = relevant.filter(row => row.status === "error").length;
+        const pending = relevant.length - managed - failed;
+        const managedLabel = `${managed} camera${managed === 1 ? "" : "s"} managed`;
+        if (job.status === "error") setMessage(`Import stopped: ${managedLabel}, ${failed} failed, ${pending} unfinished. Review results and retry.`);
+        else if (failed || pending) setMessage(`Import finished with errors: ${managedLabel}, ${failed} failed, ${pending} pending. Review failed cameras before retrying.`);
+        else setMessage(`Import complete: ${managed} camera${managed === 1 ? "" : "s"} managed.`);
+      }
+      function updateApply() {
+        apply.disabled = busy() || !restart.checked || !Array.from(choices.values()).some(c => c.checked && !c.disabled);
+        selectAll.disabled = busy() || !job || !Array.from(choices.values()).some(c => !c.disabled);
+        restart.disabled = busy();
+      }
+      restart.addEventListener("change", updateApply);
+      selectAll.addEventListener("click", () => {
+        for (const choice of choices.values()) if (!choice.disabled) choice.checked = true;
+        updateApply();
+      });
+      const reasons = {
+        interrupted_import: "CamAdmiral restarted during import. Review the results and retry the unfinished cameras.",
+        camera_changed_refresh_preview: "CamAdmiral settings changed. Reopen import to review a fresh preview.",
+        existing_settings_differ: "Existing CamAdmiral credentials, enabled state, or stream roles differ. Review before linking.",
+        ambiguous_source_match: "Several source matches need review. No automatic merge will be made.",
+        camera_already_linked: "This CamAdmiral camera already has a different Frigate binding.",
+        shared_live_alias: "This live-view source is shared with another Frigate camera.",
+        disabled_camera: "Disabled in Frigate. It will remain disabled and unchanged.",
+        configuration_changed_refresh_preview: "Frigate configuration changed. Reopen import to review a fresh preview.",
+        rollback_required: "Automatic restoration could not finish. Retry or restore the original connection before continuing.",
+        incomplete_import_use_retry: "An interrupted import needs retry or restoration.",
+        unresolved_secret: "A source references credentials that Frigate has not resolved.",
+        different_stream_credentials: "Streams use different credentials and need manual review.",
+        transcoded_capture_source: "This capture input uses a conversion that needs manual review.",
+        source_unavailable: "CamAdmiral could not open an upstream video stream. Check the source and the camera's available connections.",
+        source_timeout: "The camera did not provide video before validation timed out.",
+        source_auth_failed: "The camera rejected the video credentials.",
+        source_no_video: "The upstream stream did not provide video.",
+        shared_handoff_source: "This camera shares an upstream alias. Release a connection manually before retrying; other cameras were left unchanged.",
+        unsafe_handoff_source: "This source needs a manual connection handoff before importing.",
+        handoff_release_failed: "Frigate's old reader could not be confirmed paused. Review restoration before retrying.",
+        restore_media_in_use: "Another integration uses this camera's relay. Remove that selection before restoring its original reader.",
+      };
+      const configurationResults = {
+        unchanged: "This import did not change the Frigate configuration.",
+        restored: "Original Frigate configuration restored. Video availability still needs checking.",
+      };
+      function render(preserve = true) {
+        if (preserve) captureSelections();
+        rows.replaceChildren();
+        choices = new Map();
+        const labels = {managed: "Already managed", existing: "Existing CamAdmiral matches", new: "New cameras", conflict: "Needs review"};
+        for (const category of ["managed", "existing", "new", "conflict"]) {
+          const members = job.cameras.filter(r => r.category === category);
+          if (!members.length) continue;
+          addText(rows, "h3", "", labels[category]);
+          for (const row of members) {
+            const item = addText(rows, "div", "frigate-target frigate-import-camera", "");
+            const detail = addText(item, "div", "frigate-import-summary", "");
+            const label = addText(detail, "label", "frigate-import-name", "");
+            const choice = document.createElement("input");
+            choice.type = "checkbox";
+            const applied = row.status === "applied" || row.category === "managed";
+            choice.checked = lastSelected.includes(row.key) || applied;
+            choice.disabled = busy() || applied || !(row.can_import || (row.can_keep_existing && lastKeep.includes(row.key)));
+            choice.setAttribute("aria-label", `Import ${row.name}`);
+            label.append(choice, document.createTextNode(` ${row.name}`));
+            choices.set(row.key, choice);
+            choice.addEventListener("change", () => {captureSelections(); updateApply();});
+            if (row.reason) addText(item, "p", "integration-help", reasons[row.reason] || "This camera's import could not complete. Review its result and source settings before retrying.");
+            if (row.status === "error" && configurationResults[row.configuration_status]) addText(item, "p", "integration-help", configurationResults[row.configuration_status]);
+            if (applied && row.identity_status === "unavailable") addText(item, "p", "integration-help", "Video is managed. Automatic IP recovery needs a verified device identity; use Link device identity in camera Details.");
+            if (row.can_keep_existing) {
+              const keepLabel = addText(item, "label", "", "");
+              const keep = document.createElement("input");
+              keep.type = "checkbox";
+              keep.checked = lastKeep.includes(row.key);
+              keep.disabled = busy() || applied;
+              keep.setAttribute("aria-label", `Keep CamAdmiral settings for ${row.name}`);
+              keepLabel.append(keep, document.createTextNode(" Link using existing CamAdmiral credentials and stream roles"));
+              keep.addEventListener("change", () => {choice.disabled = busy() || applied || !keep.checked; if (!keep.checked) choice.checked = false; captureSelections(); updateApply();});
+              choice.keepSettings = keep;
+            }
+            if (row.status && row.status !== "ready") addText(detail, "span", "frigate-import-status", row.status === "running" ? (phases[row.phase] || "Waiting to import") : row.status === "queued" ? "Waiting to import" : row.status === "error" ? "Failed" : row.status === "applied" ? "Managed" : row.status);
+            if (row.can_restore || row.status === "applied" || row.reason === "rollback_required" || row.reason === "incomplete_import_use_retry") {
+              const rollback = addText(detail, "button", "row-action", "Restore original Frigate connection");
+              rollback.type = "button";
+              rollback.disabled = busy();
+              rollback.addEventListener("click", async () => {
+                if (!restart.checked) {setMessage("Allow Frigate restart before restoring a connection."); return;}
+                restoring = row.name;
+                render();
+                try {
+                  const response = await fetch(`${endpoint}/import-rollback`, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "rollback-frigate-import"}, body: JSON.stringify({camera_key: row.key, allow_restart: true})});
+                  const result = await response.json();
+                  if (!response.ok) throw new Error("The connection could not be restored. Check for configuration changes or another running synchronization.");
+                  restoring = "";
+                  await refresh();
+                  setMessage("Original Frigate configuration restored. Check recording and video availability.");
+                } catch (error) {restoring = ""; render(); setMessage(error.message);}
+              });
+            }
+          }
+        }
+        updateApply();
+        updateStatus();
+      }
+      async function poll() {
+        while (job.status === "running" && appModalKind === "frigate-import" && content.isConnected) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(job.id)}`, {cache: "no-store"});
+          if (!response.ok) throw new Error("Import progress could not be read. Reopen import to reconnect.");
+          job = await response.json();
+          if (!content.isConnected) return;
+          render();
+        }
+        updateStatus();
+        if (job.status !== "running") {apply.textContent = "Retry selected"; loadFrigateTargets();}
+      }
+      async function refresh() {
+        const response = await fetch(`${endpoint}/import`, {cache: "no-store"});
+        if (!response.ok) throw new Error("Frigate cameras could not be read. Check the integration connection.");
+        job = await response.json();
+        lastSelected = [];
+        lastKeep = [];
+        choices = new Map();
+        apply.textContent = "Import and manage selected";
+        sessionStorage.setItem(storageKey, job.id);
+        render();
+      }
+      apply.addEventListener("click", async () => {
+        lastSelected = Array.from(choices).filter(([key, choice]) => choice.checked && !choice.disabled).map(([key]) => key);
+        lastKeep = Array.from(choices).filter(([key, choice]) => choice.checked && choice.keepSettings?.checked).map(([key]) => key);
+        submitting = true;
+        render(false);
+        try {
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(job.id)}`, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "import-frigate-cameras"}, body: JSON.stringify({selected: lastSelected, keep_existing: lastKeep, allow_restart: restart.checked})});
+          if (!response.ok) throw new Error(response.status === 409 ? "Synchronization is busy. Try again shortly." : "Import could not be started.");
+          job = await response.json();
+          submitting = false;
+          render();
+          await poll();
+        } catch (error) {submitting = false; render(); setMessage(error.message, job?.status === "running");} finally {submitting = false; updateApply();}
+      });
+      try {
+        const previous = sessionStorage.getItem(storageKey);
+        if (previous) {
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(previous)}`, {cache: "no-store"});
+          if (response.ok) {
+            job = await response.json();
+            if (job.status === "running" || job.cameras.some(r => r.status === "error")) {restoreSelections(); render(); await poll(); return;}
+          }
+        }
+        await refresh();
+      } catch (error) {setMessage(error.message, job?.status === "running");}
+    }
+
     function renderFrigateTargets(data) {
       frigateTargets.replaceChildren();
       const targets = data.targets || [];
@@ -2254,6 +2502,9 @@
         const chooseCameras = addText(actions, "button", "row-action", "Choose cameras");
         chooseCameras.type = "button";
         chooseCameras.addEventListener("click", () => openFrigateCameraChooser(target, chooseCameras));
+        const importCameras = addText(actions, "button", "row-action", "Import from Frigate");
+        importCameras.type = "button";
+        importCameras.addEventListener("click", () => openFrigateImport(target, importCameras));
         const edit = addText(actions, "button", "row-action", "Edit");
         edit.type = "button";
         edit.addEventListener("click", () => openFrigateEditor(target, edit));
@@ -2809,7 +3060,7 @@
       if (!device?.adoption?.camera_uuid) return;
       const current = availabilityResults.get(device.adoption.camera_uuid);
       void loadCameraAvailability(device, current?.window || "24h", true);
-      if (device.camera_origin !== "direct") void loadCameraIdentityHistory(device, true);
+      if (device.camera_origin !== "direct" || device.mac || device.onvif?.endpoint_reference) void loadCameraIdentityHistory(device, true);
     }
 
     function matchesSearch(device, query) {
@@ -3309,6 +3560,62 @@
       renderRows();
     }
 
+    function openCameraIdentityLink(device, trigger) {
+      const form = document.createElement("form");
+      form.className = "setup-form";
+      addText(form, "p", "integration-help", "Identify this camera at its current IP address, then confirm its device identity. Its camera ID, stream URLs, Frigate names and history stay in place. Video is validated before saved stream addresses change.");
+      const addressLabel = addText(form, "label", "setup-field", "Camera's current IP address");
+      const address = document.createElement("input");
+      address.required = true;
+      address.value = device.ip || "";
+      addressLabel.append(address);
+      const details = addText(form, "div", "integration-help", "");
+      const status = addText(form, "div", "setup-status", "");
+      status.setAttribute("role", "status");
+      const submit = addText(form, "button", "row-action", "Identify camera");
+      submit.type = "submit";
+      let review = null;
+      address.addEventListener("input", () => {review = null; details.replaceChildren(); submit.textContent = "Identify camera"; submit.disabled = false;});
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        submit.disabled = true;
+        address.disabled = true;
+        status.replaceChildren();
+        addText(status, "span", "inline-spinner", "").setAttribute("aria-hidden", "true");
+        status.append(document.createTextNode(review ? " Linking device identity…" : " Identifying the camera…"));
+        try {
+          const response = await fetch(`/internal/cameras/${encodeURIComponent(device.adoption.camera_uuid)}/identity`, {
+            method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "link-camera-identity"},
+            body: JSON.stringify({address: address.value.trim(), confirm: Boolean(review),
+                                  endpoint_reference: review?.endpoint_reference || null, mac: review?.mac || null})
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || "The device identity could not be linked.");
+          status.replaceChildren();
+          if (result.status === "linked") {
+            status.textContent = "Device identity linked. Video recovery is being validated.";
+            identityHistoryResults.delete(device.adoption.camera_uuid);
+            await refresh();
+            return;
+          }
+          review = result.identity;
+          details.replaceChildren();
+          addText(details, "p", "", `IP address: ${review.address}`);
+          addText(details, "p", "", `MAC address: ${review.mac || "Unavailable"}`);
+          addText(details, "p", "", `ONVIF identity: ${review.endpoint_reference || "Unavailable"}`);
+          status.textContent = "Confirm that this is the device belonging to the existing camera.";
+          submit.textContent = "Confirm device identity";
+          submit.disabled = false;
+        } catch (error) {
+          review = null;
+          status.replaceChildren(document.createTextNode(error.message));
+          submit.textContent = "Identify camera";
+          submit.disabled = false;
+        } finally { address.disabled = false; }
+      });
+      openAppModal("camera-identity", `Link identity for ${device.adoption.display_name || device.display_name}`, form, trigger, "compact");
+    }
+
     function addCameraManagement(parent, device, adoption) {
       const management = addText(parent, "form", "camera-management", "");
       const name = addText(management, "label", "setup-field", "Camera name");
@@ -3319,6 +3626,12 @@
       name.append(input);
       const save = addText(management, "button", "row-action", "Save");
       save.type = "submit";
+      if (adoption.camera_origin === "direct" || device.camera_origin === "direct") {
+        const identity = addText(management, "button", "row-action", "Link device identity");
+        identity.type = "button";
+        identity.addEventListener("click", () => openCameraIdentityLink(device, identity));
+        if (!device.mac && !device.onvif?.endpoint_reference) addText(management, "div", "management-note", "Automatic IP recovery needs a verified device identity. Link this camera at its current address if its IP has changed.");
+      }
       if (adoption.enabled === false) {
         const enable = addText(management, "button", "row-action", "Enable camera");
         enable.type = "button";
@@ -3486,7 +3799,7 @@
           addCredentialRepair(credentials, device, adoption);
         }
         addAvailability(wrapper, device, adoption);
-        if (device.camera_origin !== "direct") addIdentityHistory(wrapper, adoption);
+        if (device.camera_origin !== "direct" || device.mac || device.onvif?.endpoint_reference) addIdentityHistory(wrapper, adoption);
         if (adoption.frigate?.length) {
           const count = adoption.frigate.length;
           const integrations = addDetailSection(wrapper, "Integrations", `${count} Frigate target${count === 1 ? "" : "s"}`);
@@ -4084,7 +4397,7 @@
       openAppModal("camera", title, content, trigger, "wide");
       if (device.adoption?.camera_uuid) {
         loadCameraAvailability(device);
-        if (device.camera_origin !== "direct") loadCameraIdentityHistory(device);
+        if (device.camera_origin !== "direct" || device.mac || device.onvif?.endpoint_reference) loadCameraIdentityHistory(device);
       }
     }
 

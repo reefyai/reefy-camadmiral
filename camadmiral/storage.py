@@ -424,6 +424,38 @@ MIGRATIONS: tuple[str, ...] = (
 # schema on every start, which is correct regardless of recorded versions.
 SCHEMA_TABLES: tuple[str, ...] = (
     """
+    CREATE TABLE IF NOT EXISTS camera_identity_links (
+        camera_uuid TEXT PRIMARY KEY REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        payload TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS frigate_import_handoffs (
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        camera_key TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        PRIMARY KEY(target_id, camera_key)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS frigate_import_jobs (
+        job_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        payload BLOB NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS frigate_import_links (
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        camera_key TEXT NOT NULL,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        payload BLOB NOT NULL,
+        PRIMARY KEY(target_id, camera_key),
+        UNIQUE(target_id, camera_uuid)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS stream_auth_retries (
         stream_uuid TEXT PRIMARY KEY REFERENCES managed_streams(stream_uuid) ON DELETE CASCADE,
         attempts INTEGER NOT NULL DEFAULT 0,
@@ -1534,6 +1566,42 @@ class CameraRepository:
             }
             for row in rows
         ]
+
+    def camera_identity_links(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute('SELECT camera_uuid,payload FROM camera_identity_links').fetchall()
+        return {str(row['camera_uuid']): json.loads(row['payload']) for row in rows}
+
+    def bind_camera_identity(self, camera_uuid: str, candidate: dict[str, Any]) -> None:
+        """Attach verified physical identity without changing logical camera IDs."""
+        endpoint, mac = self._candidate_stable_identity(candidate)
+        if not candidate.get('candidate_uuid') or not (endpoint or mac) or candidate.get('identity_conflict'):
+            raise ValueError('A unique verified device identity is required')
+        from .camera_identity import same_identity
+        with self.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            if not connection.execute('SELECT 1 FROM cameras WHERE camera_uuid=?', (camera_uuid,)).fetchone():
+                raise ValueError('Camera not found')
+            previous = connection.execute('SELECT payload FROM camera_identity_links WHERE camera_uuid=?', (camera_uuid,)).fetchone()
+            value = json.loads(json.dumps(candidate))
+            history = connection.execute('SELECT onvif_identity,mac_address FROM camera_identity_periods WHERE camera_uuid=? AND ended_at IS NULL', (camera_uuid,)).fetchone()
+            if history and (history['onvif_identity'] or history['mac_address']):
+                known = {'onvif': {'endpoint_reference': history['onvif_identity']}, 'mac': history['mac_address']}
+                if not same_identity(known, candidate):
+                    raise ValueError('The detected device differs from the observed camera identity')
+            if previous:
+                old = json.loads(previous['payload'])
+                if not same_identity(old, candidate):
+                    raise ValueError('The detected device differs from the saved camera identity')
+                old_endpoint, old_mac = self._candidate_stable_identity(old)
+                if old_endpoint and not endpoint:
+                    value['onvif'] = {**(value.get('onvif') or {}), 'endpoint_reference': old_endpoint}
+                if old_mac and not mac:
+                    value['mac'] = old_mac
+            connection.execute('INSERT INTO camera_identity_links VALUES (?,?) ON CONFLICT(camera_uuid) DO UPDATE SET payload=excluded.payload',
+                               (camera_uuid, json.dumps(value)))
+            self._observe_camera_identity(connection, camera_uuid, value, _now())
+            connection.commit()
 
     def blocked_devices(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
