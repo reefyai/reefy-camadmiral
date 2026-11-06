@@ -201,6 +201,48 @@ rows must survive. Unit/component tests in `tests/test_frigate_import.py` cover
 source resolution, ambiguous matches, encryption/redaction, source validation
 failure, stale previews, interrupted-save retry, and ownership boundaries.
 
+Browser assertions require Select all above the first camera, checked/disabled
+camera and conflict-review selections while running, visible spinner/progress
+and current restart stage inside the viewport even at the action buttons,
+and selection restoration after reopening the
+dialog. The offline fixture produces partial success: the summary must report
+three managed cameras and one failure, preserve completed selections, and retry
+only the failed camera. Progress snapshots must exclude source credentials.
+
+The external-reader case uses separate Record/Detect sources and the existing
+decoded-frame consumer as an independent recorder. It first saves real footage
+and event/review history, then places the independent recorder in the only
+Record slot while Frigate Detect remains live. Failed import must preserve the
+exact configuration and history, leave that reader decoding without reconnecting,
+avoid adoption, and let an unrelated camera keep recording. The browser must
+report configuration restoration without claiming that Record media recovered.
+After releasing only the external fixture reader, retry must import both profiles,
+save fresh recordings, and decode the original historical footage. Evidence,
+including the restored-result and retry screenshots, remains in the same normal
+`frigate-import-evidence` artifact. The unchanged application baseline must fail
+the restored-result browser assertion after proving the connection contention.
+
+The import target uses a loopback API port through a lab-only HTTP proxy. After
+real Frigate accepts a restart, the proxy drops its reply and makes the API
+unavailable for twelve seconds. Batch import must wait for the expected running
+inputs and capture, then continue with the remaining cameras. Explicit restore
+must recover from a truncated response body, and interrupted-job retry covers
+an empty successful HTTP response. The retained proxy counters prove the fault
+injections occurred; `result.json` records import and restore recovery. Component
+tests also reject explicit restart failures and require restoration if capture
+cannot be verified after an uncertain reply.
+
+The operator fixture also passes through a synthetic RTSP server with one
+playback slot. Real Frigate occupies it before import; a second reader must be
+rejected while existing video and recordings remain healthy. The same committed
+lab verifies a journaled release and takeover, rejected media after release with
+exact configuration restoration and no adoption, and process loss during the
+released-reader window followed by automatic startup restoration. Fresh
+recordings are required for every selected camera, in addition to historical
+playback and event/review preservation. The result artifact retains session-cap
+and denial counters and each recovery outcome. The fixture is not used by other
+labs unless its session-cap environment option is explicitly enabled.
+
 Evidence is retained in `e2e-artifacts/frigate-import/`: `result.json` includes
 source revision, historical recording identities, event/review snapshots, and
 playback results; `transcript.log` retains the lab output and container logs;
@@ -220,3 +262,48 @@ decode that new size through Frigate's recording alias while preserving camera
 and stream IDs, downstream URLs, Frigate display name, and detection tuning.
 The browser also exercises explicit acceptance of existing CamAdmiral settings
 when imported credentials differ, and leaves ambiguous profile matches alone.
+
+## Imported camera physical identity and DHCP recovery
+
+`python3 e2e/frigate_identity.py` runs a separate disposable lab in the existing
+release gate's **Imported camera address recovery** job. It uses its own subnet,
+Compose project and source-specific image, and runs alongside the established
+parallel jobs. The job honors the existing GitHub-hosted runner option. Its
+shared-runner concurrency group prevents overlapping copies of this one lab.
+
+The browser imports two Frigate cameras with literal-IP Record/Detect sources
+on one synthetic ONVIF device. Import must learn a stable physical identity
+without merging the logical channels. Stopping the device and starting it at
+another address models a power/DHCP event. Normal targeted discovery and media
+recovery must follow it without a forced source edit, preserving all camera and
+stream IDs, credentials, paths, roles, downstream URLs, Frigate keys, names,
+groups and tuning. Both channels must save fresh recordings; pre-import footage
+must still decode and synthetic event/review rows must remain unchanged.
+
+A foreign device then takes the old address. Restart must retain the correct
+route, and explicitly attempting to bind the foreign UUID must fail. Removing
+only saved links while retaining prior identity observations models an upgrade;
+bounded background enrichment must restore them and follow another address
+change. Removing one camera's link and observations models an unanchored legacy
+import: it must not guess from an IP while the other channel recovers. The
+browser identifies the current device, reviews its UUID/MAC and confirms it.
+Identification alone and a changed confirmation cannot bind. Recovery validates
+video separately and retains the original logical IDs/history.
+
+Unit/component cases in `tests/test_camera_identity.py` cover missing/ambiguous
+identity, duplicate UUID observations, recycled MAC with a different UUID,
+disabled cameras, failed media validation, discovery projection and deduplicated
+physical recovery requests for separate channels. Evidence is uploaded on
+success or failure as `frigate-identity-evidence`: source/image provenance,
+`result.json`, browser screenshots and container transcript. The identical
+regression must complete import on the unchanged application, simulate the DHCP
+move, and fail because both logical channels cannot recover to the new address.
+The initial identity measurement and final saved source hosts remain in the
+machine-readable artifact, including on that expected failure.
+
+Run the complete default-parallel gate with the established workflow:
+
+```sh
+gh workflow run release-gate.yml --repo reefyai/reefy-camadmiral \
+  --ref <review-branch> -f github_hosted=true -f force_full=true
+```
