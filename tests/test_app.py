@@ -678,7 +678,8 @@ class CameraLifecycleApiTests(unittest.TestCase):
         self.assertEqual(self.payload(response)["status"], "adopted")
         repository.block_candidate.assert_not_called()
 
-    def test_unadopt_cleans_frigate_then_local_camera_and_media(self) -> None:
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_unadopt_cleans_frigate_then_local_camera_and_media(self, _links) -> None:
         repository = Mock()
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
@@ -702,7 +703,8 @@ class CameraLifecycleApiTests(unittest.TestCase):
         repository.unadopt_camera.assert_called_once_with("camera-1")
         reconcile.assert_called_once_with()
 
-    def test_unadopt_keeps_local_camera_when_frigate_cleanup_fails(self) -> None:
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_unadopt_keeps_local_camera_when_frigate_cleanup_fails(self, _links) -> None:
         repository = Mock()
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
@@ -1271,7 +1273,8 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
         repository.set_camera_stream_address_mode.assert_not_called()
 
-    def test_remove_leaves_frigate_configuration_untouched(self) -> None:
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_remove_leaves_frigate_configuration_untouched(self, _links) -> None:
         repository = Mock()
         repository.remove_frigate_target.return_value = True
         with patch.object(app_module, "_repository", return_value=repository):

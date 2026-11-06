@@ -1,0 +1,116 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+detect:
+  fps: 5
+record:
+  enabled: true
+  continuous:
+    days: 1
+go2rtc:
+  streams:
+    operator_stream: rtsp://import-limited:8554/main
+    matched_stream: rtsp://legacy-user:synthetic-unused-secret@camera-open:8554/sub
+    authenticated_stream: rtsp://%6fperator:synthetic%2Dcamera%2Dsecret@camera-auth:8554/live
+    authenticated_sub: rtsp://operator:synthetic-camera-secret@camera-auth:8554/sub
+camera_groups:
+  Synthetic_group:
+    order: 1
+    icon: LuCamera
+    cameras: [operator_camera, matched_camera]
+cameras:
+  operator_camera:
+    friendly_name: Original entrance
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/operator_stream
+          input_args: preset-rtsp-restream
+          roles: [record, detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: operator_stream
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+    objects:
+      track: [person]
+    zones:
+      Synthetic_entry:
+        coordinates: 0,0,1,0,1,1,0,1
+  matched_camera:
+    friendly_name: Original loading
+    ffmpeg:
+      inputs:
+        - path: rtsp://legacy-user:synthetic-unused-secret@camera-open:8554/sub
+          roles: [record, detect]
+    detect:
+      width: 640
+      height: 360
+    live:
+      streams:
+        Sub: matched_stream
+  authenticated_camera:
+    friendly_name: Original authenticated
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/authenticated_stream
+          input_args: preset-rtsp-restream
+          roles: [record]
+        - path: rtsp://127.0.0.1:8554/authenticated_sub
+          input_args: preset-rtsp-restream
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+    live:
+      streams:
+        Main: authenticated_stream
+  disabled_camera:
+    detect:
+      width: 640
+      height: 360
+    enabled: false
+    ffmpeg:
+      inputs:
+        - path: rtsp://192.0.2.20:554/disabled
+          roles: [record, detect]
+    onvif:
+      host: 127.0.0.1
+      port: 9
+      user: synthetic-control
+      password: synthetic-onvif-secret
+  offline_camera:
+    friendly_name: Original offline
+    detect:
+      width: 640
+      height: 360
+    ffmpeg:
+      inputs:
+        - path: rtsp://192.0.2.21:554/offline
+          roles: [record, detect]
+  unsupported_camera:
+    detect:
+      width: 640
+      height: 360
+    enabled: false
+    ffmpeg:
+      inputs:
+        - path: http://192.0.2.22/video.mjpeg
+          roles: [record, detect]
+  ambiguous_camera:
+    detect:
+      width: 640
+      height: 360
+    enabled: false
+    ffmpeg:
+      inputs:
+        - path: rtsp://camera-open:8554/main
+          roles: [record]
+        - path: rtsp://camera-open:8554/sub
+          roles: [detect]

@@ -3,6 +3,7 @@ import asyncio
 import re
 import json
 import time
+import os
 from urllib.parse import urlsplit, parse_qs
 
 stalled = False
@@ -13,10 +14,16 @@ rejected_path = None
 auth_requests = 0
 active_streams = {}
 describes = {}
+session_limit = int(os.environ.get('RTSP_SESSION_LIMIT', '0'))
+sessions = {}
+session_denials = 0
+fail_available = 0
+stall_available = False
+stalled_sessions = 0
 
 
 async def control(reader, writer):
-    global stalled, stalled_path, delay_until, rejected_path
+    global stalled, stalled_path, delay_until, rejected_path, fail_available, stall_available
     line = await reader.readline()
     path = line.split()[1]
     if path == b'/stall':
@@ -26,6 +33,12 @@ async def control(reader, writer):
         stalled_path = None
         delay_until = 0.0
         rejected_path = None
+        fail_available = 0
+        stall_available = False
+    elif path == b'/fail-available':
+        fail_available = 3
+    elif path == b'/stall-available':
+        stall_available = True
     elif path.startswith(b'/reject/'):
         rejected_path = path.removeprefix(b'/reject/').decode()
     elif path.startswith(b'/stall/'):
@@ -37,7 +50,10 @@ async def control(reader, writer):
     if path == b'/auth-stats':
         body = json.dumps({'requests': auth_requests}).encode()
     if path == b'/stream-stats':
-        body = json.dumps({'active': active_streams, 'describes': describes}).encode()
+        body = json.dumps({'active': active_streams, 'describes': describes,
+                           'sessions': sessions, 'session_limit': session_limit,
+                           'session_denials': session_denials, 'stalled_sessions': stalled_sessions,
+                           'fail_available': fail_available}).encode()
     writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: '
                  + str(len(body)).encode() + b'\r\n\r\n' + body)
     await writer.drain()
@@ -46,17 +62,19 @@ async def control(reader, writer):
 
 
 async def relay(reader, writer):
-    global dropped
+    global dropped, session_denials, fail_available, stall_available, stalled_sessions
     upstream = None
     task = None
     stream_name = ''
     counted_name = None
+    slot_name = None
+    hold_media = False
     try:
         source, upstream = await asyncio.open_connection('camera-open', 8554)
 
         async def requests():
-            nonlocal stream_name, counted_name
-            global auth_requests
+            nonlocal stream_name, counted_name, slot_name, hold_media
+            global auth_requests, session_denials, fail_available, stall_available, stalled_sessions
             while True:
                 first = await reader.readexactly(1)
                 if first == b'$':
@@ -82,6 +100,31 @@ async def relay(reader, writer):
                                  b'\r\nWWW-Authenticate: Digest realm="synthetic", nonce="test-nonce"\r\nContent-Length: 0\r\n\r\n')
                     await writer.drain()
                     continue
+                if (session_limit and stall_available and data.startswith(b'DESCRIBE ')
+                        and sessions.get(stream_name, 0) < session_limit):
+                    # Freeze before SDP reaches the client, so interruption is
+                    # unambiguously before adoption even with cached codec data.
+                    slot_name = stream_name
+                    sessions[slot_name] = sessions.get(slot_name, 0) + 1
+                    stall_available = False
+                    stalled_sessions += 1
+                    await reader.read()
+                    return
+                if session_limit and data.startswith(b'PLAY ') and slot_name is None:
+                    full = sessions.get(stream_name, 0) >= session_limit
+                    if full or fail_available:
+                        session_denials += 1
+                        if not full:
+                            fail_available -= 1
+                        # Reproduce cameras which accept setup but close a new
+                        # playback session when their reader budget is full.
+                        return
+                    slot_name = stream_name
+                    sessions[slot_name] = sessions.get(slot_name, 0) + 1
+                    if stall_available:
+                        hold_media = True
+                        stall_available = False
+                        stalled_sessions += 1
                 upstream.write(data)
                 await upstream.drain()
             upstream.close()
@@ -93,7 +136,7 @@ async def relay(reader, writer):
             if first == b'$':
                 header = await source.readexactly(3)
                 payload = await source.readexactly(int.from_bytes(header[1:], 'big'))
-                if stalled or stream_name == stalled_path or time.monotonic() < delay_until:
+                if stalled or stream_name == stalled_path or time.monotonic() < delay_until or hold_media:
                     dropped += 1
                     continue
                 data = first + header + payload
@@ -109,6 +152,8 @@ async def relay(reader, writer):
     finally:
         if counted_name is not None:
             active_streams[counted_name] -= 1
+        if slot_name is not None:
+            sessions[slot_name] -= 1
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
