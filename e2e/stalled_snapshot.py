@@ -109,6 +109,7 @@ def host():
         return value
 
     try:
+        print(run('down', '--volumes', '--remove-orphans'), flush=True)
         print(run('build', 'camadmiral'), flush=True)
         print(run('up', '-d', 'camera-open', 'stalled-camera', 'camadmiral'), flush=True)
         stage('setup')

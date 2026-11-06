@@ -4,6 +4,10 @@ on:
     branches: ["fix-snapshot-health", "fix-auth-retry"]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      github_hosted:
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -12,10 +16,14 @@ concurrency:
 
 jobs:
   stream-settings:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
       - run: python3 -m pip install -r requirements.txt -r e2e/requirements.txt
       - run: python3 -m playwright install --with-deps webkit
       - run: python3 e2e/stream_layout_ui.py
@@ -26,7 +34,7 @@ jobs:
           name: stream-settings-evidence
           path: e2e-artifacts/stream-settings/
   auth-retry:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +45,7 @@ jobs:
           name: auth-retry-evidence
           path: e2e-artifacts/auth-retry/
   snapshot-health:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +56,7 @@ jobs:
           name: snapshot-health-evidence
           path: e2e-artifacts/snapshot-health/
   stalled-snapshot:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

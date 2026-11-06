@@ -180,6 +180,7 @@ def host():
     def stage(name):
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/stream_settings.py', name)
     try:
+        run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
         run('up', '-d', 'camera-open', 'stalled-camera', 'camadmiral', 'frigate')
         stage('prepare')
