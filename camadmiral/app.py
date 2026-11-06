@@ -241,6 +241,17 @@ class FrigateTargetAddressRequest(BaseModel):
     address_mode: Literal["lan", "localhost"]
 
 
+class FrigateImportRequest(BaseModel):
+    selected: list[str] = Field(min_length=1, max_length=256)
+    keep_existing: list[str] = Field(default_factory=list, max_length=256)
+    allow_restart: bool = False
+
+
+class FrigateImportRollbackRequest(BaseModel):
+    camera_key: str = Field(min_length=1, max_length=256)
+    allow_restart: bool = False
+
+
 FACTORY_ONVIF_USERNAME = "admin"
 FACTORY_ONVIF_PASSWORD = "admin"
 
@@ -272,6 +283,8 @@ def _repository(*, required: bool = False) -> CameraRepository | None:
         try:
             repository = CameraRepository(database_path(), load_master_key())
             repository.migrate()
+            from .frigate_import import ImportStore
+            ImportStore(repository).interrupt_jobs()
         except SecretConfigurationError:
             if required:
                 raise
@@ -989,6 +1002,13 @@ def _queue_targeted_recovery_scan(
 
 @app.on_event("startup")
 def start_media_reconciliation() -> None:
+    def recover_imports():
+        from .frigate_import import recover_handoffs
+        repository = _repository(required=False)
+        if repository is not None:
+            with FRIGATE_LOCK:
+                recover_handoffs(repository, _reconcile_media)
+    threading.Thread(target=recover_imports, name="frigate-import-recovery", daemon=True).start()
     threading.Thread(
         target=_reconcile_media,
         kwargs={"wait": False},
@@ -1318,6 +1338,7 @@ def notification_settings() -> JSONResponse:
 
 def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
     messages = {
+        "import_restore_required": "Restore this camera's original connection using Import from Frigate before removing its CamAdmiral binding. Restoration requires an explicitly confirmed Frigate restart.",
         "invalid_target_url": "Enter an HTTP or HTTPS Frigate API URL without embedded credentials, a query, or a fragment.",
         "target_unavailable": "CamAdmiral could not reach Frigate at that URL.",
         "authorization_required": "Frigate requires authorization on that endpoint.",
@@ -1356,6 +1377,87 @@ def _stored_frigate_target(repository: CameraRepository, target_id: str) -> tupl
 
 
 _frigate_discovery_lock = threading.Lock()
+
+
+@app.get("/internal/frigate-targets/{target_id}/import", include_in_schema=False)
+def preview_frigate_import(target_id: str) -> JSONResponse:
+    from .frigate_import import preview, public_job
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    try:
+        with FRIGATE_LOCK:
+            return _secured_json(public_job(preview(repository, target)))
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=503)
+
+
+@app.get("/internal/frigate-targets/{target_id}/import/{job_id}", include_in_schema=False)
+def frigate_import_status(target_id: str, job_id: str) -> JSONResponse:
+    from .frigate_import import ImportStore, public_job
+    repository = _repository(required=True)
+    assert repository is not None
+    _stored_frigate_target(repository, target_id)
+    try:
+        return _secured_json(public_job(ImportStore(repository).job(target_id, job_id)))
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=404)
+
+
+@app.post("/internal/frigate-targets/{target_id}/import/{job_id}", include_in_schema=False)
+def apply_frigate_import(target_id: str, job_id: str, request: FrigateImportRequest,
+                         x_camadmiral_action: str | None = Header(default=None)) -> JSONResponse:
+    from .frigate_import import ImportStore, execute, public_job, start_job
+    if x_camadmiral_action != "import-frigate-cameras":
+        raise HTTPException(status_code=400, detail="Missing import action header")
+    if not request.allow_restart:
+        return _secured_json({"status": "restart_confirmation_required"}, status_code=409)
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    try:
+        job = ImportStore(repository).job(target_id, job_id)
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=404)
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+
+    def worker():
+        try:
+            execute(repository, target, job_id, request.selected, request.keep_existing,
+                    INVENTORY, _reconcile_media)
+        except Exception:
+            job["status"] = "error"
+            ImportStore(repository).save_job(target_id, job)
+        finally:
+            FRIGATE_LOCK.release()
+
+    start_job(job, request.selected, request.keep_existing)
+    ImportStore(repository).save_job(target_id, job)
+    threading.Thread(target=worker, name="frigate-import", daemon=True).start()
+    return _secured_json(public_job(job), status_code=202)
+
+
+@app.post("/internal/frigate-targets/{target_id}/import-rollback", include_in_schema=False)
+def rollback_frigate_import(target_id: str, request: FrigateImportRollbackRequest,
+                            x_camadmiral_action: str | None = Header(default=None)) -> JSONResponse:
+    from .frigate_import import restore
+    if x_camadmiral_action != "rollback-frigate-import":
+        raise HTTPException(status_code=400, detail="Missing rollback action header")
+    if not request.allow_restart:
+        return _secured_json({"status": "restart_confirmation_required"}, status_code=409)
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+    try:
+        restore(repository, target, request.camera_key, reconcile_media=_reconcile_media)
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=409)
+    finally:
+        FRIGATE_LOCK.release()
+    return _secured_json({"status": "restored"})
 
 
 @app.post("/internal/frigate-discovery", include_in_schema=False)
@@ -1717,8 +1819,17 @@ def remove_frigate_target(
         raise HTTPException(status_code=400, detail="Missing Frigate removal action header")
     repository = _repository(required=True)
     assert repository is not None
-    if not repository.remove_frigate_target(target_id):
-        raise HTTPException(status_code=404, detail="Frigate target not found")
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+    try:
+        from .frigate_import import ImportStore
+        if any(row.get('handoff') and row.get('state') != 'active'
+               for row in ImportStore(repository).links(target_id).values()):
+            return _secured_json({"status": "restoration_required", "message": "Restore the unfinished camera handoff before removing this integration."}, status_code=409)
+        if not repository.remove_frigate_target(target_id):
+            raise HTTPException(status_code=404, detail="Frigate target not found")
+    finally:
+        FRIGATE_LOCK.release()
     return _secured_json(
         {
             "status": "removed",
@@ -1928,13 +2039,19 @@ def unadopt_camera(
         for target in load_frigate_targets(repository)
         if camera_uuid in repository.selected_frigate_camera_uuids(target.target_id)
     ]
-    if targets and not FRIGATE_LOCK.acquire(blocking=False):
+    if not FRIGATE_LOCK.acquire(blocking=False):
         return _secured_json(
             {"status": "sync_busy", "message": "Camera synchronization is already running."},
             status_code=409,
         )
     restart_recommended = False
     try:
+        from .frigate_import import ImportStore
+        store = ImportStore(repository)
+        if any(row.get('camera_uuid') == camera_uuid or row.get('candidate_id') == candidate_uuid
+               for target in load_frigate_targets(repository)
+               for row in store.links(target.target_id).values()):
+            return _secured_json({"status": "import_restore_required", "message": "Restore the original Frigate connection before removing this camera."}, status_code=409)
         for target in targets:
             try:
                 result = remove_frigate_camera(repository, target, camera_uuid)
@@ -1952,11 +2069,10 @@ def unadopt_camera(
                 status="connected",
                 restart_recommended=target_restart,
             )
+        if not repository.unadopt_camera(camera_uuid):
+            raise HTTPException(status_code=404, detail="Adopted camera not found")
     finally:
-        if targets:
-            FRIGATE_LOCK.release()
-    if not repository.unadopt_camera(camera_uuid):
-        raise HTTPException(status_code=404, detail="Adopted camera not found")
+        FRIGATE_LOCK.release()
     _reconcile_media()
     if candidate_was_online:
         _mark_discovery_candidate_online(candidate_uuid)
