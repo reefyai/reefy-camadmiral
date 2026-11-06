@@ -1,0 +1,48 @@
+services:
+  import-api-proxy:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/frigate_restart_proxy.py]
+    network_mode: service:camadmiral
+    depends_on: [camadmiral, frigate]
+    volumes:
+      - ./frigate_restart_proxy.py:/e2e/frigate_restart_proxy.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
+  frigate:
+    volumes:
+      - ./fixtures/frigate-import.yml:/e2e/frigate.yml:ro
+  camera-auth:
+    volumes:
+      - ./fixtures/camera-auth-import.yaml:/e2e/camera-auth.yaml:ro
+  import-stalled:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/stalled_rtsp_proxy.py]
+    volumes:
+      - ./stalled_rtsp_proxy.py:/e2e/stalled_rtsp_proxy.py:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.41
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: true
+  camera-auth-import-moved:
+    image: camadmiral-e2e:local
+    entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/camera-auth.yaml]
+    volumes:
+      - ./fixtures/camera-auth-import-moved.yaml:/e2e/camera-auth.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.42
+        aliases: [camera-auth]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true

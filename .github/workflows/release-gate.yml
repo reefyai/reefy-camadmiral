@@ -126,7 +126,7 @@ jobs:
     # Trusted branches use the large runner so Docker and browser caches are
     # retained between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -141,16 +141,28 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt -r e2e/requirements.txt
 
+      - name: Run unit and component tests
+        run: python -m unittest discover -s tests -v
+
       - name: Install browser for UI E2E
         if: needs.classify-changes.outputs.e2e == 'true'
         run: python -m playwright install --with-deps webkit
 
-      - name: Run unit and component tests
-        run: python -m unittest discover -s tests -v
-
       - name: Verify recording continuity after camera removal
         if: needs.classify-changes.outputs.e2e == 'true'
         run: python3 e2e/recording_continuity.py
+
+      - name: Verify Frigate import and camera history preservation
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python3 e2e/frigate_import.py
+
+      - name: Upload Frigate import evidence
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frigate-import-evidence
+          path: e2e-artifacts/frigate-import/
+          if-no-files-found: ignore
 
       - name: Run isolated E2E lab
         if: needs.classify-changes.outputs.e2e == 'true'
