@@ -87,6 +87,7 @@ cameras:
       user: synthetic-control
       password: synthetic-onvif-secret
   offline_camera:
+    friendly_name: Original offline
     detect:
       width: 640
       height: 360

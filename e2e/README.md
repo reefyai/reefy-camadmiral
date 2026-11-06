@@ -201,6 +201,14 @@ rows must survive. Unit/component tests in `tests/test_frigate_import.py` cover
 source resolution, ambiguous matches, encryption/redaction, source validation
 failure, stale previews, interrupted-save retry, and ownership boundaries.
 
+Browser assertions require Select all above the first camera, checked/disabled
+camera and conflict-review selections while running, visible spinner/progress
+and current restart stage inside the viewport even at the action buttons,
+and selection restoration after reopening the
+dialog. The offline fixture produces partial success: the summary must report
+three managed cameras and one failure, preserve completed selections, and retry
+only the failed camera. Progress snapshots must exclude source credentials.
+
 The import target uses a loopback API port through a lab-only HTTP proxy. After
 real Frigate accepts a restart, the proxy drops its reply and makes the API
 unavailable for twelve seconds. Batch import must wait for the expected running

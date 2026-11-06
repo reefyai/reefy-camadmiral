@@ -299,6 +299,8 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 page.goto(base + '/settings/integrations')
                 page.get_by_role('button', name='Import from Frigate', exact=True).click()
                 expect(page.get_by_text('Original entrance', exact=False)).to_be_visible()
+                first_camera = page.get_by_label('Import Original entrance', exact=True)
+                assert page.get_by_role('button', name='Select all', exact=True).bounding_box()['y'] < first_camera.bounding_box()['y'], 'Select all must precede the camera list'
                 assert 'synthetic-camera-secret' not in page.locator('#app-modal').inner_text()
                 page.locator('#app-modal-close').click()
                 page.get_by_role('button', name='Import from Frigate', exact=True).click()
@@ -308,10 +310,46 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 with page.expect_response(lambda r: r.request.method == 'POST' and '/import/' in r.url) as imported:
                     page.get_by_role('button', name='Import and manage selected', exact=True).click()
                 import_id = imported.value.json()['id']
+                selected_labels = ['Import Original entrance', 'Import Original loading',
+                                   'Import Original authenticated', 'Import Original offline']
+                for label in selected_labels:
+                    expect(page.get_by_label(label, exact=True)).to_be_checked()
+                    expect(page.get_by_label(label, exact=True)).to_be_disabled()
+                expect(page.locator('.import-status .inline-spinner')).to_be_visible()
+                expect(page.locator('.import-status .inline-spinner')).to_be_in_viewport()
+                expect(page.get_by_role('progressbar', name='Camera import progress')).to_be_visible()
+                expect(page.locator('#app-modal').get_by_role('status')).to_be_in_viewport()
+                expect(page.get_by_label('Allow Frigate restart')).to_be_disabled()
+                expect(page.get_by_role('button', name='Select all', exact=True)).to_be_disabled()
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Importing')
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Waiting for Frigate to restart and video to resume', timeout=120000)
+                page.locator('#app-modal-close').click()
+                page.get_by_role('button', name='Import from Frigate', exact=True).click()
+                for label in selected_labels:
+                    expect(page.get_by_label(label, exact=True)).to_be_checked()
+                    expect(page.get_by_label(label, exact=True)).to_be_disabled()
+                expect(page.get_by_label('Keep CamAdmiral settings for Original loading', exact=True)).to_be_checked()
+                expect(page.get_by_label('Keep CamAdmiral settings for Original loading', exact=True)).to_be_disabled()
+                expect(page.locator('.import-status .inline-spinner')).to_be_visible()
+                page.screenshot(path=str(artifacts / 'import-progress.png'))
                 run('run', '--rm', '--entrypoint', 'python', 'test-driver', '-c',
                     "import json;from pathlib import Path;p=Path('/state/frigate-import.json');s=json.loads(p.read_text());s['job_id']=" + repr(import_id) + ";p.write_text(json.dumps(s))")
-                expect(page.get_by_text('Import finished. Review each camera\'s result below.', exact=True)).to_be_visible(timeout=300000)
-                expect(page.get_by_text('applied', exact=True)).to_have_count(3)
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Import finished with errors: 3 cameras managed, 1 failed, 0 pending.', timeout=300000)
+                expect(page.get_by_text('Managed', exact=True)).to_have_count(3)
+                expect(page.locator('.import-status .inline-spinner')).to_be_hidden()
+                expect(page.get_by_role('progressbar', name='Camera import progress')).to_be_hidden()
+                for label in selected_labels[:3]:
+                    expect(page.get_by_label(label, exact=True)).to_be_checked()
+                    expect(page.get_by_label(label, exact=True)).to_be_disabled()
+                expect(page.get_by_label('Import Original offline', exact=True)).to_be_checked()
+                expect(page.get_by_label('Import Original offline', exact=True)).to_be_enabled()
+                page.get_by_label('Allow Frigate restart').check()
+                with page.expect_request(lambda r: r.method == 'POST' and '/import/' in r.url) as retried:
+                    page.get_by_role('button', name='Retry selected', exact=True).click()
+                assert retried.value.post_data_json['selected'] == ['offline_camera'], 'Retry must exclude completed cameras'
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Import finished with errors: 3 cameras managed, 1 failed, 0 pending.', timeout=120000)
+                expect(page.locator('#app-modal').get_by_role('status')).to_be_in_viewport()
+                result['ui_progress_and_partial_results'] = True
                 page.screenshot(path=str(artifacts / 'import-results.png'))
             except Exception:
                 page.screenshot(path=str(artifacts / 'failure.png'))
