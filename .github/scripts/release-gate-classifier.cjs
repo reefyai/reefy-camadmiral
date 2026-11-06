@@ -26,7 +26,12 @@ function classifyReleaseGate(files, complete = true) {
     file.filename.startsWith("third_party/go2rtc/") ||
     (file.previous_filename || "").startsWith("third_party/go2rtc/")
   );
-  const e2e = releaseCandidate || relayRuntimeChanged || !complete;
+  const importChanged = complete && files.some(file =>
+    [file.filename, file.previous_filename].some(path =>
+      path === "camadmiral/frigate_import.py" || path === "e2e/frigate_import.py"
+    )
+  );
+  const e2e = releaseCandidate || relayRuntimeChanged || importChanged || !complete;
   let reason = "Development commit: running fast validation only.";
   if (!complete) {
     reason = "Large or incomplete change: running the complete E2E gate.";
