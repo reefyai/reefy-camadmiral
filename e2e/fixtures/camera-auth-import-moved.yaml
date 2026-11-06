@@ -1,0 +1,11 @@
+api:
+  listen: 0.0.0.0:1984
+rtsp:
+  listen: 0.0.0.0:8554
+  username: operator
+  password: synthetic-camera-secret
+webrtc:
+  listen: ''
+streams:
+  live: ffmpeg:virtual?video=&size=960x540&rate=10#video=h264
+  sub: ffmpeg:virtual?video=&size=480x270&rate=8#video=h264

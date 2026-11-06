@@ -27,6 +27,13 @@ function runClassifierTests() {
   ]);
   assert.equal(renamedPatch.e2e, true, "renaming a go2rtc patch requires full E2E");
 
+  for (const filename of ["camadmiral/frigate_import.py", "e2e/frigate_import.py",
+    "camadmiral/camera_identity.py", "camadmiral/recovery.py", "e2e/frigate_identity.py",
+    "e2e/frigate-identity-compose.yaml"]) {
+    assert.equal(classifyReleaseGate([{ filename }]).e2e, true,
+      "import implementation and regression changes require full E2E");
+  }
+
   const documentationOnly = classifyReleaseGate([
     { filename: "README.md" },
     { filename: "docs/recovery.md" },

@@ -1,0 +1,109 @@
+x-camera: &camera
+  image: ${IDENTITY_TEST_IMAGE}
+  entrypoint: [python, /e2e/fake_onvif.py]
+  volumes:
+    - ./fake_onvif.py:/e2e/fake_onvif.py:ro
+    - ./fixtures/camera-identity.yaml:/e2e/camera-onvif.yaml:ro
+    - ./fixtures/camera-identity-moved.yaml:/e2e/camera-onvif-moved.yaml:ro
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+services:
+  camadmiral:
+    image: ${IDENTITY_TEST_IMAGE}
+    build: {context: .., args: {CHECKPOINT_REVISION: e2e}}
+    entrypoint: [/bin/sh, /e2e/start-camadmiral.sh]
+    environment:
+      CAMADMIRAL_HEALTH_INTERVAL: "5"
+      CAMADMIRAL_RECOVERY_SCAN_INTERVAL: "20"
+      CAMADMIRAL_RECOVERY_RETRY_INTERVAL: "20"
+      CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
+    volumes:
+      - data:/var/lib/camadmiral
+      - ./fixtures:/e2e/fixtures:ro
+      - ./fixtures/frigate-identity-inventory.json:/e2e/fixtures/inventory-initial.json:ro
+      - ./start-camadmiral.sh:/e2e/start-camadmiral.sh:ro
+      - ./fixtures/api-token:/run/secrets/camadmiral_api_token:ro
+      - ./fixtures/admin-password:/run/secrets/camadmiral_admin_password:ro
+      - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
+    ports: ["127.0.0.1::18080"]
+    networks: {lab: {ipv4_address: 172.28.0.20}}
+    pids_limit: 192
+    mem_limit: 512m
+    memswap_limit: 512m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:0.17.2
+    restart: unless-stopped
+    entrypoint: [/bin/sh, -c]
+    command: ["test -f /config/config.yml || cp /e2e/frigate.yml /config/config.yml; exec /init"]
+    volumes:
+      - config:/config
+      - media:/media/frigate
+      - cache:/tmp/cache
+      - ./fixtures/frigate-identity.yml:/e2e/frigate.yml:ro
+    networks: {lab: {ipv4_address: 172.28.0.30}}
+    shm_size: 128mb
+    security_opt: [no-new-privileges:true]
+  camera-onvif:
+    <<: *camera
+    environment: {ONVIF_ADDRESS: 172.28.0.13}
+    mac_address: "02:00:00:00:00:13"
+    networks: {lab: {ipv4_address: 172.28.0.13}}
+  camera-moved:
+    <<: *camera
+    environment:
+      ONVIF_ADDRESS: 172.28.0.15
+      ONVIF_MEDIA_CONFIG: /e2e/camera-onvif-moved.yaml
+      ONVIF_MAIN_WIDTH: "960"
+      ONVIF_MAIN_HEIGHT: "540"
+      ONVIF_MAIN_FPS: "12"
+      ONVIF_SUB_WIDTH: "480"
+      ONVIF_SUB_HEIGHT: "270"
+      ONVIF_SUB_FPS: "6"
+    mac_address: "02:00:00:00:00:13"
+    networks: {lab: {ipv4_address: 172.28.0.15}}
+  camera-returned:
+    <<: *camera
+    environment: {ONVIF_ADDRESS: 172.28.0.17}
+    mac_address: "02:00:00:00:00:13"
+    networks: {lab: {ipv4_address: 172.28.0.17}}
+  camera-confirmed:
+    <<: *camera
+    environment:
+      ONVIF_ADDRESS: 172.28.0.18
+      ONVIF_MEDIA_CONFIG: /e2e/camera-onvif-moved.yaml
+    mac_address: "02:00:00:00:00:13"
+    networks: {lab: {ipv4_address: 172.28.0.18}}
+  old-address-device:
+    <<: *camera
+    environment: {ONVIF_ADDRESS: 172.28.0.13, ONVIF_UUID: synthetic-unrelated-device}
+    mac_address: "02:00:00:00:00:99"
+    networks: {lab: {ipv4_address: 172.28.0.13}}
+  test-driver:
+    image: ${IDENTITY_TEST_IMAGE}
+    entrypoint: [python, /e2e/frigate_identity.py]
+    user: "10001:10001"
+    volumes: [".:/e2e:ro", "state:/state", "data:/var/lib/camadmiral"]
+    networks: [lab]
+    environment: {CAMADMIRAL_E2E_ADMIN_PASSWORD: synthetic-e2e-admin-password}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+networks:
+  lab:
+    ipam:
+      config: [{subnet: 172.28.0.0/24}]
+volumes:
+  data:
+  config:
+  media:
+  cache:
+  state:

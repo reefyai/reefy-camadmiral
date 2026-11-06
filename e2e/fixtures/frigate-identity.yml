@@ -1,0 +1,58 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+detect:
+  fps: 3
+record:
+  enabled: true
+  continuous:
+    days: 1
+go2rtc:
+  streams:
+    primary_record: rtsp://172.28.0.13:8554/main
+    primary_detect: rtsp://172.28.0.13:8554/sub
+    channel_record: rtsp://172.28.0.13:8554/channel_main
+    channel_detect: rtsp://172.28.0.13:8554/channel_sub
+camera_groups:
+  Synthetic_group:
+    order: 1
+    icon: LuCamera
+    cameras: [identity_camera, channel_camera]
+cameras:
+  identity_camera:
+    friendly_name: Synthetic imported identity
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/primary_record
+          input_args: preset-rtsp-restream
+          roles: [record]
+        - path: rtsp://127.0.0.1:8554/primary_detect
+          input_args: preset-rtsp-restream
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+    live:
+      streams:
+        Main: primary_record
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+  channel_camera:
+    friendly_name: Synthetic independent channel
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/channel_record
+          input_args: preset-rtsp-restream
+          roles: [record]
+        - path: rtsp://127.0.0.1:8554/channel_detect
+          input_args: preset-rtsp-restream
+          roles: [detect]
+    detect:
+      width: 320
+      height: 180
+    live:
+      streams:
+        Main: channel_record

@@ -68,7 +68,7 @@ class FakeRepository:
 
 class DiscoveryDecorationTests(unittest.TestCase):
     def test_camera_source_access_uses_saved_credentials_and_disables_caching(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.managed_stream_sources.return_value = [{
             "stream_uuid": "source-one", "uri": "rtsp://192.0.2.10:554/live?q=1",
             "username": "viewer@example", "password": "synthetic:p@ss/word",
@@ -84,7 +84,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         with self.assertRaises(app_module.HTTPException) as error:
             app_module.camera_source_access("camera-one", "source-one", None)
         self.assertEqual(error.exception.status_code, 400)
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.managed_stream_sources.return_value = []
         with patch.object(app_module, "_repository", return_value=repository):
             with self.assertRaises(app_module.HTTPException) as error:
@@ -92,7 +92,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 404)
 
     def test_media_access_reports_current_lan_host_for_url_previews(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.rtsp_access_password.return_value = "synthetic-secret"
 
         with (
@@ -110,7 +110,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         resolve_host.assert_called_once_with(app_module.INVENTORY, "lan")
 
     def test_media_access_remains_available_when_lan_host_is_unknown(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.rtsp_access_password.return_value = "synthetic-secret"
 
         with (
@@ -152,7 +152,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertIn(("/incidents", "GET"), routes)
 
     def test_adopted_name_replaces_scanner_name(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {"display_name": "Operator name", "streams": []}
@@ -173,7 +173,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         self.assertEqual(decorated["devices"][0]["display_name"], "Operator name")
 
     def test_recovered_media_overrides_stale_offline_scan_in_summary(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
@@ -220,7 +220,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_matching_offline_identity_can_initialize_from_inventory(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -322,7 +322,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
             self.assertTrue(history[0]["current"])
 
     def test_matching_online_identity_can_advance_from_inventory(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -351,7 +351,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_mismatched_recovery_address_cannot_initialize_identity_history(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -378,7 +378,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_conflicted_identity_is_not_observed(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -406,7 +406,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_discovery_reports_only_an_available_cached_thumbnail(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
@@ -431,7 +431,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_each_synced_frigate_target_has_an_independent_status(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
@@ -488,7 +488,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_frigate_status_includes_safe_internal_error_code(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.blocked_devices.return_value = []
         repository.adoption_map.return_value = {
             "candidate-1": {
@@ -538,7 +538,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
         )
 
     def test_blocked_devices_are_excluded_from_regular_summary(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {}
         repository.blocked_devices.return_value = [
             {
@@ -583,7 +583,7 @@ class DiscoveryDecorationTests(unittest.TestCase):
 
 class AvailabilityApiTests(unittest.TestCase):
     def test_supported_window_uses_bounded_bucket_count(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera_availability.return_value = {
             "window": "168h",
             "start": "2026-01-01T00:00:00+00:00",
@@ -615,7 +615,7 @@ class AvailabilityApiTests(unittest.TestCase):
 
 class IdentityHistoryApiTests(unittest.TestCase):
     def test_identity_history_returns_camera_periods(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera_identity_history.return_value = [
             {
                 "ip": "192.0.2.20",
@@ -635,7 +635,7 @@ class IdentityHistoryApiTests(unittest.TestCase):
         repository.camera_identity_history.assert_called_once_with("camera-1")
 
     def test_identity_history_rejects_unknown_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera_identity_history.return_value = None
         with (
             patch.object(app_module, "_repository", return_value=repository),
@@ -652,7 +652,7 @@ class CameraLifecycleApiTests(unittest.TestCase):
         return json.loads(response.body)
 
     def test_block_uses_repository_stable_identity_policy(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_for_candidate.return_value = None
         repository.block_candidate.return_value = {"block_uuid": "block-1"}
         candidate = synthetic_candidate(amcrest=False) | {"mac": "02:00:00:00:00:50"}
@@ -666,7 +666,7 @@ class CameraLifecycleApiTests(unittest.TestCase):
         repository.block_candidate.assert_called_once_with(candidate)
 
     def test_block_rejects_adopted_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_for_candidate.return_value = {"camera_uuid": "camera-1"}
         with (
             patch.object(app_module, "_find_candidate", return_value=synthetic_candidate()),
@@ -678,8 +678,9 @@ class CameraLifecycleApiTests(unittest.TestCase):
         self.assertEqual(self.payload(response)["status"], "adopted")
         repository.block_candidate.assert_not_called()
 
-    def test_unadopt_cleans_frigate_then_local_camera_and_media(self) -> None:
-        repository = Mock()
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_unadopt_cleans_frigate_then_local_camera_and_media(self, _links) -> None:
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
         repository.unadopt_camera.return_value = True
@@ -702,8 +703,9 @@ class CameraLifecycleApiTests(unittest.TestCase):
         repository.unadopt_camera.assert_called_once_with("camera-1")
         reconcile.assert_called_once_with()
 
-    def test_unadopt_keeps_local_camera_when_frigate_cleanup_fails(self) -> None:
-        repository = Mock()
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_unadopt_keeps_local_camera_when_frigate_cleanup_fails(self, _links) -> None:
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {"camera_uuid": "camera-1"}
         repository.selected_frigate_camera_uuids.return_value = ["camera-1"]
         target = FrigateTarget("frigate-1", "Synthetic Frigate", "http://127.0.0.1:20001")
@@ -722,7 +724,7 @@ class CameraLifecycleApiTests(unittest.TestCase):
         repository.unadopt_camera.assert_not_called()
 
     def test_unadopt_keeps_recently_reachable_candidate_online(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
             "candidate_uuid": "candidate-1",
@@ -773,7 +775,7 @@ class CameraLifecycleApiTests(unittest.TestCase):
 
 class IncidentAndNotificationApiTests(unittest.TestCase):
     def test_incident_filter_and_limit_are_bounded(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.incidents.return_value = {"open_count": 1, "incidents": []}
         with patch.object(app_module, "_repository", return_value=repository):
             response = app_module.incidents("all", 100)
@@ -792,7 +794,7 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_new_bot_is_validated_and_secret_is_not_returned(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.notification_credentials.return_value = None
         repository.notification_settings.return_value = {
             "provider": "telegram",
@@ -828,7 +830,7 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         self.assertTrue(repository.save_telegram_settings.call_args.kwargs["enabled"])
 
     def test_existing_clients_cannot_disable_configured_telegram_alerts(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.notification_credentials.return_value = {
             "bot_token": "123456:synthetic-bot-token-value",
             "chat_id": "100200300",
@@ -859,7 +861,7 @@ class IncidentAndNotificationApiTests(unittest.TestCase):
         )
 
     def test_bot_with_existing_webhook_is_rejected_without_modifying_it(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.notification_credentials.return_value = None
         client = Mock()
         client.identity.return_value = {"id": 123, "username": "shared_bot"}
@@ -890,7 +892,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         )
 
     def test_detected_private_subnets_are_selected_by_default(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.discovery_network_settings.return_value = {
             "custom_subnets": [],
             "excluded_detected_subnets": [],
@@ -908,7 +910,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         self.assertTrue(payload["networks"][0]["multicast"])
 
     def test_save_normalizes_custom_subnet_and_excludes_removed_detected_subnet(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.discovery_network_settings.return_value = {
             "custom_subnets": [],
             "excluded_detected_subnets": [],
@@ -938,7 +940,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         )
 
     def test_save_keeps_an_unselected_custom_subnet(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.discovery_network_settings.return_value = {
             "custom_subnets": [],
             "excluded_detected_subnets": [],
@@ -970,7 +972,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         )
 
     def test_custom_subnet_checkbox_state_is_returned(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         routed = LanInterface(
             "eth0",
             ipaddress.IPv4Address("192.168.40.2"),
@@ -995,7 +997,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
 
     def test_save_rejects_public_or_oversized_custom_subnets(self) -> None:
         for subnet in ("192.0.2.0/24", "10.0.0.0/8"):
-            repository = Mock()
+            repository = Mock(**{"camera_identity_links.return_value": {}})
             repository.discovery_network_settings.return_value = {
                 "custom_subnets": [],
                 "excluded_detected_subnets": [],
@@ -1014,7 +1016,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
             repository.save_discovery_network_settings.assert_not_called()
 
     def test_scan_request_captures_saved_subnets(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         with tempfile.TemporaryDirectory() as directory:
             request_path = Path(directory) / "scan-request.json"
             with (
@@ -1053,7 +1055,7 @@ class DiscoveryNetworkApiTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body)["status"], "no_networks")
 
     def test_busy_scan_pauses_background_recovery_for_manual_retry(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-offline": {
                 "camera_uuid": "camera-offline",
@@ -1137,7 +1139,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertIn("Frigate response: yaml: path not exist", payload["message"])
 
     def test_add_validates_and_persists_a_loopback_target(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_targets.return_value = []
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
@@ -1170,7 +1172,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         queue.assert_called_once()
 
     def test_add_accepts_an_operator_selected_remote_target(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_targets.return_value = []
         repository.frigate_target.return_value = {
             "target_id": "frigate-remote",
@@ -1200,7 +1202,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
 
     def test_add_rejects_a_blank_name_before_network_access(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_targets.return_value = []
         with (
             patch.object(app_module, "_repository", return_value=repository),
@@ -1220,7 +1222,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.save_frigate_target.assert_not_called()
 
     def test_connection_test_clears_restart_required_after_runtime_cleanup(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1251,7 +1253,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
 
     def test_target_address_choice_is_saved_without_changing_stream_preference(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1271,8 +1273,9 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
         repository.set_camera_stream_address_mode.assert_not_called()
 
-    def test_remove_leaves_frigate_configuration_untouched(self) -> None:
-        repository = Mock()
+    @patch("camadmiral.frigate_import.ImportStore.links", return_value={})
+    def test_remove_leaves_frigate_configuration_untouched(self, _links) -> None:
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.remove_frigate_target.return_value = True
         with patch.object(app_module, "_repository", return_value=repository):
             response = app_module.remove_frigate_target(
@@ -1285,7 +1288,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         repository.remove_frigate_target.assert_called_once_with("frigate-synthetic")
 
     def test_full_sync_uses_one_confirmed_action_for_the_whole_target(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1322,7 +1325,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
 
     def test_full_sync_preview_returns_counts_without_resource_names(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1349,7 +1352,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertNotIn("camadmiral_old", response.body.decode())
 
     def test_camera_sync_selects_only_the_requested_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1386,7 +1389,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         queue.assert_called_once_with("frigate-synthetic", "camera-1")
 
     def test_camera_sync_without_body_preserves_existing_address_mode(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1416,7 +1419,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         )
 
     def test_camera_sync_job_reconciles_only_the_requested_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "name": "Local Frigate",
             "api_url": "http://127.0.0.1:20001",
@@ -1468,7 +1471,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertNotIn(job, app_module.FRIGATE_CAMERA_JOBS)
 
     def test_camera_config_preview_returns_masked_and_copyable_versions(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1497,7 +1500,7 @@ class FrigateTargetApiTests(unittest.TestCase):
         self.assertNotIn("synthetic-secret", payload["display_configuration"])
 
     def test_camera_remove_cleans_only_the_selected_managed_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.frigate_target.return_value = {
             "target_id": "frigate-synthetic",
             "name": "Local Frigate",
@@ -1576,7 +1579,7 @@ class ConsumerApiTests(unittest.TestCase):
         self.assertNotIn("synthetic failure", response.body.decode())
 
     def test_authorized_response_contains_only_consumer_metadata(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.rtsp_access_password.return_value = "synthetic-media-secret"
         repository.consumer_inventory.return_value = [
             {
@@ -1667,7 +1670,7 @@ class ConsumerApiTests(unittest.TestCase):
         self.assertNotIn("private-source", response.body.decode())
 
     def test_disabled_camera_remains_listed_without_downstream_streams(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.rtsp_access_password.return_value = "synthetic-media-secret"
         repository.consumer_inventory.return_value = [
             {
@@ -1706,7 +1709,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         return json.loads(response.body)
 
     def test_rename_uses_stable_camera_identity_and_queues_frigate(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.update_camera_name.return_value = True
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
@@ -1733,7 +1736,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         queue.assert_called_once_with()
 
     def test_stream_address_choice_is_saved_without_syncing_frigate(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.set_camera_stream_address_mode.return_value = True
         with patch.object(app_module, "_repository", return_value=repository):
             response = app_module.set_camera_stream_address(
@@ -1752,7 +1755,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         )
 
     def test_disable_withdraws_media_and_keeps_camera_adopted(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
             "candidate_uuid": "candidate-1",
@@ -1781,7 +1784,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         reconcile_frigate_now.assert_called_once_with()
 
     def test_silence_notifications_changes_only_alert_state(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.set_camera_notifications_silenced.return_value = True
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
@@ -1813,7 +1816,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         reconcile_frigate_now.assert_not_called()
 
     def test_silence_notifications_requires_action_header_and_known_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.set_camera_notifications_silenced.return_value = False
         with patch.object(app_module, "_repository", return_value=repository):
             with self.assertRaises(app_module.HTTPException) as missing_header:
@@ -1836,7 +1839,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         )
 
     def test_enable_validates_saved_streams_before_changing_state(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
             "candidate_uuid": "candidate-1",
@@ -1858,7 +1861,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         repository.set_camera_enabled.assert_not_called()
 
     def test_rejected_replacement_credentials_are_not_saved(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
             "candidate_uuid": "candidate-1",
@@ -1883,7 +1886,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
         reconcile.assert_not_called()
 
     def test_valid_replacement_credentials_restore_existing_streams(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "camera_uuid": "camera-1",
             "candidate_uuid": "candidate-1",
@@ -1923,7 +1926,7 @@ class CameraLifecycleEndpointTests(unittest.TestCase):
 
 class CredentialValidationTests(unittest.TestCase):
     def test_onvif_auth_failure_stops_before_rtsp_validation(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "candidate_uuid": "candidate-1",
             "enabled": True,
@@ -1955,7 +1958,7 @@ class CredentialValidationTests(unittest.TestCase):
         probe.assert_not_called()
 
     def test_rtsp_only_credentials_are_validated_against_saved_role_streams(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.camera.return_value = {
             "candidate_uuid": "candidate-1",
             "enabled": True,
@@ -1995,7 +1998,7 @@ class CredentialValidationTests(unittest.TestCase):
 
 class SnapshotEndpointTests(unittest.TestCase):
     def test_snapshot_returns_no_store_jpeg_for_adopted_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.preview_stream_for_camera.return_value = {
             "stream_uuid": "stream-1",
             "stream_key": "stream_synthetic",
@@ -2031,7 +2034,7 @@ class SnapshotEndpointTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 404)
 
     def test_snapshot_does_not_resolve_an_unknown_camera(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.preview_stream_for_camera.return_value = None
         with patch.object(app_module, "_repository", return_value=repository), patch.object(
             app_module, "snapshot_frame"
@@ -2043,7 +2046,7 @@ class SnapshotEndpointTests(unittest.TestCase):
         snapshot.assert_not_called()
 
     def test_snapshot_failure_returns_empty_unavailable_response(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.preview_stream_for_camera.return_value = {
             "stream_key": "stream_synthetic"
         }
@@ -2084,7 +2087,7 @@ class LiveEndpointBoundaryTests(unittest.IsolatedAsyncioTestCase):
         websocket = Mock()
         websocket.headers = {"origin": "http://camera-box.invalid", "host": "camera-box.invalid"}
         websocket.close = AsyncMock()
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.preview_stream_for_camera.return_value = None
         with patch.object(app_module, "_repository", return_value=repository), patch.object(
             app_module, "websocket_connect"
@@ -2097,7 +2100,7 @@ class LiveEndpointBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 class MediaHealthCycleTests(unittest.TestCase):
     def test_due_cycle_waits_for_media_lock_instead_of_being_discarded(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository_ready = threading.Event()
         events = []
 
@@ -2142,7 +2145,7 @@ class MediaHealthCycleTests(unittest.TestCase):
         self.assertEqual(events, ["queue", "probe", "queue", "observe"])
 
     def test_recovery_scheduler_does_not_skip_the_health_probe(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         with (
             patch.object(app_module, "_repository", return_value=repository),
             patch.object(
@@ -2179,7 +2182,7 @@ class MediaHealthCycleTests(unittest.TestCase):
     def test_recovery_scheduler_skips_full_inventory_when_runtime_is_healthy(
         self,
     ) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         with (
             patch.object(app_module, "_repository", return_value=repository),
             patch.object(
@@ -2199,7 +2202,7 @@ class MediaHealthCycleTests(unittest.TestCase):
     def test_recovery_scheduler_clears_failed_poll_and_logs_once_per_outage(
         self,
     ) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         runtime_monitor = Mock()
         runtime_monitor.poll.side_effect = [
             RuntimeError("synthetic outage"),
@@ -2229,7 +2232,7 @@ class MediaHealthCycleTests(unittest.TestCase):
         repository.adoption_map.assert_not_called()
 
     def test_recovery_scheduler_does_not_wait_for_the_media_lock(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         media_lock = Mock()
         with (
             patch.object(app_module, "_repository", return_value=repository),
@@ -2265,7 +2268,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         app_module.RECOVERY_SCAN_ATTEMPT_COUNTS.clear()
 
     def test_first_failed_probe_queues_recovery_before_camera_is_marked_offline(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-early": {
                 "camera_uuid": "camera-early",
@@ -2314,7 +2317,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         self.assertTrue(queued)
 
     def test_runtime_stall_queues_recovery_with_stale_healthy_inventory(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-runtime": {
                 "camera_uuid": "camera-runtime",
@@ -2376,7 +2379,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         )
 
     def test_ready_probe_rearms_recovery_after_an_outage(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-ready": {
                 "camera_uuid": "camera-ready",
@@ -2412,7 +2415,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         self.assertNotIn("candidate-ready", app_module.RECOVERY_SCAN_ATTEMPT_COUNTS)
 
     def test_outage_gets_two_minutes_of_fast_retries_before_normal_backoff(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-retry": {
                 "camera_uuid": "camera-retry",
@@ -2481,7 +2484,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
 
     def test_recovery_batches_prioritize_cameras_not_yet_attempted(self) -> None:
         candidate_uuids = [f"candidate-{index:02d}" for index in range(17)]
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             candidate_uuid: {
                 "camera_uuid": f"camera-{index:02d}",
@@ -2541,7 +2544,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         )
 
     def test_offline_camera_queues_identity_only_targeted_scan(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -2600,7 +2603,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         self.assertNotIn("password", json.dumps(payload).lower())
 
     def test_offline_camera_retries_quickly_after_a_missed_scan(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-retry": {
                 "camera_uuid": "camera-retry",
@@ -2665,7 +2668,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         )
 
     def test_auth_failed_camera_still_queues_identity_recovery(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-auth": {
                 "camera_uuid": "camera-auth",
@@ -2718,7 +2721,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         self.assertEqual(payload["targets"][0]["candidate_uuid"], "candidate-auth")
 
     def test_conflicted_camera_does_not_queue_targeted_recovery(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-conflict": {
                 "camera_uuid": "camera-conflict",
@@ -2760,7 +2763,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         selected_subnets.assert_not_called()
 
     def test_offline_camera_is_not_queued_without_a_selected_subnet(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-1": {
                 "camera_uuid": "camera-1",
@@ -2799,7 +2802,7 @@ class TargetedRecoveryScanTests(unittest.TestCase):
         self.assertFalse(request.exists())
 
     def test_competing_scan_consumed_before_lock_is_not_overwritten(self) -> None:
-        repository = Mock()
+        repository = Mock(**{"camera_identity_links.return_value": {}})
         repository.adoption_map.return_value = {
             "candidate-race": {
                 "camera_uuid": "camera-race",
