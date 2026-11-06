@@ -219,6 +219,17 @@ injections occurred; `result.json` records import and restore recovery. Componen
 tests also reject explicit restart failures and require restoration if capture
 cannot be verified after an uncertain reply.
 
+The operator fixture also passes through a synthetic RTSP server with one
+playback slot. Real Frigate occupies it before import; a second reader must be
+rejected while existing video and recordings remain healthy. The same committed
+lab verifies a journaled release and takeover, rejected media after release with
+exact configuration restoration and no adoption, and process loss during the
+released-reader window followed by automatic startup restoration. Fresh
+recordings are required for every selected camera, in addition to historical
+playback and event/review preservation. The result artifact retains session-cap
+and denial counters and each recovery outcome. The fixture is not used by other
+labs unless its session-cap environment option is explicitly enabled.
+
 Evidence is retained in `e2e-artifacts/frigate-import/`: `result.json` includes
 source revision, historical recording identities, event/review snapshots, and
 playback results; `transcript.log` retains the lab output and container logs;

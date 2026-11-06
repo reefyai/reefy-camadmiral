@@ -31,6 +31,21 @@ services:
     security_opt: [no-new-privileges:true]
     healthcheck:
       disable: true
+  import-limited:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/stalled_rtsp_proxy.py]
+    environment:
+      RTSP_SESSION_LIMIT: "1"
+    volumes:
+      - ./stalled_rtsp_proxy.py:/e2e/stalled_rtsp_proxy.py:ro
+    networks:
+      lab:
+        ipv4_address: 172.30.0.43
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: true
   camera-auth-import-moved:
     image: camadmiral-e2e:local
     entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/camera-auth.yaml]

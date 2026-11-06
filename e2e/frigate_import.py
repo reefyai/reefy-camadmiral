@@ -17,7 +17,7 @@ STATE = Path('/state/frigate-import.json')
 
 
 def driver(stage):
-    from scenarios import request_json, request, wait_for, wait_for_health, consumer_directory
+    from scenarios import request_json, request, wait_for, wait_for_health, consumer_directory, full_sync_when_idle
 
     def frigate(path):
         with urllib.request.urlopen('http://frigate:5000/api' + path, timeout=10) as r:
@@ -43,6 +43,59 @@ def driver(stage):
         return
     state = json.loads(STATE.read_text())
     base = '/internal/frigate-targets/' + state['target_id']
+    if stage == 'session-budget-before':
+        def full():
+            value = json.load(urllib.request.urlopen('http://import-limited:8080/stream-stats'))
+            return value['sessions'].get('main') == 1
+        wait_for('legacy recorder occupies the only camera slot', full)
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-rtsp_transport', 'tcp',
+                                '-show_entries', 'stream=codec_type', '-of', 'json',
+                                'rtsp://import-limited:8554/main'], capture_output=True, timeout=15)
+        assert probe.returncode != 0, 'Fixture must reject an extra camera reader'
+        assert frigate('/stats')['cameras']['operator_camera']['camera_fps'] > 0
+        print(json.dumps(json.load(urllib.request.urlopen('http://import-limited:8080/stream-stats'))), flush=True)
+        return
+    if stage in {'handoff-reject', 'handoff-interrupt-start'}:
+        endpoint = 'fail-available' if stage == 'handoff-reject' else 'stall-available'
+        urllib.request.urlopen('http://import-limited:8080/' + endpoint).read()
+        fresh = request_json(base + '/import')
+        state['handoff_job'] = fresh['id']
+        STATE.write_text(json.dumps(state))
+        request_json(base + '/import/' + fresh['id'], method='POST', expected=202,
+                     headers={'X-CamAdmiral-Action': 'import-frigate-cameras'},
+                     payload={'selected': ['operator_camera'], 'allow_restart': True})
+        def metrics():
+            return json.load(urllib.request.urlopen('http://import-limited:8080/stream-stats'))
+        if stage == 'handoff-interrupt-start':
+            wait_for('new reader reached released slot', lambda: metrics()['stalled_sessions'] > 0, timeout=180)
+            assert frigate('/config')['cameras']['operator_camera']['enabled'] is False
+            code, _, _ = request(base, method='DELETE', headers={'X-CamAdmiral-Action': 'remove-frigate-target'})
+            assert code == 409, 'Removing a running integration lost its handoff journal'
+            return
+        wait_for('failed handoff completed', lambda: request_json(base + '/import/' + fresh['id'])['status'] == 'completed', timeout=240)
+        job = request_json(base + '/import/' + fresh['id'])
+        row = next(r for r in job['cameras'] if r['key'] == 'operator_camera')
+        assert row['status'] == 'error' and row['reason'] == 'source_unavailable', row
+        import yaml
+        assert yaml.safe_load(frigate('/config/raw')) == yaml.safe_load(state['saved']), 'Failed handoff changed configuration'
+        assert len(consumer_directory()['cameras']) == 1, 'Failed handoff adopted unvalidated media'
+        assert metrics()['fail_available'] == 0, 'Import never released the saturated legacy reader'
+        wait_for('original capture restored', lambda: frigate('/stats')['cameras']['operator_camera']['camera_fps'] > 0, timeout=120)
+        return
+    if stage == 'handoff-interrupt-verify':
+        import yaml
+        def restored():
+            return (yaml.safe_load(frigate('/config/raw')) == yaml.safe_load(state['saved']) and
+                    frigate('/config')['cameras']['operator_camera']['enabled'] and
+                    frigate('/stats')['cameras']['operator_camera']['camera_fps'] > 0)
+        wait_for('startup automatically restores released reader', restored, timeout=180)
+        job = request_json(base + '/import/' + state['handoff_job'])
+        assert job['status'] == 'error', job
+        assert next(r for r in job['cameras'] if r['key'] == 'operator_camera')['reason'] == 'interrupted_import'
+        assert len(consumer_directory()['cameras']) == 1, 'Interrupted validation adopted a camera'
+        state['saved'] = frigate('/config/raw')
+        STATE.write_text(json.dumps(state))
+        return
     if stage.startswith('restart-fault-'):
         endpoint = 'status' if stage == 'restart-fault-verify' else 'arm'
         mode = stage.removeprefix('restart-fault-arm-') if stage != 'restart-fault-arm' else 'disconnect'
@@ -122,8 +175,7 @@ def driver(stage):
         directory = consumer_directory()['cameras']
         matched = next(c for c in directory if c['id'] == state['existing_uuid'])
         assert matched['name'] == 'Different CamAdmiral loading name'
-        request_json(base + '/full-sync', method='POST', timeout=120,
-                     headers={'X-CamAdmiral-Action': 'full-sync-frigate-target'})
+        full_sync_when_idle(state['target_id'])
         assert frigate('/config')['cameras']['matched_camera']['friendly_name'] == 'Original loading'
         assert frigate('/config')['cameras']['operator_camera']['detect']['fps'] == 3
         # Repeated selection of the same completed journal cannot add a camera.
@@ -240,19 +292,19 @@ def host():
         print('Import regression stage: ' + name, flush=True)
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/frigate_import.py', name)
 
-    def recordings():
+    def recordings(camera='operator_camera'):
         code = """import json,sqlite3
 from pathlib import Path
 with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
- rows=db.execute("select id,path,start_time,end_time from recordings where camera='operator_camera' order by start_time").fetchall()
+ rows=db.execute("select id,path,start_time,end_time from recordings where camera=? order by start_time",(CAMERA,)).fetchall()
 print(json.dumps([list(r) for r in rows if Path(r[1]).is_file() and Path(r[1]).stat().st_size>0]))
 """
-        return json.loads(run('exec', '-T', 'frigate', 'python3', '-c', code))
+        return json.loads(run('exec', '-T', 'frigate', 'python3', '-c', 'CAMERA='+repr(camera)+'\n'+code))
 
     try:
         run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
-        run('up', '-d', 'camadmiral', 'camera-open', 'camera-auth', 'import-stalled', 'frigate', 'import-api-proxy')
+        run('up', '-d', 'camadmiral', 'camera-open', 'camera-auth', 'import-stalled', 'import-limited', 'frigate', 'import-api-proxy')
         result['images'] = subprocess.check_output(['docker', 'image', 'inspect',
             'camadmiral-e2e:local', 'ghcr.io/blakeblackshear/frigate:0.17.2',
             '--format', '{{.Id}} {{json .RepoDigests}}'], text=True).strip().splitlines()
@@ -266,6 +318,7 @@ print(json.dumps([list(r) for r in rows if Path(r[1]).is_file() and Path(r[1]).s
             time.sleep(3)
         assert len(before) >= 2, 'Fixture must save real recordings before migration'
         result['baseline_recordings'] = before
+        stage('session-budget-before')
         seed = """import json,sqlite3,time,urllib.request
 from pathlib import Path
 stamp=time.time()-20
@@ -289,6 +342,13 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         history_before = json.loads(run('exec', '-T', 'frigate', 'python3', '-c', seed))
         assert history_before['events'] and history_before['review']
         result['history_before'] = history_before
+        stage('handoff-reject')
+        result['failed_handoff_restored'] = True
+        stage('handoff-interrupt-start')
+        run('restart', 'camadmiral')
+        run('restart', 'import-api-proxy')
+        stage('handoff-interrupt-verify')
+        result['interrupted_handoff_restored_automatically'] = True
         stage('preview')
         stage('restart-fault-arm')
         base = 'http://' + run('port', 'camadmiral', '18080')
@@ -322,6 +382,7 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 expect(page.get_by_label('Allow Frigate restart')).to_be_disabled()
                 expect(page.get_by_role('button', name='Select all', exact=True)).to_be_disabled()
                 expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Importing')
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text("Releasing Frigate's camera connection", timeout=120000)
                 expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Waiting for Frigate to restart and video to resume', timeout=120000)
                 page.locator('#app-modal-close').click()
                 page.get_by_role('button', name='Import from Frigate', exact=True).click()
@@ -334,7 +395,8 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 page.screenshot(path=str(artifacts / 'import-progress.png'))
                 run('run', '--rm', '--entrypoint', 'python', 'test-driver', '-c',
                     "import json;from pathlib import Path;p=Path('/state/frigate-import.json');s=json.loads(p.read_text());s['job_id']=" + repr(import_id) + ";p.write_text(json.dumps(s))")
-                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Import finished with errors: 3 cameras managed, 1 failed, 0 pending.', timeout=300000)
+                expect(page.get_by_label('Allow Frigate restart')).to_be_enabled(timeout=300000)
+                expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Import finished with errors: 3 cameras managed, 1 failed, 0 pending.')
                 expect(page.get_by_text('Managed', exact=True)).to_have_count(3)
                 expect(page.locator('.import-status .inline-spinner')).to_be_hidden()
                 expect(page.get_by_role('progressbar', name='Camera import progress')).to_be_hidden()
@@ -376,6 +438,18 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 break
             time.sleep(3)
         assert any(r[2] > switched for r in after), 'No new recording after takeover'
+        per_camera = {}
+        for key in ['operator_camera', 'matched_camera', 'authenticated_camera']:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                recent = [r for r in recordings(key) if r[2] > switched]
+                if recent:
+                    per_camera[key] = len(recent)
+                    break
+                time.sleep(3)
+            assert key in per_camera, 'Selected camera has no fresh recording: ' + key
+        result['selected_camera_fresh_recordings'] = per_camera
+        result['saturated_session_handoff'] = True
         assert {r[0] for r in before} <= {r[0] for r in after}, 'Lost historical recordings'
         run('restart', 'camadmiral', 'frigate')
         run('restart', 'import-api-proxy')
@@ -401,6 +475,11 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         result['interrupted_import_recovered'] = True
         result.update(status='passed', final_recordings=after)
     finally:
+        try:
+            result['session_budget'] = json.loads(run('run', '--rm', '--entrypoint', 'python',
+                'test-driver', '-c', "import json,urllib.request;print(json.dumps(json.load(urllib.request.urlopen('http://import-limited:8080/stream-stats'))))"))
+        except Exception:
+            result['session_budget'] = {'unavailable': True}
         (artifacts / 'result.json').write_text(json.dumps(result, indent=2))
         run('logs', '--no-color', check=False)
         if not os.environ.get('CAMADMIRAL_E2E_KEEP'):

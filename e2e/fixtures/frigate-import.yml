@@ -12,7 +12,7 @@ record:
     days: 1
 go2rtc:
   streams:
-    operator_stream: rtsp://camera-open:8554/main
+    operator_stream: rtsp://import-limited:8554/main
     matched_stream: rtsp://legacy-user:synthetic-unused-secret@camera-open:8554/sub
     authenticated_stream: rtsp://%6fperator:synthetic%2Dcamera%2Dsecret@camera-auth:8554/live
     authenticated_sub: rtsp://operator:synthetic-camera-secret@camera-auth:8554/sub
@@ -24,7 +24,6 @@ camera_groups:
 cameras:
   operator_camera:
     friendly_name: Original entrance
-    enabled: true
     ffmpeg:
       inputs:
         - path: rtsp://127.0.0.1:8554/operator_stream

@@ -1,5 +1,43 @@
+import json
 import unittest
+from unittest.mock import patch
 from e2e import scenarios
+
+
+class FullSyncWaitTests(unittest.TestCase):
+    @staticmethod
+    def response(status, payload):
+        return status, json.dumps(payload).encode(), {}
+
+    def test_transient_busy_preserves_the_successful_result(self):
+        result = {"status": "synchronized", "removed_cameras": 1, "removed_streams": 2}
+        with patch.object(scenarios, 'request', side_effect=[
+            self.response(409, {"status": "sync_busy"}), self.response(200, result),
+        ]) as request, patch.object(scenarios.time, 'sleep'), \
+             patch.object(scenarios.time, 'monotonic', side_effect=[0, 1]):
+            self.assertEqual(result, scenarios.full_sync_when_idle('synthetic-target'))
+        self.assertEqual(2, request.call_count)
+        self.assertEqual(request.call_args_list[0], request.call_args_list[1])
+
+    def test_permanently_busy_sync_fails_within_the_budget(self):
+        with patch.object(scenarios, 'request', return_value=self.response(409, {"status": "sync_busy"})) as request, \
+             patch.object(scenarios.time, 'monotonic', side_effect=[0, 31]), \
+             patch.object(scenarios.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(scenarios.ScenarioFailure, 'HTTP 409: sync_busy'):
+                scenarios.full_sync_when_idle('synthetic-target')
+        request.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_other_errors_are_not_retried(self):
+        for status, payload in [(409, {"status": "configuration_conflict"}),
+                                (503, {"status": "target_unavailable"})]:
+            with self.subTest(status=status), \
+                 patch.object(scenarios, 'request', return_value=self.response(status, payload)) as request, \
+                 patch.object(scenarios.time, 'sleep') as sleep:
+                with self.assertRaises(scenarios.ScenarioFailure):
+                    scenarios.full_sync_when_idle('synthetic-target')
+                request.assert_called_once()
+                sleep.assert_not_called()
 
 
 class RecoveryWaitTests(unittest.TestCase):
