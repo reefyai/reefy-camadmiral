@@ -201,6 +201,16 @@ rows must survive. Unit/component tests in `tests/test_frigate_import.py` cover
 source resolution, ambiguous matches, encryption/redaction, source validation
 failure, stale previews, interrupted-save retry, and ownership boundaries.
 
+The import target uses a loopback API port through a lab-only HTTP proxy. After
+real Frigate accepts a restart, the proxy drops its reply and makes the API
+unavailable for twelve seconds. Batch import must wait for the expected running
+inputs and capture, then continue with the remaining cameras. Explicit restore
+must recover from a truncated response body, and interrupted-job retry covers
+an empty successful HTTP response. The retained proxy counters prove the fault
+injections occurred; `result.json` records import and restore recovery. Component
+tests also reject explicit restart failures and require restoration if capture
+cannot be verified after an uncertain reply.
+
 Evidence is retained in `e2e-artifacts/frigate-import/`: `result.json` includes
 source revision, historical recording identities, event/review snapshots, and
 playback results; `transcript.log` retains the lab output and container logs;

@@ -1,4 +1,17 @@
 services:
+  import-api-proxy:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/frigate_restart_proxy.py]
+    network_mode: service:camadmiral
+    depends_on: [camadmiral, frigate]
+    volumes:
+      - ./frigate_restart_proxy.py:/e2e/frigate_restart_proxy.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    healthcheck:
+      disable: true
   frigate:
     volumes:
       - ./fixtures/frigate-import.yml:/e2e/frigate.yml:ro

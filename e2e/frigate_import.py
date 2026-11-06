@@ -27,7 +27,7 @@ def driver(stage):
     wait_for('Frigate API', lambda: frigate('/stats'), timeout=180)
     if stage == 'prepare':
         request_json('/internal/frigate-targets', method='POST', expected=201,
-                     payload={'name': 'Synthetic import target', 'api_url': 'http://frigate:5000'},
+                     payload={'name': 'Synthetic import target', 'api_url': 'http://127.0.0.1:20017'},
                      headers={'X-CamAdmiral-Action': 'add-frigate-target'})
         target = request_json('/internal/frigate-targets')['targets'][0]
         existing = request_json('/internal/cameras/rtsp', method='POST', expected=201, timeout=60,
@@ -43,6 +43,20 @@ def driver(stage):
         return
     state = json.loads(STATE.read_text())
     base = '/internal/frigate-targets/' + state['target_id']
+    if stage.startswith('restart-fault-'):
+        endpoint = 'status' if stage == 'restart-fault-verify' else 'arm'
+        mode = stage.removeprefix('restart-fault-arm-') if stage != 'restart-fault-arm' else 'disconnect'
+        req = urllib.request.Request('http://camadmiral:20017/__fault__/' + endpoint,
+                                     data=json.dumps({'mode': mode}).encode() if endpoint == 'arm' else None,
+                                     method='POST' if endpoint == 'arm' else 'GET')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            fault = json.load(response)
+        if stage == 'restart-fault-verify':
+            assert fault['dropped_replies'] == 1, fault
+            assert fault['unavailable_reads'] > 0, fault
+            assert fault['armed'] is False, fault
+            print(json.dumps(fault), flush=True)
+        return
     if stage == 'preview':
         preview = request_json(base + '/import')
         assert preview['restart_required'] is True
@@ -238,7 +252,7 @@ print(json.dumps([list(r) for r in rows if Path(r[1]).is_file() and Path(r[1]).s
     try:
         run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
-        run('up', '-d', 'camadmiral', 'camera-open', 'camera-auth', 'import-stalled', 'frigate')
+        run('up', '-d', 'camadmiral', 'camera-open', 'camera-auth', 'import-stalled', 'frigate', 'import-api-proxy')
         result['images'] = subprocess.check_output(['docker', 'image', 'inspect',
             'camadmiral-e2e:local', 'ghcr.io/blakeblackshear/frigate:0.17.2',
             '--format', '{{.Id}} {{json .RepoDigests}}'], text=True).strip().splitlines()
@@ -276,6 +290,7 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         assert history_before['events'] and history_before['review']
         result['history_before'] = history_before
         stage('preview')
+        stage('restart-fault-arm')
         base = 'http://' + run('port', 'camadmiral', '18080')
         with sync_playwright() as p:
             browser = p.webkit.launch()
@@ -304,6 +319,8 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
             finally:
                 browser.close()
         stage('verify')
+        stage('restart-fault-verify')
+        result['lost_restart_reply_recovered'] = True
         stage('sync')
         stage('roles')
         stage('dns-before')
@@ -323,6 +340,7 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         assert any(r[2] > switched for r in after), 'No new recording after takeover'
         assert {r[0] for r in before} <= {r[0] for r in after}, 'Lost historical recordings'
         run('restart', 'camadmiral', 'frigate')
+        run('restart', 'import-api-proxy')
         stage('verify')
         history_after = json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_code))
         assert history_after == history_before, 'Event or review history changed'
@@ -331,10 +349,17 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         run('run', '--rm', '--entrypoint', 'ffmpeg', 'test-driver', '-v', 'error', '-i', playback,
             '-frames:v', '1', '-f', 'null', '-')
         result['historical_playback_decoded'] = True
+        stage('restart-fault-arm-partial')
         stage('rollback')
+        stage('restart-fault-verify')
+        result['rollback_restart_reply_recovered'] = True
         stage('interrupt-start')
         run('restart', 'camadmiral')
+        run('restart', 'import-api-proxy')
+        stage('restart-fault-arm-empty')
         stage('interrupt-verify')
+        stage('restart-fault-verify')
+        result['empty_restart_reply_recovered'] = True
         result['interrupted_import_recovered'] = True
         result.update(status='passed', final_recordings=after)
     finally:
