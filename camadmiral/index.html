@@ -2229,6 +2229,146 @@
       cameraActionMenu.querySelector("button")?.focus();
     }
 
+    async function openFrigateImport(target, trigger) {
+      const content = document.createElement("div");
+      const status = addText(content, "p", "setup-status", "Reading Frigate cameras…");
+      const rows = addText(content, "div", "", "");
+      const controls = addText(content, "div", "", "");
+      const selectAll = addText(controls, "button", "row-action", "Select all");
+      selectAll.type = "button";
+      const restartLabel = addText(content, "label", "", "");
+      const restart = document.createElement("input");
+      restart.type = "checkbox";
+      restartLabel.append(restart, document.createTextNode(" Allow Frigate restart"));
+      addText(content, "p", "integration-help", "Selected cameras will use CamAdmiral video. Their Frigate names, history, masks, zones, groups, recording policy, and tuning stay in place. Each migrated camera may require a Frigate restart, briefly interrupting recording on all cameras. Disabled and unavailable cameras stay unchanged.");
+      const apply = addText(content, "button", "row-action", "Import and manage selected");
+      apply.type = "button";
+      apply.disabled = true;
+      const endpoint = `/internal/frigate-targets/${encodeURIComponent(target.target_id)}`;
+      let job;
+      let choices = new Map();
+      let lastSelected = [];
+      let lastKeep = [];
+      const storageKey = `frigate-import-${target.target_id}`;
+      openAppModal("frigate-import", `Import from ${target.name}`, content, trigger, "wide");
+      function updateApply() {
+        apply.disabled = !restart.checked || !Array.from(choices.values()).some(c => c.checked) || job?.status === "running";
+      }
+      restart.addEventListener("change", updateApply);
+      selectAll.addEventListener("click", () => {
+        for (const choice of choices.values()) if (!choice.disabled) choice.checked = true;
+        updateApply();
+      });
+      const reasons = {
+        interrupted_import: "CamAdmiral restarted during import. Review the results and retry the unfinished cameras.",
+        camera_changed_refresh_preview: "CamAdmiral settings changed. Reopen import to review a fresh preview.",
+        existing_settings_differ: "Existing CamAdmiral credentials, enabled state, or stream roles differ. Review before linking.",
+        ambiguous_source_match: "Several source matches need review. No automatic merge will be made.",
+        camera_already_linked: "This CamAdmiral camera already has a different Frigate binding.",
+        shared_live_alias: "This live-view source is shared with another Frigate camera.",
+        disabled_camera: "Disabled in Frigate. It will remain disabled and unchanged.",
+        configuration_changed_refresh_preview: "Frigate configuration changed. Reopen import to review a fresh preview.",
+        rollback_required: "Automatic restoration could not finish. Retry or restore the original connection before continuing.",
+        incomplete_import_use_retry: "An interrupted import needs retry or restoration.",
+        unresolved_secret: "A source references credentials that Frigate has not resolved.",
+        different_stream_credentials: "Streams use different credentials and need manual review.",
+        transcoded_capture_source: "This capture input uses a conversion that needs manual review.",
+      };
+      function render() {
+        rows.replaceChildren();
+        choices = new Map();
+        const labels = {managed: "Already managed", existing: "Existing CamAdmiral matches", new: "New cameras", conflict: "Needs review"};
+        for (const category of ["managed", "existing", "new", "conflict"]) {
+          const members = job.cameras.filter(r => r.category === category);
+          if (!members.length) continue;
+          addText(rows, "h3", "", labels[category]);
+          for (const row of members) {
+            const item = addText(rows, "div", "frigate-target", "");
+            const detail = addText(item, "div", "", "");
+            const label = addText(detail, "label", "", "");
+            const choice = document.createElement("input");
+            choice.type = "checkbox";
+            choice.disabled = !row.can_import || row.status === "applied";
+            choice.setAttribute("aria-label", `Import ${row.name}`);
+            label.append(choice, document.createTextNode(` ${row.name}`));
+            choices.set(row.key, choice);
+            choice.addEventListener("change", updateApply);
+            if (row.reason) addText(detail, "p", "integration-help", reasons[row.reason] || "This camera could not be imported. Its existing connection is preserved; review its media and source settings before retrying.");
+            if (row.can_keep_existing && row.status !== "applied") {
+              const keepLabel = addText(detail, "label", "", "");
+              const keep = document.createElement("input");
+              keep.type = "checkbox";
+              keep.setAttribute("aria-label", `Keep CamAdmiral settings for ${row.name}`);
+              keepLabel.append(keep, document.createTextNode(" Link using existing CamAdmiral credentials and stream roles"));
+              keep.addEventListener("change", () => {choice.disabled = !keep.checked; if (!keep.checked) choice.checked = false; updateApply();});
+              choice.keepSettings = keep;
+            }
+            if (row.status && row.status !== "ready") addText(detail, "p", "setup-status", row.status);
+            if (row.can_restore || row.status === "applied" || row.reason === "rollback_required" || row.reason === "incomplete_import_use_retry") {
+              const rollback = addText(detail, "button", "row-action", "Restore original Frigate connection");
+              rollback.type = "button";
+              rollback.addEventListener("click", async () => {
+                if (!restart.checked) {status.textContent = "Allow Frigate restart before restoring a connection."; return;}
+                rollback.disabled = true;
+                try {
+                  const response = await fetch(`${endpoint}/import-rollback`, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "rollback-frigate-import"}, body: JSON.stringify({camera_key: row.key, allow_restart: true})});
+                  const result = await response.json();
+                  if (!response.ok) throw new Error("The connection could not be restored. Check for configuration changes or another running synchronization.");
+                  status.textContent = "Original Frigate connection restored.";
+                  await refresh();
+                } catch (error) {status.textContent = error.message;} finally {rollback.disabled = false;}
+              });
+            }
+          }
+        }
+        updateApply();
+      }
+      async function poll() {
+        while (job.status === "running" && appModalKind === "frigate-import") {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(job.id)}`, {cache: "no-store"});
+          if (!response.ok) throw new Error("Import progress could not be read. Reopen import to reconnect.");
+          job = await response.json();
+          render();
+        }
+        status.textContent = job.status === "completed" ? "Import finished. Review each camera's result below." : job.status === "error" ? "Import stopped. Review results and retry." : "Import is running. You can reopen this window to check progress.";
+        if (job.status !== "running") {apply.textContent = "Retry selected"; loadFrigateTargets();}
+      }
+      async function refresh() {
+        const response = await fetch(`${endpoint}/import`, {cache: "no-store"});
+        if (!response.ok) throw new Error("Frigate cameras could not be read. Check the integration connection.");
+        job = await response.json();
+        sessionStorage.setItem(storageKey, job.id);
+        status.textContent = "Review matches and changes before importing. Unchecked cameras stay unchanged.";
+        render();
+      }
+      apply.addEventListener("click", async () => {
+        lastSelected = Array.from(choices).filter(([key, choice]) => choice.checked).map(([key]) => key);
+        lastKeep = Array.from(choices).filter(([key, choice]) => choice.checked && choice.keepSettings?.checked).map(([key]) => key);
+        apply.disabled = true;
+        selectAll.disabled = true;
+        try {
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(job.id)}`, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "import-frigate-cameras"}, body: JSON.stringify({selected: lastSelected, keep_existing: lastKeep, allow_restart: restart.checked})});
+          if (!response.ok) throw new Error(response.status === 409 ? "Synchronization is busy. Try again shortly." : "Import could not be started.");
+          job = await response.json();
+          status.textContent = "Import is running. Cameras switch only after their CamAdmiral video is validated.";
+          render();
+          await poll();
+        } catch (error) {status.textContent = error.message;} finally {selectAll.disabled = false; updateApply();}
+      });
+      try {
+        const previous = sessionStorage.getItem(storageKey);
+        if (previous) {
+          const response = await fetch(`${endpoint}/import/${encodeURIComponent(previous)}`, {cache: "no-store"});
+          if (response.ok) {
+            job = await response.json();
+            if (job.status === "running" || job.cameras.some(r => r.status === "error")) {render(); await poll(); return;}
+          }
+        }
+        await refresh();
+      } catch (error) {status.textContent = error.message;}
+    }
+
     function renderFrigateTargets(data) {
       frigateTargets.replaceChildren();
       const targets = data.targets || [];
@@ -2254,6 +2394,9 @@
         const chooseCameras = addText(actions, "button", "row-action", "Choose cameras");
         chooseCameras.type = "button";
         chooseCameras.addEventListener("click", () => openFrigateCameraChooser(target, chooseCameras));
+        const importCameras = addText(actions, "button", "row-action", "Import from Frigate");
+        importCameras.type = "button";
+        importCameras.addEventListener("click", () => openFrigateImport(target, importCameras));
         const edit = addText(actions, "button", "row-action", "Edit");
         edit.type = "button";
         edit.addEventListener("click", () => openFrigateEditor(target, edit));

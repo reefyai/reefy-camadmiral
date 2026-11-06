@@ -424,15 +424,22 @@ def selected_camera_inventory(repository: Any, target_id: str) -> list[dict[str,
 
 
 def desired_resource_keys(repository: Any, target_id: str) -> tuple[set[str], set[str]]:
+    from .frigate_import import ImportStore
+    links = ImportStore(repository).links(target_id)
+    imported = {row["camera_uuid"] for row in links.values()}
     camera_keys = {
         frigate_camera_key(str(camera["camera_uuid"]))
         for camera in selected_camera_inventory(repository, target_id)
+        if camera["camera_uuid"] not in imported
     }
     stream_keys = {
         stream_key
         for camera_key in camera_keys
         for stream_key in (f"{camera_key}_record", f"{camera_key}_detect")
     }
+    for key, row in links.items():
+        camera_keys.add(key)
+        stream_keys.update(row.get("managed_streams", {}))
     return camera_keys, stream_keys
 
 
@@ -776,6 +783,12 @@ def remove_frigate_camera(
             "restart_recommended": False,
         }
     camera_key = str(binding["frigate_camera_key"])
+    from .frigate_import import ImportStore
+    imported = ImportStore(repository).links(target.target_id).get(camera_key)
+    if imported is not None and imported["camera_uuid"] == camera_uuid:
+        # Imported entries belong to an existing recording history. Require the
+        # explicit restore flow, which previews and confirms the restart.
+        raise FrigateApiError("import_restore_required")
     if not camera_key.startswith(KEY_PREFIX):
         raise FrigateApiError("ownership_verification_failed")
     stream_keys = [f"{camera_key}_record", f"{camera_key}_detect"]
@@ -991,6 +1004,16 @@ def frigate_camera_configuration(
     *,
     media_host: str = "127.0.0.1",
 ) -> dict[str, str]:
+    from .frigate_import import ImportStore, build_managed
+    imported = next((row for row in ImportStore(repository).links(target.target_id).values()
+                     if row["camera_uuid"] == camera_uuid and row.get("state") == "active"), None)
+    if imported is not None:
+        managed, streams = build_managed(repository, imported, media_host)
+        configuration = yaml.safe_dump({"cameras": {imported["key"]: {"ffmpeg": managed["ffmpeg"]}},
+                                        "go2rtc": {"streams": streams}}, sort_keys=False).strip()
+        password = urllib.parse.quote(repository.rtsp_access_password(), safe="")
+        return {"configuration": configuration,
+                "display_configuration": configuration.replace(password, "********")}
     camera = next(
         (
             item
@@ -1173,6 +1196,12 @@ def reconcile_frigate(
         return {"applied": 0, "pending": 0}
     client = client_factory(target)
     client.capabilities()
+    from .frigate_import import sync_imported
+    imported_uuids = sync_imported(
+        repository, target, client=client,
+        host_resolver=media_host_resolver or (lambda mode: media_host),
+    )
+    cameras = [camera for camera in cameras if camera["camera_uuid"] not in imported_uuids]
     config = client.config()
     raw_paths = client.raw_paths()
     raw_config = client.raw_config()

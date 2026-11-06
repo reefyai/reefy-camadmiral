@@ -424,6 +424,24 @@ MIGRATIONS: tuple[str, ...] = (
 # schema on every start, which is correct regardless of recorded versions.
 SCHEMA_TABLES: tuple[str, ...] = (
     """
+    CREATE TABLE IF NOT EXISTS frigate_import_jobs (
+        job_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        payload BLOB NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS frigate_import_links (
+        target_id TEXT NOT NULL REFERENCES frigate_targets(target_id) ON DELETE CASCADE,
+        camera_key TEXT NOT NULL,
+        camera_uuid TEXT NOT NULL REFERENCES cameras(camera_uuid) ON DELETE CASCADE,
+        payload BLOB NOT NULL,
+        PRIMARY KEY(target_id, camera_key),
+        UNIQUE(target_id, camera_uuid)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS stream_auth_retries (
         stream_uuid TEXT PRIMARY KEY REFERENCES managed_streams(stream_uuid) ON DELETE CASCADE,
         attempts INTEGER NOT NULL DEFAULT 0,
