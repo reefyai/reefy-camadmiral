@@ -73,6 +73,7 @@ def host():
         ['docker', 'events', '--format', '{{json .}}', '--filter',
          'label=com.docker.compose.project=camadmiral-memory-e2e'], stdout=events_file)
     try:
+        run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
         run('up', '-d', 'camera-open', 'camadmiral')
         thread = threading.Thread(target=sample)
