@@ -201,6 +201,35 @@ rows must survive. Unit/component tests in `tests/test_frigate_import.py` cover
 source resolution, ambiguous matches, encryption/redaction, source validation
 failure, stale previews, interrupted-save retry, and ownership boundaries.
 
+Browser assertions require Select all above the first camera, checked/disabled
+camera and conflict-review selections while running, visible spinner/progress
+and current restart stage inside the viewport even at the action buttons,
+and selection restoration after reopening the
+dialog. The offline fixture produces partial success: the summary must report
+three managed cameras and one failure, preserve completed selections, and retry
+only the failed camera. Progress snapshots must exclude source credentials.
+
+The import target uses a loopback API port through a lab-only HTTP proxy. After
+real Frigate accepts a restart, the proxy drops its reply and makes the API
+unavailable for twelve seconds. Batch import must wait for the expected running
+inputs and capture, then continue with the remaining cameras. Explicit restore
+must recover from a truncated response body, and interrupted-job retry covers
+an empty successful HTTP response. The retained proxy counters prove the fault
+injections occurred; `result.json` records import and restore recovery. Component
+tests also reject explicit restart failures and require restoration if capture
+cannot be verified after an uncertain reply.
+
+The operator fixture also passes through a synthetic RTSP server with one
+playback slot. Real Frigate occupies it before import; a second reader must be
+rejected while existing video and recordings remain healthy. The same committed
+lab verifies a journaled release and takeover, rejected media after release with
+exact configuration restoration and no adoption, and process loss during the
+released-reader window followed by automatic startup restoration. Fresh
+recordings are required for every selected camera, in addition to historical
+playback and event/review preservation. The result artifact retains session-cap
+and denial counters and each recovery outcome. The fixture is not used by other
+labs unless its session-cap environment option is explicitly enabled.
+
 Evidence is retained in `e2e-artifacts/frigate-import/`: `result.json` includes
 source revision, historical recording identities, event/review snapshots, and
 playback results; `transcript.log` retains the lab output and container logs;
