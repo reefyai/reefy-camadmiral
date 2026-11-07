@@ -33,7 +33,15 @@ function classifyReleaseGate(files, complete = true) {
       (path || "").startsWith("e2e/frigate-identity") || path === "e2e/frigate_identity.py"
     )
   );
-  const e2e = releaseCandidate || relayRuntimeChanged || importChanged || !complete;
+  const dockerLabChanged = complete && files.some(file =>
+    [file.filename, file.previous_filename].some(path =>
+      path === "scripts/ci_docker.py" ||
+      (path || "").startsWith(".github/actions/docker-lab/") ||
+      ["release-gate.yml", "stalled-snapshot.yml", "memory-pressure.yml", "relay-latency.yml"]
+        .some(name => path === `.github/workflows/${name}`)
+    )
+  );
+  const e2e = releaseCandidate || relayRuntimeChanged || importChanged || dockerLabChanged || !complete;
   let reason = "Development commit: running fast validation only.";
   if (!complete) {
     reason = "Large or incomplete change: running the complete E2E gate.";

@@ -17,9 +17,26 @@ concurrency:
 jobs:
   stream-settings:
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
     timeout-minutes: 15
     steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -33,33 +50,108 @@ jobs:
         with:
           name: stream-settings-evidence
           path: e2e-artifacts/stream-settings/
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
   auth-retry:
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
     timeout-minutes: 15
     steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
       - run: python3 e2e/auth_retry.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: auth-retry-evidence
           path: e2e-artifacts/auth-retry/
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
   snapshot-health:
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
     timeout-minutes: 15
     steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
       - run: python3 e2e/snapshot_health.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: snapshot-health-evidence
           path: e2e-artifacts/snapshot-health/
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
   stalled-snapshot:
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
     timeout-minutes: 15
     steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
       - run: python3 e2e/stalled_snapshot.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -69,3 +161,10 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker compose -p camadmiral-stalled-e2e -f e2e/compose.yaml -f e2e/stalled-snapshot-compose.yaml down --volumes --remove-orphans
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
