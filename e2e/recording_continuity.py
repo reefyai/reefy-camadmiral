@@ -131,6 +131,7 @@ print(json.dumps({'recordings': rows, 'files_exist': bool(files) and all(Path(r[
 
     failed = False
     try:
+        run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
         run('up', '-d', 'camadmiral', 'camera-open', 'frigate', 'frigate-api-proxy')
         driver('setup')

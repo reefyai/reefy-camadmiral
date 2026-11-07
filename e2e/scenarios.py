@@ -274,6 +274,28 @@ def request_json(
     return decoded
 
 
+def full_sync_when_idle(target_id: str) -> dict[str, object]:
+    """Wait only for the documented busy response from automatic sync."""
+    path = f"/internal/frigate-targets/{target_id}/full-sync"
+    deadline = time.monotonic() + 30
+    while True:
+        status, body, _headers = request(
+            path, method="POST", timeout=120,
+            headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
+        )
+        try:
+            result = json.loads(body)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ScenarioFailure(f"{path} returned invalid JSON with HTTP {status}") from exc
+        if status == 200:
+            return result
+        if status == 409 and result.get("status") == "sync_busy" and time.monotonic() < deadline:
+            time.sleep(0.5)
+            continue
+        message = result.get("message") or result.get("detail") or result.get("status")
+        raise ScenarioFailure(f"{path} returned HTTP {status}: {message}")
+
+
 def wait_for(description: str, callback, *, timeout: float = 90, interval: float = 1):
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
@@ -2048,12 +2070,7 @@ def frigate() -> None:
         raise ScenarioFailure(
             f"Partial-drift full sync preview returned unexpected counts: {drift_preview}"
         )
-    drift_result = request_json(
-        f"/internal/frigate-targets/{target_id}/full-sync",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
-        timeout=120,
-    )
+    drift_result = full_sync_when_idle(target_id)
     if drift_result.get("removed_cameras") != 0 or drift_result.get("removed_streams") != 1:
         raise ScenarioFailure(
             f"Partial-drift full sync returned unexpected counts: {drift_result}"
@@ -2130,12 +2147,7 @@ def frigate() -> None:
     uptime_before_full_sync = float(
         frigate_json("/api/stats").get("service", {}).get("uptime") or 0
     )
-    result = request_json(
-        f"/internal/frigate-targets/{target_id}/full-sync",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
-        timeout=120,
-    )
+    result = full_sync_when_idle(target_id)
     if result.get("removed_cameras") != 1 or result.get("removed_streams") != 2:
         raise ScenarioFailure(f"Full sync returned unexpected counts: {result}")
     uptime_after_full_sync = float(
@@ -2482,12 +2494,7 @@ def frigate_ambiguous_delete_verify() -> None:
     stale_stream_count = int(preview.get("stale_streams") or 0)
     if stale_stream_count < 1:
         raise ScenarioFailure(f"Ambiguous-delete preview was unexpected: {preview}")
-    result = request_json(
-        f"/internal/frigate-targets/{target_id}/full-sync",
-        method="POST",
-        headers={"X-CamAdmiral-Action": "full-sync-frigate-target"},
-        timeout=120,
-    )
+    result = full_sync_when_idle(target_id)
     if result.get("removed_streams") != stale_stream_count:
         raise ScenarioFailure(f"Ambiguous-delete full sync failed: {result}")
 

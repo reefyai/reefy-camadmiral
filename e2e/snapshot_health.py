@@ -100,6 +100,7 @@ def host(driver_file='snapshot_health.py', artifact_name='snapshot-health'):
         return p.stdout
 
     try:
+        run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
         run('up', '-d', 'camera-open', 'stalled-camera', 'camadmiral')
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/' + driver_file, 'driver')

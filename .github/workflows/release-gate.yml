@@ -33,6 +33,8 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.e2e == 'true'
     uses: ./.github/workflows/stalled-snapshot.yml
+    with:
+      github_hosted: ${{ inputs.github_hosted || false }}
 
   memory-regression:
     name: Production memory envelope
@@ -61,7 +63,7 @@ jobs:
 
   classify-changes:
     name: Classify changes
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     outputs:
       runtime: ${{ steps.classify.outputs.runtime }}
       e2e: ${{ steps.classify.outputs.e2e }}
