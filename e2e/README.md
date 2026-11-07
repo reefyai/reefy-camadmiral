@@ -301,6 +301,13 @@ move, and fail because both logical channels cannot recover to the new address.
 The initial identity measurement and final saved source hosts remain in the
 machine-readable artifact, including on that expected failure.
 
+Playback probe JSON is captured from stdout alone. Decoder diagnostics on
+stderr remain in the normal transcript, and nonzero command exits still fail
+the lab. `tests/test_e2e_command_output.py` reproduces a diagnostic arriving
+between JSON writes, checks rejected commands and malformed stdout, and runs
+in the established Actions unit/component step. Playback decoding, moved-frame
+dimensions and recording/history assertions remain mandatory.
+
 Run the complete default-parallel gate with the established workflow:
 
 ```sh
