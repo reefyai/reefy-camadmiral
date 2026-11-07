@@ -314,3 +314,21 @@ Run the complete default-parallel gate with the established workflow:
 gh workflow run release-gate.yml --repo reefyai/reefy-camadmiral \
   --ref <review-branch> -f github_hosted=true -f force_full=true
 ```
+
+## Parallel labs on shared self-hosted runners
+
+Media workflows use the general runner pool. Each Docker job runs in an
+ephemeral Ubuntu job container with its own Docker daemon, Unix socket,
+storage and empty registry credentials. Fixed synthetic camera subnets and
+localhost access therefore remain private to each job, even when workers
+share a physical host. Forks retain the GitHub-hosted routing boundary.
+
+The local Docker-lab action checks real cgroup v2 memory and PID support before
+tests start. Its post step checks daemon ownership before deleting only that
+job's disposable resources. No parent Docker cleanup, runner relabeling,
+firmware cache changes or suite serialization is used. The normal
+`docker-lab-<job>` artifact retains source revision, daemon fingerprint,
+readiness and startup logs; fingerprints must differ across concurrent jobs.
+`tests/test_ci_docker.py` covers separate contexts, empty credentials and
+refusal to clean a foreign job, path or daemon. Existing media, latency,
+history, recovery and resource assertions still run unchanged.
