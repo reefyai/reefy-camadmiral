@@ -8,10 +8,27 @@ concurrency:
   cancel-in-progress: false
 jobs:
   memory:
-    runs-on: [self-hosted, Linux, X64, big-bird, large]
+    runs-on: [self-hosted, Linux, X64, big-bird]
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
     timeout-minutes: 15
     steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
       - run: python3 e2e/memory_pressure.py
         env:
           CAMADMIRAL_MEMORY_CYCLES: "60"
@@ -26,3 +43,10 @@ jobs:
           docker compose -p camadmiral-memory-e2e
           -f e2e/compose.yaml -f e2e/memory-compose.yaml
           down --volumes --remove-orphans
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore

@@ -38,6 +38,15 @@ function runClassifierTests() {
     { filename: "README.md" },
     { filename: "docs/recovery.md" },
   ]);
+  for (const filename of ["scripts/ci_docker.py", ".github/actions/docker-lab/start.js",
+    ".github/actions/docker-lab/action.yml", ".github/workflows/release-gate.yml",
+    ".github/workflows/stalled-snapshot.yml", ".github/workflows/memory-pressure.yml",
+    ".github/workflows/relay-latency.yml"]) {
+    assert.equal(classifyReleaseGate([{ filename }]).e2e, true,
+      "Docker lab and runner changes require the full parallel gate");
+    assert.equal(classifyReleaseGate([{ filename: "docs/retired.md", previous_filename: filename }]).e2e,
+      true, "renaming Docker lab infrastructure cannot skip full E2E");
+  }
   assert.deepEqual(
     { runtime: documentationOnly.runtime, e2e: documentationOnly.e2e },
     { runtime: false, e2e: false },
