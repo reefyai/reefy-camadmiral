@@ -6,8 +6,10 @@ model DHCP after a power event; the application must discover and validate them.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -19,6 +21,35 @@ STATE = Path('/state/frigate-identity.json')
 DATABASE = '/var/lib/camadmiral/camadmiral.db'
 KEYS = ('identity_camera', 'channel_camera')
 ENDPOINT = 'urn:uuid:synthetic-onvif-camera'
+
+
+def recording_clip_interval(start, end):
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise ValueError('A recording must have a finite positive duration')
+    # Frigate's inclusive clip query also selects adjacent segments at exact
+    # boundaries. Keep this request inside the selected recording, especially
+    # across a source resolution change, while retaining real playback checks.
+    margin = min(0.05, (end - start) / 4)
+    return start + margin, end - margin
+
+
+def recording_playback_url(row):
+    start, end = recording_clip_interval(row[3], row[4])
+    return f'http://frigate:5000/api/{row[1]}/start/{start}/end/{end}/clip.mp4'
+
+
+def recording_for_playback(rows, key, since=-math.inf):
+    # The pinned clip API rounds playlist cut points to whole seconds. Require
+    # a real segment, not a subsecond fragment left while capture reconnects.
+    return next((row for row in reversed(rows) if row[1] == key and row[3] > since
+                 and math.isfinite(row[3]) and math.isfinite(row[4]) and row[4] - row[3] >= 2), None)
+
+
+def decoded_frame_hash(output):
+    frames = [line for line in output.splitlines() if re.fullmatch(
+        r'\d+,\s*-?\d+,\s*-?\d+,\s*\d+,\s*[1-9]\d*,\s*[0-9a-fA-F]{64}', line.strip())]
+    assert len(frames) == 1, 'Playback must decode exactly one nonempty video frame'
+    return frames[0].rsplit(',', 1)[1].strip()
 
 
 def driver(stage):
@@ -154,7 +185,7 @@ def host():
     artifacts = ROOT / 'e2e-artifacts/frigate-identity'
     artifacts.mkdir(parents=True, exist_ok=True)
     compose = ['docker', 'compose', '-p', 'camadmiral-frigate-identity', '-f', str(ROOT / 'e2e/frigate-identity-compose.yaml')]
-    result = {'status': 'failed', 'revision': revision, 'moves': []}
+    result = {'status': 'failed', 'revision': revision, 'moves': [], 'playback_checks': []}
 
     def run(*args, check=True):
         return run_logged([*compose, *args], cwd=ROOT,
@@ -178,10 +209,10 @@ print(json.dumps([list(r) for r in rows if Path(r[2]).is_file() and Path(r[2]).s
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             rows = recordings()
-            if all(any(row[1] == key and row[3] > since for row in rows) for key in KEYS):
+            if all(recording_for_playback(rows, key, since) is not None for key in KEYS):
                 return rows
             time.sleep(3)
-        raise AssertionError('Both imported channels must save new recording files')
+        raise AssertionError('Both imported channels must save complete new recording segments')
 
     def history(seed=False):
         # Reuse the production-table fixture contract from the established import lab.
@@ -200,21 +231,33 @@ with sqlite3.connect('/config/frigate.db') as db:
 
     def verify(address, since):
         stage('verify-' + address)
+        # Only recordings started after the validated identity commit can
+        # establish recovered capture, not old segments flushed during a move.
+        since = max(since, time.time())
         after = fresh(since)
         assert {row[0] for row in before} <= {row[0] for row in after}, 'Historical recordings were lost'
         assert history() == history_before, 'Event/review rows changed'
         # Decode original history and a new file for each logical channel.
         for key in KEYS:
-            for row in (next(row for row in before if row[1] == key), next(row for row in reversed(after) if row[1] == key and row[3] > since)):
-                playback = f'http://frigate:5000/api/{key}/start/{row[3]}/end/{row[4]}/clip.mp4'
-                run('run', '--rm', '--no-deps', '--entrypoint', 'ffmpeg', 'test-driver',
-                    '-v', 'error', '-i', playback, '-frames:v', '1', '-threads', '1', '-f', 'null', '-')
-            latest = next(row for row in reversed(after) if row[1] == key and row[3] > since)
-            playback = f'http://frigate:5000/api/{key}/start/{latest[3]}/end/{latest[4]}/clip.mp4'
+            original = recording_for_playback(before, key)
+            latest = recording_for_playback(after, key, since)
+            assert original is not None and latest is not None, 'Complete old and new recording segments are required'
+            decoded = []
+            for row in (original, latest):
+                playback = recording_playback_url(row)
+                output = run('run', '--rm', '--no-deps', '--entrypoint', 'ffmpeg', 'test-driver',
+                    '-v', 'error', '-i', playback, '-map', '0:v:0', '-frames:v', '1', '-threads', '1',
+                    '-f', 'framehash', '-hash', 'sha256', '-')
+                decoded.append({'recording_id': row[0], 'frame_sha256': decoded_frame_hash(output)})
+            playback = recording_playback_url(latest)
             observed = json.loads(run('run', '--rm', '--no-deps', '--entrypoint', 'ffprobe', 'test-driver',
                 '-v', 'error', '-i', playback, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json'))
             moved = address in {'172.28.0.15', '172.28.0.18'}
             width, height = ((960, 540) if moved else (1280, 720)) if key == 'identity_camera' else ((480, 270) if moved else (640, 360))
+            result['playback_checks'].append({'camera': key, 'address': address,
+                'recording_id': latest[0], 'interval': recording_clip_interval(latest[3], latest[4]),
+                'decoded_frames': decoded,
+                'expected_dimensions': [width, height], 'observed_streams': observed['streams']})
             assert observed['streams'] == [{'width': width, 'height': height}], 'New recording came from the wrong physical source'
         result['moves'].append({'address': address, 'fresh_recording_ids': [r[0] for r in after if r[3] > since],
             'history_preserved': True, 'old_and_new_video_decoded': True})
