@@ -1,0 +1,7 @@
+name: Private Docker lab
+description: Start a job-private Docker daemon and clean it up after the job.
+runs:
+  using: node24
+  main: start.js
+  post: stop.js
+  post-if: always()
