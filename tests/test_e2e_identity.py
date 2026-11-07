@@ -15,6 +15,51 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "e2e"))
 from e2e import run as e2e_run
 from e2e import faults
 from e2e import scenarios
+from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback
+
+
+class FrigateRecordingPlaybackTests(unittest.TestCase):
+    def test_inclusive_frigate_query_selects_only_the_requested_recording(self):
+        with sqlite3.connect(':memory:') as connection:
+            connection.execute('CREATE TABLE recordings (id TEXT, start_time REAL, end_time REAL)')
+            connection.executemany('INSERT INTO recordings VALUES (?,?,?)',
+                [('previous-resolution', 0, 10), ('selected-resolution', 10, 20), ('next-resolution', 20, 30)])
+            # Match the pinned Frigate clip API's inclusive selection contract.
+            query = ('SELECT id FROM recordings WHERE start_time BETWEEN ? AND ? '
+                     'OR end_time BETWEEN ? AND ? OR (? > start_time AND ? < end_time)')
+            def selected(start, end):
+                return {row[0] for row in connection.execute(query, (start, end, start, end, start, end))}
+            self.assertEqual(selected(10, 20), {'previous-resolution', 'selected-resolution', 'next-resolution'})
+            self.assertEqual(selected(*recording_clip_interval(10, 20)), {'selected-resolution'})
+
+    def test_short_recordings_keep_a_positive_interior_playback_interval(self):
+        for start, end in ((10, 10.01), (1000, 1000.1), (20, 30)):
+            with self.subTest(start=start, end=end):
+                first, last = recording_clip_interval(start, end)
+                self.assertLess(start, first)
+                self.assertLess(first, last)
+                self.assertLess(last, end)
+
+    def test_invalid_recording_intervals_are_rejected(self):
+        for start, end in ((10, 10), (20, 10), (0, float('inf')), (float('nan'), 10)):
+            with self.subTest(start=start, end=end), self.assertRaises(ValueError):
+                recording_clip_interval(start, end)
+
+    def test_recovery_requires_a_complete_new_segment_for_each_camera(self):
+        complete = ['new-complete', 'synthetic-camera', '/synthetic/new.mp4', 20, 30]
+        rows = [['old-complete', 'synthetic-camera', '/synthetic/old.mp4', 0, 10], complete,
+                ['new-fragment', 'synthetic-camera', '/synthetic/fragment.mp4', 40, 40.1],
+                ['other-complete', 'other-camera', '/synthetic/other.mp4', 50, 60]]
+        self.assertEqual(recording_for_playback(rows, 'synthetic-camera', 10), complete)
+        self.assertIsNone(recording_for_playback(rows, 'synthetic-camera', 30))
+        self.assertIsNone(recording_for_playback(rows[-1:], 'synthetic-camera', 10))
+
+    def test_playback_requires_a_real_decoded_frame_not_only_a_success_exit(self):
+        frame = '0, 0, 0, 1, 1024, ' + 'a' * 64
+        self.assertEqual(decoded_frame_hash('#format: frame checksums\n' + frame), 'a' * 64)
+        for output in ('', '#format: frame checksums\n', 'not a frame', frame.replace('1024', '0'), frame + '\n' + frame):
+            with self.subTest(output=output), self.assertRaises(AssertionError):
+                decoded_frame_hash(output)
 
 
 class IdentityConsumerTelemetryTests(unittest.TestCase):
