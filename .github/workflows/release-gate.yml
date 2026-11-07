@@ -28,6 +28,41 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
+  frigate-identity:
+    name: Imported camera address recovery
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true'
+    concurrency:
+      group: camadmiral-frigate-identity
+      cancel-in-progress: false
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird","large"]') }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install browser dependencies
+        run: |
+          python -m pip install -r e2e/requirements.txt
+          python -m playwright install --with-deps webkit
+      - name: Verify imported physical identity and DHCP recovery
+        run: python3 e2e/frigate_identity.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frigate-identity-evidence
+          path: e2e-artifacts/frigate-identity/
+          if-no-files-found: ignore
+      - name: Remove identity regression resources
+        if: always()
+        env:
+          IDENTITY_TEST_IMAGE: camadmiral-frigate-identity:cleanup
+        run: >-
+          docker compose -p camadmiral-frigate-identity
+          -f e2e/frigate-identity-compose.yaml down --volumes --remove-orphans
+
   stalled-snapshot:
     name: Stalled snapshot cleanup
     needs: classify-changes

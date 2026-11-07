@@ -28,7 +28,9 @@ function classifyReleaseGate(files, complete = true) {
   );
   const importChanged = complete && files.some(file =>
     [file.filename, file.previous_filename].some(path =>
-      path === "camadmiral/frigate_import.py" || path === "e2e/frigate_import.py"
+      path === "camadmiral/frigate_import.py" || path === "camadmiral/camera_identity.py" ||
+      path === "camadmiral/recovery.py" || path === "e2e/frigate_import.py" ||
+      (path || "").startsWith("e2e/frigate-identity") || path === "e2e/frigate_identity.py"
     )
   );
   const e2e = releaseCandidate || relayRuntimeChanged || importChanged || !complete;
