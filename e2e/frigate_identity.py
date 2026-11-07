@@ -147,6 +147,7 @@ def driver(stage):
 
 
 def host():
+    from command_output import run_logged
     from playwright.sync_api import sync_playwright, expect
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     os.environ['IDENTITY_TEST_IMAGE'] = 'camadmiral-frigate-identity:' + revision[:12]
@@ -156,13 +157,8 @@ def host():
     result = {'status': 'failed', 'revision': revision, 'moves': []}
 
     def run(*args, check=True):
-        completed = subprocess.run([*compose, *args], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        with (artifacts / 'transcript.log').open('a') as log:
-            log.write(completed.stdout)
-        if check and completed.returncode:
-            print(completed.stdout[-10000:], flush=True)
-            completed.check_returncode()
-        return completed.stdout.strip()
+        return run_logged([*compose, *args], cwd=ROOT,
+                          transcript=artifacts / 'transcript.log', check=check)
 
     def stage(name):
         print('Imported identity stage: ' + name, flush=True)
