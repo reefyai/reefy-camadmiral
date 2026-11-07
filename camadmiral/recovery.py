@@ -11,6 +11,7 @@ from typing import Any
 
 from .media import ProbeResult, probe_source, probe_streams, replace_streams
 from .onvif_client import OnvifInspectionError, inspect_onvif_candidate
+from .camera_identity import linked_candidate
 
 
 RECOVERY_RETRY_INTERVAL = max(
@@ -153,6 +154,7 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
     results: list[RecoveryResult] = []
     plans: list[_RecoveryPlan] = []
     adoptions = repository.adoption_map()
+    identity_links = repository.camera_identity_links()
     active_camera_uuids = {
         str(adoption["camera_uuid"]) for adoption in adoptions.values()
     }
@@ -161,7 +163,9 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             ATTEMPTED_AT.pop(attempt_key, None)
             ATTEMPT_COUNTS.pop(attempt_key, None)
     for candidate_uuid, adoption in adoptions.items():
-        candidate = inventory.get(candidate_uuid)
+        if not adoption.get('enabled', True):
+            continue
+        candidate = linked_candidate(adoption, inventory, identity_links, candidate_uuid)
         if (
             not candidate
             or candidate.get("status") != "online"
@@ -340,6 +344,8 @@ def recover_inventory_addresses(repository: Any, inventory_path: Path) -> list[R
             plan.evidence,
         )
         repository.observe_camera_identity(plan.camera_uuid, plan.candidate)
+        if plan.camera_uuid in identity_links:
+            repository.bind_camera_identity(plan.camera_uuid, plan.candidate)
         repository.resolve_camera_address_incident(address_incidents[plan.camera_uuid])
         _clear_attempts(plan.camera_uuid)
         results.append(

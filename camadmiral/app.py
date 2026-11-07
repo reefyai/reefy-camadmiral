@@ -71,6 +71,8 @@ from .roles import select_stream_roles
 from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
 from .inventory import inventory_summary
 from .recovery import recover_inventory_addresses
+from .camera_identity import (discover_identity, enrich_existing_imports,
+                              linked_candidate, physical_identity, same_identity)
 from .scan_state import preserve_inventory
 from .storage import CameraRepository, SourceAlreadyAssignedError
 
@@ -209,6 +211,12 @@ class ExplicitAddressRequest(BaseModel):
     address: str = Field(min_length=7, max_length=45)
 
 
+class CameraIdentityRequest(ExplicitAddressRequest):
+    confirm: bool = False
+    endpoint_reference: str | None = Field(default=None, max_length=512)
+    mac: str | None = Field(default=None, max_length=32)
+
+
 class DiscoveryNetworksRequest(BaseModel):
     selected_subnets: list[str] = Field(default_factory=list, max_length=64)
     custom_subnets: list[str] | None = Field(default=None, max_length=64)
@@ -239,6 +247,17 @@ class FrigateCameraSyncRequest(BaseModel):
 
 class FrigateTargetAddressRequest(BaseModel):
     address_mode: Literal["lan", "localhost"]
+
+
+class FrigateImportRequest(BaseModel):
+    selected: list[str] = Field(min_length=1, max_length=256)
+    keep_existing: list[str] = Field(default_factory=list, max_length=256)
+    allow_restart: bool = False
+
+
+class FrigateImportRollbackRequest(BaseModel):
+    camera_key: str = Field(min_length=1, max_length=256)
+    allow_restart: bool = False
 
 
 FACTORY_ONVIF_USERNAME = "admin"
@@ -272,6 +291,8 @@ def _repository(*, required: bool = False) -> CameraRepository | None:
         try:
             repository = CameraRepository(database_path(), load_master_key())
             repository.migrate()
+            from .frigate_import import ImportStore
+            ImportStore(repository).interrupt_jobs()
         except SecretConfigurationError:
             if required:
                 raise
@@ -330,6 +351,29 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
     if repository is None:
         return state
     adoptions = repository.adoption_map()
+    identity_links = repository.camera_identity_links()
+    # A physical device can back multiple logical RTSP channels. Project each
+    # linked adoption without changing scanner IDs, camera IDs or stream IDs.
+    projected = []
+    candidates = {str(d.get('candidate_uuid')): d for d in state.get('devices', [])}
+    owners_by_physical = {}
+    for candidate_uuid, adoption in adoptions.items():
+        if str(adoption.get('camera_uuid')) not in identity_links:
+            continue
+        physical = linked_candidate(adoption, candidates, identity_links, candidate_uuid)
+        if physical:
+            owners_by_physical.setdefault(str(physical['candidate_uuid']), []).append((candidate_uuid, physical))
+    projected_ids = set()
+    for device in state.get('devices', []):
+        owners = owners_by_physical.get(str(device.get('candidate_uuid')), [])
+        if not owners or device.get('candidate_uuid') in adoptions:
+            own = next((physical for candidate_uuid, physical in owners if candidate_uuid == device.get('candidate_uuid')), device)
+            projected.append(own)
+        for candidate_uuid, physical in owners:
+            if candidate_uuid != device.get('candidate_uuid') and candidate_uuid not in projected_ids:
+                projected.append({**physical, 'candidate_uuid': candidate_uuid})
+                projected_ids.add(candidate_uuid)
+    state['devices'] = projected
     blocked_records = repository.blocked_devices()
     blocked_by_identity = {
         str(record["onvif_identity"]): record
@@ -427,15 +471,17 @@ def _decorate_adoptions(state: dict[str, object]) -> dict[str, object]:
         except ValueError:
             source_host = ""
             source_port = 554
+        physical = linked_candidate(adoption, candidates, identity_links, candidate_uuid)
         devices.append(
             {
+                **(physical or {}),
                 "candidate_uuid": candidate_uuid,
                 "display_name": adoption["display_name"],
-                "ip": source_host,
-                "mac": None,
-                "onvif": None,
+                "ip": physical.get('ip') if physical else source_host,
+                "mac": physical.get('mac') if physical else None,
+                "onvif": physical.get('onvif') if physical else None,
                 "rtsp": [{"port": source_port, "verified": True}],
-                "status": "online",
+                "status": physical.get('status', 'offline') if physical else "online",
                 "camera_origin": "direct",
                 "adoption": adoption,
             }
@@ -595,11 +641,12 @@ def _observation_matches_saved_sources(
 def _observe_inventory_identities(repository: CameraRepository) -> None:
     candidates = _inventory_candidates()
     adoptions = repository.adoption_map()
+    identity_links = repository.camera_identity_links()
     observations = [
-        (str(adoptions[candidate_uuid]["camera_uuid"]), candidate)
-        for candidate_uuid, candidate in candidates.items()
-        if candidate_uuid in adoptions
-        and _observation_matches_saved_sources(candidate, adoptions[candidate_uuid])
+        (str(adoption["camera_uuid"]), candidate)
+        for candidate_uuid, adoption in adoptions.items()
+        if (candidate := linked_candidate(adoption, candidates, identity_links, candidate_uuid))
+        and _observation_matches_saved_sources(candidate, adoption)
     ]
     advance_existing = {
         camera_uuid
@@ -633,6 +680,10 @@ def _media_runtime_reconciliation_loop() -> None:
                     f"media: address recovery failed ({type(exc).__name__})",
                     flush=True,
                 )
+            try:
+                enrich_existing_imports(repository, INVENTORY)
+            except Exception:
+                pass
             try:
                 if reconcile_runtime_drift(repository):
                     print("media: restored managed streams after runtime drift", flush=True)
@@ -878,13 +929,14 @@ def _queue_targeted_recovery_scan(
     try:
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        return False
+        inventory = {'devices': []}
     candidates = {
         str(candidate.get("candidate_uuid")): candidate
         for candidate in inventory.get("devices", [])
         if candidate.get("candidate_uuid")
     }
     adoptions = repository.adoption_map()
+    identity_links = repository.camera_identity_links()
     for candidate_uuid in set(RECOVERY_SCAN_ATTEMPTS) - set(adoptions):
         RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
         RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
@@ -898,7 +950,7 @@ def _queue_targeted_recovery_scan(
             RECOVERY_SCAN_ATTEMPTS.pop(candidate_uuid, None)
             RECOVERY_SCAN_ATTEMPT_COUNTS.pop(candidate_uuid, None)
             continue
-        candidate = candidates.get(candidate_uuid) or {}
+        candidate = linked_candidate(adoption, candidates, identity_links, candidate_uuid) or {}
         streams = [stream for stream in adoption.get("streams", []) if stream.get("enabled", True)]
         candidate_offline = candidate.get("status") == "offline"
         runtime_stalled = (
@@ -945,14 +997,29 @@ def _queue_targeted_recovery_scan(
                 previous_attempt or 0.0,
                 candidate_uuid,
                 {
-                    "candidate_uuid": candidate_uuid,
+                    "candidate_uuid": str(candidate.get('candidate_uuid') or candidate_uuid),
                     "endpoint_reference": endpoint_reference,
                     "mac": mac,
                 },
             )
         )
     eligible_targets.sort(key=lambda item: item[:3])
-    targets = [item[3] for item in eligible_targets[:16]]
+    targets = []
+    selected_adoption_ids = set()
+    for item in eligible_targets:
+        target = item[3]
+        identity = {'onvif': {'endpoint_reference': target['endpoint_reference']}, 'mac': target['mac']}
+        shared = next((t for t in targets if same_identity(identity,
+            {'onvif': {'endpoint_reference': t['endpoint_reference']}, 'mac': t['mac']})), None)
+        if shared is not None:
+            # Prefer the strongest evidence when channels learned the same
+            # physical device through different discovery observations.
+            if target['endpoint_reference'] and not shared['endpoint_reference']:
+                shared.update(target)
+            selected_adoption_ids.add(item[2])
+        elif len(targets) < 16:
+            targets.append(dict(target))
+            selected_adoption_ids.add(item[2])
     if not targets:
         return False
     selected_subnets = _selected_discovery_subnets(repository)
@@ -978,8 +1045,7 @@ def _queue_targeted_recovery_scan(
         temporary = SCAN_REQUEST.with_suffix(".tmp")
         temporary.write_text(json.dumps(request), encoding="utf-8")
         temporary.replace(SCAN_REQUEST)
-        for target in targets:
-            candidate_uuid = str(target["candidate_uuid"])
+        for candidate_uuid in selected_adoption_ids:
             RECOVERY_SCAN_ATTEMPTS[candidate_uuid] = now
             RECOVERY_SCAN_ATTEMPT_COUNTS[candidate_uuid] = (
                 RECOVERY_SCAN_ATTEMPT_COUNTS.get(candidate_uuid, 0) + 1
@@ -989,6 +1055,13 @@ def _queue_targeted_recovery_scan(
 
 @app.on_event("startup")
 def start_media_reconciliation() -> None:
+    def recover_imports():
+        from .frigate_import import recover_handoffs
+        repository = _repository(required=False)
+        if repository is not None:
+            with FRIGATE_LOCK:
+                recover_handoffs(repository, _reconcile_media)
+    threading.Thread(target=recover_imports, name="frigate-import-recovery", daemon=True).start()
     threading.Thread(
         target=_reconcile_media,
         kwargs={"wait": False},
@@ -1318,6 +1391,7 @@ def notification_settings() -> JSONResponse:
 
 def _frigate_target_error(exc: FrigateApiError) -> JSONResponse:
     messages = {
+        "import_restore_required": "Restore this camera's original connection using Import from Frigate before removing its CamAdmiral binding. Restoration requires an explicitly confirmed Frigate restart.",
         "invalid_target_url": "Enter an HTTP or HTTPS Frigate API URL without embedded credentials, a query, or a fragment.",
         "target_unavailable": "CamAdmiral could not reach Frigate at that URL.",
         "authorization_required": "Frigate requires authorization on that endpoint.",
@@ -1356,6 +1430,87 @@ def _stored_frigate_target(repository: CameraRepository, target_id: str) -> tupl
 
 
 _frigate_discovery_lock = threading.Lock()
+
+
+@app.get("/internal/frigate-targets/{target_id}/import", include_in_schema=False)
+def preview_frigate_import(target_id: str) -> JSONResponse:
+    from .frigate_import import preview, public_job
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    try:
+        with FRIGATE_LOCK:
+            return _secured_json(public_job(preview(repository, target)))
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=503)
+
+
+@app.get("/internal/frigate-targets/{target_id}/import/{job_id}", include_in_schema=False)
+def frigate_import_status(target_id: str, job_id: str) -> JSONResponse:
+    from .frigate_import import ImportStore, public_job
+    repository = _repository(required=True)
+    assert repository is not None
+    _stored_frigate_target(repository, target_id)
+    try:
+        return _secured_json(public_job(ImportStore(repository).job(target_id, job_id)))
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=404)
+
+
+@app.post("/internal/frigate-targets/{target_id}/import/{job_id}", include_in_schema=False)
+def apply_frigate_import(target_id: str, job_id: str, request: FrigateImportRequest,
+                         x_camadmiral_action: str | None = Header(default=None)) -> JSONResponse:
+    from .frigate_import import ImportStore, execute, public_job, start_job
+    if x_camadmiral_action != "import-frigate-cameras":
+        raise HTTPException(status_code=400, detail="Missing import action header")
+    if not request.allow_restart:
+        return _secured_json({"status": "restart_confirmation_required"}, status_code=409)
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    try:
+        job = ImportStore(repository).job(target_id, job_id)
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=404)
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+
+    def worker():
+        try:
+            execute(repository, target, job_id, request.selected, request.keep_existing,
+                    INVENTORY, _reconcile_media)
+        except Exception:
+            job["status"] = "error"
+            ImportStore(repository).save_job(target_id, job)
+        finally:
+            FRIGATE_LOCK.release()
+
+    start_job(job, request.selected, request.keep_existing)
+    ImportStore(repository).save_job(target_id, job)
+    threading.Thread(target=worker, name="frigate-import", daemon=True).start()
+    return _secured_json(public_job(job), status_code=202)
+
+
+@app.post("/internal/frigate-targets/{target_id}/import-rollback", include_in_schema=False)
+def rollback_frigate_import(target_id: str, request: FrigateImportRollbackRequest,
+                            x_camadmiral_action: str | None = Header(default=None)) -> JSONResponse:
+    from .frigate_import import restore
+    if x_camadmiral_action != "rollback-frigate-import":
+        raise HTTPException(status_code=400, detail="Missing rollback action header")
+    if not request.allow_restart:
+        return _secured_json({"status": "restart_confirmation_required"}, status_code=409)
+    repository = _repository(required=True)
+    assert repository is not None
+    _current, target = _stored_frigate_target(repository, target_id)
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+    try:
+        restore(repository, target, request.camera_key, reconcile_media=_reconcile_media)
+    except FrigateApiError as exc:
+        return _secured_json({"status": exc.code}, status_code=409)
+    finally:
+        FRIGATE_LOCK.release()
+    return _secured_json({"status": "restored"})
 
 
 @app.post("/internal/frigate-discovery", include_in_schema=False)
@@ -1717,8 +1872,17 @@ def remove_frigate_target(
         raise HTTPException(status_code=400, detail="Missing Frigate removal action header")
     repository = _repository(required=True)
     assert repository is not None
-    if not repository.remove_frigate_target(target_id):
-        raise HTTPException(status_code=404, detail="Frigate target not found")
+    if not FRIGATE_LOCK.acquire(blocking=False):
+        return _secured_json({"status": "sync_busy"}, status_code=409)
+    try:
+        from .frigate_import import ImportStore
+        if any(row.get('handoff') and row.get('state') != 'active'
+               for row in ImportStore(repository).links(target_id).values()):
+            return _secured_json({"status": "restoration_required", "message": "Restore the unfinished camera handoff before removing this integration."}, status_code=409)
+        if not repository.remove_frigate_target(target_id):
+            raise HTTPException(status_code=404, detail="Frigate target not found")
+    finally:
+        FRIGATE_LOCK.release()
     return _secured_json(
         {
             "status": "removed",
@@ -1928,13 +2092,19 @@ def unadopt_camera(
         for target in load_frigate_targets(repository)
         if camera_uuid in repository.selected_frigate_camera_uuids(target.target_id)
     ]
-    if targets and not FRIGATE_LOCK.acquire(blocking=False):
+    if not FRIGATE_LOCK.acquire(blocking=False):
         return _secured_json(
             {"status": "sync_busy", "message": "Camera synchronization is already running."},
             status_code=409,
         )
     restart_recommended = False
     try:
+        from .frigate_import import ImportStore
+        store = ImportStore(repository)
+        if any(row.get('camera_uuid') == camera_uuid or row.get('candidate_id') == candidate_uuid
+               for target in load_frigate_targets(repository)
+               for row in store.links(target.target_id).values()):
+            return _secured_json({"status": "import_restore_required", "message": "Restore the original Frigate connection before removing this camera."}, status_code=409)
         for target in targets:
             try:
                 result = remove_frigate_camera(repository, target, camera_uuid)
@@ -1952,11 +2122,10 @@ def unadopt_camera(
                 status="connected",
                 restart_recommended=target_restart,
             )
+        if not repository.unadopt_camera(camera_uuid):
+            raise HTTPException(status_code=404, detail="Adopted camera not found")
     finally:
-        if targets:
-            FRIGATE_LOCK.release()
-    if not repository.unadopt_camera(camera_uuid):
-        raise HTTPException(status_code=404, detail="Adopted camera not found")
+        FRIGATE_LOCK.release()
     _reconcile_media()
     if candidate_was_online:
         _mark_discovery_candidate_online(candidate_uuid)
@@ -2460,11 +2629,59 @@ def _find_candidate(candidate_uuid: str) -> dict[str, object] | None:
     try:
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        return None
+        inventory = {'devices': []}
     for candidate in inventory.get("devices", []):
         if candidate.get("candidate_uuid") == candidate_uuid:
             return candidate
+    repository = _repository()
+    adoption = repository.adoption_for_candidate(candidate_uuid) if repository is not None else None
+    if adoption:
+        candidates = {str(d.get('candidate_uuid')): d for d in inventory.get('devices', [])}
+        candidate = linked_candidate(adoption, candidates, repository.camera_identity_links(), candidate_uuid)
+        if candidate:
+            return {**candidate, 'candidate_uuid': candidate_uuid}
     return None
+
+
+@app.post('/internal/cameras/{camera_uuid}/identity', include_in_schema=False)
+def link_camera_identity(camera_uuid: str, request: CameraIdentityRequest,
+                         x_camadmiral_action: str | None = Header(default=None)) -> JSONResponse:
+    if x_camadmiral_action != 'link-camera-identity':
+        raise HTTPException(status_code=400, detail='Missing identity-link action header')
+    repository = _repository(required=True)
+    camera = repository.camera(camera_uuid)
+    if camera is None:
+        raise HTTPException(status_code=404, detail='Camera not found')
+    candidate = discover_identity(request.address, INVENTORY)
+    if candidate is None:
+        return _secured_json({'status': 'identity_unavailable',
+            'message': 'A unique camera identity could not be verified at that address.'}, status_code=409)
+    endpoint, mac = physical_identity(candidate)
+    review = {'address': candidate['ip'], 'endpoint_reference': endpoint or None, 'mac': mac or None}
+    if not request.confirm:
+        return _secured_json({'status': 'review', 'identity': review})
+    expected = {'mac': request.mac, 'onvif': {'endpoint_reference': request.endpoint_reference}}
+    if not any(physical_identity(expected)) or not same_identity(expected, candidate):
+        return _secured_json({'status': 'identity_changed',
+            'message': 'The device identity changed. Identify the camera again before linking.'}, status_code=409)
+    try:
+        repository.bind_camera_identity(camera_uuid, candidate)
+    except ValueError:
+        return _secured_json({'status': 'identity_conflict',
+            'message': 'The detected device differs from this camera\'s saved identity.'}, status_code=409)
+    # Existing recovery validates all saved RTSP profiles before changing their
+    # hosts. Linking metadata alone never declares video or recording healthy.
+    def recover_linked():
+        if not MEDIA_LOCK.acquire(blocking=False):
+            return
+        try:
+            recover_inventory_addresses(repository, INVENTORY)
+        except Exception as exc:
+            LOGGER.warning('Identity recovery deferred (%s)', type(exc).__name__)
+        finally:
+            MEDIA_LOCK.release()
+    threading.Thread(target=recover_linked, name='camera-identity-recovery', daemon=True).start()
+    return _secured_json({'status': 'linked', 'identity': review})
 
 
 def _stored_adoption_inspection(adoption: dict[str, object]) -> dict[str, object]:

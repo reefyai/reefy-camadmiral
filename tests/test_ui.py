@@ -139,7 +139,7 @@ class DiscoveryUiTests(unittest.TestCase):
 
     def test_direct_rtsp_rows_hide_discovery_only_controls(self) -> None:
         self.assertIn('device.camera_origin === "direct" ? "Direct RTSP"', self.html)
-        self.assertIn('if (device.camera_origin !== "direct") addIdentityHistory', self.html)
+        self.assertIn('if (device.camera_origin !== "direct" || device.mac || device.onvif?.endpoint_reference) addIdentityHistory', self.html)
         self.assertIn('device.camera_origin === "direct"\n              ? "CamAdmiral will remove this RTSP camera', self.html)
         self.assertIn('? [["HOST", device.ip || "-", false]]', self.html)
 
