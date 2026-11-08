@@ -15,12 +15,29 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = Path('/state/frigate-identity.json')
 DATABASE = '/var/lib/camadmiral/camadmiral.db'
 KEYS = ('identity_camera', 'channel_camera')
 ENDPOINT = 'urn:uuid:synthetic-onvif-camera'
+FRIGATE_CONTROL_FAULT_SCRIPT = r'''from pathlib import Path
+import subprocess
+import sys
+p=Path('/usr/local/nginx/conf/nginx.conf')
+s=p.read_text()
+needle='location /ws {'
+assert s.count(needle)==1
+fault=needle+'\n            return 503;'
+if len(sys.argv)>1 and sys.argv[1]=='restore':
+    assert s.count(fault)==1
+    p.write_text(s.replace(fault, needle, 1))
+else:
+    assert fault not in s
+    p.write_text(s.replace(needle, fault, 1))
+subprocess.run(['/usr/local/nginx/sbin/nginx','-t'],check=True)
+subprocess.run(['/usr/local/nginx/sbin/nginx','-s','reload'],check=True)'''
 
 
 def recording_clip_interval(start, end):
@@ -82,6 +99,21 @@ def decoded_frame_hash(output):
     return frames[0].rsplit(',', 1)[1].strip()
 
 
+def reader_recovery_ready(readers, camera_ids, address_revisions, previous_runtime=None):
+    generations = set()
+    for key, camera_uuid in camera_ids.items():
+        row = readers.get(key, {})
+        generation = row.get("relay_runtime_revision")
+        if (row.get("camera_uuid") != camera_uuid or not generation or not address_revisions.get(camera_uuid)
+                or row.get("capture_resume_pending") or row.get("target_restart")
+                or row.get("relay_address_revision") != address_revisions.get(camera_uuid)):
+            return False
+        if previous_runtime is not None and generation == previous_runtime.get(key):
+            return False
+        generations.add(generation)
+    return bool(camera_ids) and len(generations) == 1
+
+
 def driver(stage):
     import yaml
     from scenarios import (consumer_directory, directory_signature, request_json,
@@ -101,6 +133,22 @@ def driver(stage):
         if not sql("SELECT name FROM sqlite_master WHERE name='camera_identity_links'"):
             return {}
         return {row['camera_uuid']: json.loads(row['payload']) for row in sql('SELECT * FROM camera_identity_links')}
+
+    def reader_links(target_id):
+        # Use the packaged image modules, including in unchanged-baseline runs;
+        # an absolute /e2e script does not put the image working directory on sys.path.
+        if '/opt/camadmiral' not in sys.path:
+            sys.path.insert(0, '/opt/camadmiral')
+        from camadmiral.crypto import decrypt_password, load_master_key
+        master = load_master_key()
+        result = {}
+        for row in sql('SELECT camera_key,payload FROM frigate_import_links WHERE target_id=?', (target_id,)):
+            saved = json.loads(decrypt_password(row['payload'], target_id + ':' + row['camera_key'], master))
+            result[row['camera_key']] = {field: saved.get(field) for field in (
+                'camera_uuid', 'relay_address_revision', 'relay_runtime_revision')}
+            result[row['camera_key']].update(capture_resume_pending=bool(saved.get('capture_resume_pending')),
+                                            target_restart=bool(saved.get('target_restart')))
+        return result
 
     if stage in {'remove-links', 'remove-primary-anchor'}:
         state = json.loads(STATE.read_text())
@@ -133,6 +181,11 @@ def driver(stage):
         state['signature'] = directory_signature(consumer_directory())
         assert sum(len(c['streams']) for c in state['signature'].values()) == 4
         state['credentials'] = sql('SELECT credential_uuid,username,hex(password_ciphertext) AS ciphertext FROM camera_credentials ORDER BY credential_uuid')
+        readers = reader_links(state['target'])
+        # Older unchanged runtime has no reader journal; retain its original
+        # black-box media assertions rather than failing on a missing field.
+        state['reader_recovery_tracking'] = all(readers.get(key, {}).get('relay_runtime_revision') for key in KEYS)
+        state['reader_runtime_revisions'] = {key: readers.get(key, {}).get('relay_runtime_revision') for key in KEYS}
         state['managed_config'] = yaml.safe_load(frigate('/config/raw'))
         original = state['original']
         current = state['managed_config']
@@ -146,6 +199,31 @@ def driver(stage):
         state['initial_identity_learned'] = (len(initial) == 2 and
             all(link.get('onvif', {}).get('endpoint_reference') == ENDPOINT for link in initial.values()) and
             len({link['candidate_uuid'] for link in initial.values()}) == 1)
+        STATE.write_text(json.dumps(state))
+        return
+    if stage == 'fallback-control-unavailable':
+        def unavailable():
+            try:
+                urllib.request.urlopen('http://frigate:5000/ws', timeout=5).close()
+            except urllib.error.HTTPError as exc:
+                return exc.code == 503
+            return False
+        wait_for('per-camera control fault active', unavailable, timeout=15)
+        service = frigate('/stats')['service']
+        state['forced_fallback_started_before'] = float(service['last_updated']) - float(service['uptime'])
+        state['forced_fallback_pending'] = True
+        STATE.write_text(json.dumps(state))
+        return
+    if stage == 'fallback-control-restored':
+        from websockets.sync.client import connect
+        def available():
+            try:
+                with connect('ws://frigate:5000/ws', proxy=None, open_timeout=5, close_timeout=2):
+                    return True
+            except Exception:
+                return False
+        wait_for('per-camera runtime control restored', available, timeout=15)
+        state['fallback_control_restored'] = True
         STATE.write_text(json.dumps(state))
         return
     if stage == 'unanchored':
@@ -165,12 +243,19 @@ def driver(stage):
         assert changed['status'] == 'identity_changed' and primary not in links()
         return
     if stage.startswith('verify-'):
-        address = stage.removeprefix('verify-')
+        restarted = stage.startswith('verify-restarted-')
+        address = stage.removeprefix('verify-restarted-' if restarted else 'verify-')
         def recovered():
             sources = sql('SELECT source_host FROM onvif_profiles')
             current = links()
             periods = sql('SELECT camera_uuid,ip_address,onvif_identity FROM camera_identity_periods WHERE ended_at IS NULL')
             health = sql('SELECT health_status,probe_status FROM managed_streams WHERE enabled=1')
+            if state.get('reader_recovery_tracking'):
+                revisions = {row['camera_uuid']: row['event_uuid'] for row in sql(
+                    'SELECT camera_uuid,event_uuid FROM camera_address_events ORDER BY changed_at,rowid')}
+                previous = state['reader_runtime_revisions'] if restarted else None
+                if not reader_recovery_ready(reader_links(state['target']), state['camera_ids'], revisions, previous):
+                    return False
             # Source hosts are written before relay validation, and may still
             # roll back. Wait for the validated identity commit for both owners.
             return (len(sources) == 4 and all(row['source_host'] == address for row in sources)
@@ -189,6 +274,16 @@ def driver(stage):
         for camera_uuid in state['camera_ids'].values():
             periods = sql('SELECT * FROM camera_identity_periods WHERE camera_uuid=? ORDER BY started_at DESC', (camera_uuid,))
             assert periods and periods[0]['ip_address'] == address and periods[0]['onvif_identity'] == ENDPOINT
+        if state.get('reader_recovery_tracking'):
+            if restarted and state.get('forced_fallback_pending'):
+                service = frigate('/stats')['service']
+                started = float(service['last_updated']) - float(service['uptime'])
+                assert started > state['forced_fallback_started_before'] + 2, 'Unavailable per-camera control must trigger a real verified Frigate restart'
+                state['forced_fallback_pending'] = False
+                state['fallback_verified'] = True
+            readers = reader_links(state['target'])
+            state['reader_runtime_revisions'] = {key: readers[key]['relay_runtime_revision'] for key in KEYS}
+            STATE.write_text(json.dumps(state))
         return
     if stage == 'foreign-rejected':
         # A different camera at the original IP must never take over a known identity.
@@ -201,8 +296,13 @@ def driver(stage):
     if stage == 'evidence':
         print(json.dumps({'camera_ids': state['camera_ids'], 'signature': state['signature'],
             'initial_identity_learned': state['initial_identity_learned'],
+            'fallback_verified': state.get('fallback_verified', False),
+            'fallback_control_restored': state.get('fallback_control_restored', False),
+            'health': sql('SELECT camera_uuid,stream_uuid,health_status,probe_status FROM managed_streams'),
+            'address_events': sql('SELECT camera_uuid,event_uuid FROM camera_address_events ORDER BY changed_at,rowid'),
+            'relay_generation': sql('SELECT revision FROM relay_runtime_state') if state.get('reader_recovery_tracking') else [],
             'sources': sql('SELECT camera_uuid,source_host,source_path,source_query FROM onvif_profiles'),
-            'links': links(), 'history': sql('SELECT camera_uuid,ip_address,mac_address,onvif_identity,ended_at FROM camera_identity_periods')}))
+            'links': links(), 'reader_recovery': reader_links(state['target']), 'history': sql('SELECT camera_uuid,ip_address,mac_address,onvif_identity,ended_at FROM camera_identity_periods')}))
         return
     raise ValueError(stage)
 
@@ -259,8 +359,8 @@ with sqlite3.connect('/config/frigate.db') as db:
  print(json.dumps({'events':db.execute("SELECT * FROM event WHERE id='synthetic-identity-event'").fetchall(),'review':db.execute("SELECT * FROM reviewsegment WHERE id='synthetic-identity-review'").fetchall()}))"""
         return json.loads(run('exec', '-T', 'frigate', 'python3', '-c', 'SEED=' + repr(seed) + '\n' + code))
 
-    def verify(address, since):
-        stage('verify-' + address)
+    def verify(address, since, restarted=False):
+        stage(('verify-restarted-' if restarted else 'verify-') + address)
         # Only recordings started after the validated identity commit can
         # establish recovered capture, not old segments flushed during a move.
         since = max(since, time.time())
@@ -282,6 +382,11 @@ with sqlite3.connect('/config/frigate.db') as db:
             playback = recording_playback_url(latest, after)
             observed = json.loads(run('run', '--rm', '--no-deps', '--entrypoint', 'ffprobe', 'test-driver',
                 '-v', 'error', '-i', playback, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json'))
+            # Retain the selected synthetic file independently of clip API
+            # concatenation, so a codec failure can be traced to its boundary.
+            container = run("ps", "-q", "frigate").strip()
+            retained = artifacts / (key + "-selected.mp4")
+            subprocess.run(["docker", "cp", container + ":" + latest[2], str(retained)], check=True)
             moved = address in {'172.28.0.15', '172.28.0.18'}
             width, height = ((960, 540) if moved else (1280, 720)) if key == 'identity_camera' else ((480, 270) if moved else (640, 360))
             result['playback_checks'].append({'camera': key, 'address': address,
@@ -338,12 +443,20 @@ with sqlite3.connect('/config/frigate.db') as db:
                 page.screenshot(path=str(artifacts / 'imported-identity-history.png'))
                 run('up', '-d', 'old-address-device')
                 stage('foreign-rejected')
+                # Deterministically fail only the runtime-control transport.
+                # HTTP APIs and live media remain available for real recovery.
+                run('exec', '-T', 'frigate', 'python3', '-c', FRIGATE_CONTROL_FAULT_SCRIPT)
+                stage('fallback-control-unavailable')
                 run('restart', 'camadmiral')
-                verify('172.28.0.15', time.time())
+                verify('172.28.0.15', time.time(), restarted=True)
+                # Later recovery must also work through normal per-camera
+                # control, including peers reset by another camera's move.
+                run('exec', '-T', 'frigate', 'python3', '-c', FRIGATE_CONTROL_FAULT_SCRIPT, 'restore')
+                stage('fallback-control-restored')
                 run('stop', 'camadmiral')
                 stage('remove-links')
                 run('start', 'camadmiral')
-                verify('172.28.0.15', time.time())
+                verify('172.28.0.15', time.time(), restarted=True)
                 since = time.time()
                 run('stop', 'camera-moved')
                 run('rm', '-f', 'camera-moved')

@@ -44,6 +44,36 @@ class RelayHealthMonitor(AsyncRelayHealthMonitor):
 
 
 class MediaTests(unittest.TestCase):
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_relay_restart_discards_old_snapshot_results_with_unchanged_source(self, request):
+        source = {"stream_uuid": "synthetic-stream", "stream_key": "stream_synthetic",
+                  "camera_uuid": "synthetic-camera", "uri": "rtsp://192.0.2.10/sub",
+                  "username": "", "password": ""}
+        for old_failure in (True, False):
+            with self.subTest(old_failure=old_failure):
+                repository = Mock()
+                repository.auth_retry_schedule.return_value = {}
+                repository.managed_stream_sources.return_value = [source]
+                repository.latest_relay_runtime_revision.return_value = "synthetic-old-generation"
+                old, current = Future(), Future()
+                executor = Mock()
+                executor.submit.side_effect = [old, current]
+                monitor = AsyncRelayHealthMonitor(frame_probe_interval=3600)
+                monitor._snapshot_executor = executor
+                self.assertEqual({}, monitor.probe(repository))
+                if old_failure:
+                    old.set_exception(SnapshotError("synthetic relay restart"))
+                else:
+                    old.set_result(b"synthetic-old-frame")
+                repository.latest_relay_runtime_revision.return_value = "synthetic-new-generation"
+                self.assertEqual({}, monitor.probe(repository), "Old relay work must not overwrite recovered health")
+                self.assertIsNone(monitor.cached_frame("synthetic-camera"))
+                self.assertEqual(2, executor.submit.call_count)
+                self.assertEqual(1, len(monitor._pending_snapshots))
+                # A genuine failure from the current relay is still reported.
+                current.set_exception(SnapshotError("synthetic current outage"))
+                self.assertEqual("unavailable", monitor.probe(repository)["synthetic-stream"].status)
+
     @patch("camadmiral.media._request")
     def test_runtime_activity_skips_go2rtc_without_managed_streams(self, request) -> None:
         repository = Mock()

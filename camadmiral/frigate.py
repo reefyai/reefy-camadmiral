@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import math
 import re
 import time
 import urllib.error
@@ -15,6 +16,8 @@ from typing import Any, Callable
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
+from websockets.sync.client import connect as websocket_connect
+from websockets.exceptions import WebSocketException
 
 from .discovery import default_lan_interface
 
@@ -311,6 +314,49 @@ class FrigateClient:
         result = self._request("DELETE", f"/api/go2rtc/streams/{encoded_name}")
         if isinstance(result, dict) and result.get("success") is False:
             raise FrigateApiError("runtime_stream_rejected")
+
+    def service_started_at(self) -> float:
+        result = self._request("GET", "/api/stats")
+        try:
+            service = result["service"]
+            updated, uptime = float(service["last_updated"]), float(service["uptime"])
+            if not math.isfinite(updated) or not math.isfinite(uptime) or updated <= 0 or uptime < 0:
+                raise ValueError
+            return updated - uptime
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FrigateApiError("invalid_response") from exc
+
+    def set_runtime_camera_enabled(self, camera_key: str, enabled: bool) -> None:
+        """Reconnect capture using Frigate's runtime controls, without YAML writes."""
+        parsed = urllib.parse.urlsplit(self.target.api_url)
+        url = urllib.parse.urlunsplit(("wss" if parsed.scheme == "https" else "ws",
+                                      parsed.netloc, parsed.path + "/ws", "", ""))
+        expected = {camera_key + "/enabled/state": "ON" if enabled else "OFF",
+                    camera_key + "/status/detect": "online" if enabled else "disabled"}
+        if not enabled:
+            expected[camera_key + "/status/record"] = "disabled"
+        try:
+            with websocket_connect(url, open_timeout=self.timeout, close_timeout=self.timeout,
+                                   max_size=MAX_RESPONSE_BYTES, proxy=None) as connection:
+                connection.send(json.dumps({"topic": camera_key + "/enabled/set",
+                                            "payload": "ON" if enabled else "OFF"}))
+                deadline = time.monotonic() + 30
+                while expected:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    message = json.loads(connection.recv(timeout=remaining))
+                    if not isinstance(message, dict):
+                        raise FrigateApiError("invalid_response")
+                    topic = message.get("topic")
+                    if isinstance(topic, str) and topic in expected and message.get("payload") == expected[topic]:
+                        del expected[topic]
+        except FrigateApiError:
+            raise
+        except (ValueError, UnicodeError) as exc:
+            raise FrigateApiError("invalid_response") from exc
+        except (OSError, TimeoutError, WebSocketException) as exc:
+            raise FrigateApiError("target_unavailable") from exc
 
     def restart(self) -> None:
         result = self._request("POST", "/api/restart")

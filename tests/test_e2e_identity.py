@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "e2e"))
 from e2e import run as e2e_run
 from e2e import faults
 from e2e import scenarios
-from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback, recording_playback_interval
+from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback, recording_playback_interval, reader_recovery_ready, FRIGATE_CONTROL_FAULT_SCRIPT
 
 
 class FrigateRecordingPlaybackTests(unittest.TestCase):
@@ -94,6 +94,43 @@ class FrigateRecordingPlaybackTests(unittest.TestCase):
         for output in ('', '#format: frame checksums\n', 'not a frame', frame.replace('1024', '0'), frame + '\n' + frame):
             with self.subTest(output=output), self.assertRaises(AssertionError):
                 decoded_frame_hash(output)
+
+
+class FrigateControlFaultFixtureTests(unittest.TestCase):
+    def test_embedded_control_fault_is_valid_standalone_python(self):
+        compile(FRIGATE_CONTROL_FAULT_SCRIPT, "synthetic-frigate-control-fault", "exec")
+
+
+class FrigateReaderReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.ids = {"first": "synthetic-first", "second": "synthetic-second"}
+        self.revisions = {uid: "address-current" for uid in self.ids.values()}
+        self.rows = {key: {"camera_uuid": uid, "relay_address_revision": "address-current",
+                          "relay_runtime_revision": "runtime-current"} for key, uid in self.ids.items()}
+
+    def test_recording_checkpoint_waits_for_both_committed_readers(self):
+        self.assertTrue(reader_recovery_ready(self.rows, self.ids, self.revisions))
+        for key in self.ids:
+            for field, value in (("capture_resume_pending", True), ("target_restart", True),
+                                 ("relay_address_revision", "address-previous"), ("camera_uuid", "unrelated")):
+                with self.subTest(key=key, field=field):
+                    changed = {name: dict(row) for name, row in self.rows.items()}
+                    changed[key][field] = value
+                    self.assertFalse(reader_recovery_ready(changed, self.ids, self.revisions))
+
+    def test_restart_waits_for_a_new_consistent_runtime_for_each_reader(self):
+        previous = {key: "runtime-current" for key in self.ids}
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+        self.rows["first"]["relay_runtime_revision"] = "runtime-new"
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+        self.rows["second"]["relay_runtime_revision"] = "runtime-new"
+        self.assertTrue(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+
+    def test_missing_readers_or_generation_cannot_mark_new_runtime_ready(self):
+        self.assertFalse(reader_recovery_ready({}, self.ids, self.revisions))
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, {}))
+        self.rows["first"].pop("relay_runtime_revision")
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions))
 
 
 class IdentityConsumerTelemetryTests(unittest.TestCase):

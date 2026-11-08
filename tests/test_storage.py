@@ -1046,6 +1046,19 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertEqual(reasons["media_offline"], "recovered")
         self.assertEqual(reasons["camera_address_changed"], "stream_recovered")
 
+    def test_shared_relay_generation_advances_with_notifications_disabled(self):
+        self.assertIsNone(self.repository.latest_relay_runtime_revision())
+        revisions = []
+        for _ in range(2):
+            self.assertIsNone(self.repository.enqueue_relay_restart_notification(
+                reason="camera_address_recovery", camera_count=1))
+            revisions.append(self.repository.latest_relay_runtime_revision())
+        self.assertTrue(all(revisions))
+        self.assertNotEqual(*revisions)
+        self.assertEqual([], self.repository.due_notifications())
+        self.repository.migrate()
+        self.assertEqual(revisions[-1], self.repository.latest_relay_runtime_revision())
+
     def test_relay_restart_event_is_queued_once_without_camera_secrets(self) -> None:
         self.repository.save_telegram_settings(
             enabled=True,

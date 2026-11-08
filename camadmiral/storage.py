@@ -462,6 +462,12 @@ SCHEMA_TABLES: tuple[str, ...] = (
         next_attempt REAL NOT NULL
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS relay_runtime_state (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        revision TEXT NOT NULL
+    );
+    """,
 )
 SCHEMA_COLUMNS: tuple[tuple[str, str, str], ...] = (
     (
@@ -887,12 +893,29 @@ class CameraRepository:
             self._resolve_incident(connection, incident_uuid, timestamp, "stream_recovered")
             connection.commit()
 
+    def latest_relay_runtime_revision(self) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT revision FROM relay_runtime_state WHERE singleton_id = 1"
+            ).fetchone()
+        return row["revision"] if row else None
+
     def enqueue_relay_restart_notification(
         self,
         *,
         reason: str,
         camera_count: int,
     ) -> str | None:
+        # This hook follows every shared relay restart, even with alerts off.
+        # Commit independently so notification failures cannot hide a reset from
+        # imported readers or from the separate relay supervisor process.
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO relay_runtime_state(singleton_id, revision) VALUES (1, ?) "
+                "ON CONFLICT(singleton_id) DO UPDATE SET revision = excluded.revision",
+                (uuid.uuid4().hex,),
+            )
+            connection.commit()
         timestamp = _now()
         outbox_uuid = str(uuid.uuid4())
         payload = json.dumps(
@@ -2659,6 +2682,15 @@ class CameraRepository:
             )
             self._record_camera_health_transition(connection, camera_uuid, timestamp)
             connection.commit()
+
+    def latest_camera_address_revision(self, camera_uuid: str) -> str | None:
+        """Return the last committed recovery event, not a tentative source URI."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT event_uuid FROM camera_address_events WHERE camera_uuid=? "
+                "ORDER BY changed_at DESC, rowid DESC LIMIT 1", (camera_uuid,),
+            ).fetchone()
+        return str(row["event_uuid"]) if row is not None else None
 
     def record_address_change(
         self,

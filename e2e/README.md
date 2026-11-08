@@ -373,3 +373,56 @@ the requested endpoints are inside the selected row. Synthetic SQL-selection
 tests reproduce that helper defect and verify exclusive intervals. Complete
 post-checkpoint segments, decoded frames, exact dimensions, source identity
 and historical-data assertions remain required.
+
+Committed camera address changes now also invalidate the imported camera's owned
+Frigate runtime aliases once. Its stable source URLs and operator configuration
+are retained, while cached RTSP codec parameters are discarded. A durable internal
+address-event revision prevents repeated reconnects and allows failed API calls
+to retry. Tentative recovery, disabled or unselected cameras, and operator source
+conflicts do not trigger this refresh. Ambiguous replacement still attempts every
+owned source and retains the revision for retry. Unit coverage reproduces the missing refresh on unchanged
+runtime source; the existing multi-channel identity lab keeps exact dimension,
+decoded video and history preservation assertions and retains selected synthetic
+recording files as evidence.
+
+Imported readers also refresh once after the control service restarts, because
+relay RTP timing can reset while downstream source URLs remain stable. An
+internal process revision prevents repeated reconnects on ordinary sync cycles.
+The identity lab keeps its repeated restart and complete-recording assertions.
+
+A relay definition update does not disconnect existing go2rtc consumers. Imported
+recovery therefore uses Frigate runtime camera controls to stop capture, replaces
+only owned aliases using delete/recreate, then resumes capture and waits for it to report
+online. A missing go2rtc YAML entry is normalized to the owned source and deletion
+is retried once within the same pause; other errors remain failures. No
+Frigate YAML or history is rewritten. An encrypted pending-resume journal is
+saved before pausing, cleared only after verified resume, and retried after a
+crash or unavailable response. Operator runtime pauses remain paused.
+
+If per-camera capture control cannot stop or resume, recovery may restart the
+connected Frigate instance once. This interrupts all of that instance's cameras;
+the behavior was explicitly approved. The fallback checks for unrelated runtime
+control overrides before dispatch, confirms a new service start identity, verifies
+active capture and record readers, and requires unchanged saved configuration.
+A durable encrypted journal verifies uncertain restart replies without issuing a
+second restart. Recovery marks all owned channels together after verified restart.
+Shared media updates and downstream recovery are serialized to prevent a second
+relay reset from invalidating newly reconnected readers.
+
+Known offline Record or Detect roles defer reader refresh until video returns;
+an unavailable source must not trigger a whole-target restart or commit recovery.
+
+The identity recording checkpoint waits for both imported readers to commit the
+current address revision and, after a restart, a new shared runtime generation.
+Pending capture/resume or target restart journals cannot count as ready. This
+prevents selecting an in-flight segment created before the second reader was
+reconnected. Actual old/new decoding, exact dimensions, complete post-checkpoint
+recordings and history preservation remain required. Older baseline runtime
+without these journals retains the original black-box media assertions.
+
+After its first successful targeted recovery, the identity lab makes only the
+Frigate WebSocket control location return HTTP 503. Live RTSP and the HTTP APIs
+remain available. The next relay restart must use the real whole-instance
+fallback, with a changed Frigate service start identity, completed reader journals,
+new decodable recordings, exact source dimensions and unchanged historical data.
+This deterministic negative case does not rely on a timing-dependent stop hang.

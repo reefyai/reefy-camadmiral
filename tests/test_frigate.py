@@ -91,6 +91,11 @@ class FakeFrigateClient:
     def stats(self):
         return self.current_stats
 
+    def set_runtime_camera_enabled(self, key, enabled):
+        self.operations.append(("set_runtime_camera_enabled", key, enabled))
+        self.current_config["cameras"][key]["enabled"] = enabled
+        self.runtime_enabled[key] = enabled
+
     def set_config(self, config_data, *, update_topic=None, requires_restart=False):
         self.operations.append(("set_config", config_data))
         self.config_writes.append((config_data, update_topic))
@@ -166,6 +171,9 @@ class FakeFrigateClient:
                 upstream_status=400,
                 upstream_detail="yaml: path not exist",
             )
+
+    def service_started_at(self):
+        return 1000.0 + 100 * self.restart_calls
 
     def restart(self):
         self.operations.append(("restart",))
@@ -303,6 +311,60 @@ class FrigateTargetTests(unittest.TestCase):
 
         self.assertIn("camadmiral_saved", config["cameras"])
         self.assertIn("camadmiral_saved_record", config["go2rtc"]["streams"])
+
+    def test_service_start_identity_is_validated_for_restart_confirmation(self):
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
+        with patch.object(client, "_request", return_value={"service": {"last_updated": 1000.5, "uptime": 50}}):
+            self.assertEqual(950.5, client.service_started_at())
+        for value in ({}, {"service": {"last_updated": "nan", "uptime": 0}}, {"service": {"last_updated": 1000, "uptime": -1}}):
+            with patch.object(client, "_request", return_value=value):
+                with self.assertRaises(FrigateApiError):
+                    client.service_started_at()
+
+    def test_runtime_pause_waits_for_capture_stop_and_ignores_unrelated_messages(self):
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "https://frigate.example.test/proxy"))
+        connection = Mock()
+        connection.recv.side_effect = [json.dumps(m) for m in (
+            {"topic": "other/status/detect", "payload": "disabled"},
+            {"topic": "synthetic_camera/enabled/state", "payload": "OFF"},
+            {"topic": "synthetic_camera/status/detect", "payload": "disabled"},
+            {"topic": "synthetic_camera/status/record", "payload": "disabled"},
+        )]
+        with patch("camadmiral.frigate.websocket_connect") as connect:
+            connect.return_value.__enter__.return_value = connection
+            client.set_runtime_camera_enabled("synthetic_camera", False)
+        self.assertEqual("wss://frigate.example.test/proxy/ws", connect.call_args.args[0])
+        self.assertIsNone(connect.call_args.kwargs["proxy"])
+        self.assertEqual({"topic": "synthetic_camera/enabled/set", "payload": "OFF"}, json.loads(connection.send.call_args.args[0]))
+        self.assertEqual(4, connection.recv.call_count)
+
+    def test_runtime_resume_requires_online_capture_after_enable_ack(self):
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
+        connection = Mock()
+        connection.recv.side_effect = [json.dumps(m) for m in (
+            {"topic": "synthetic_camera/enabled/state", "payload": "ON"},
+            {"topic": "synthetic_camera/status/detect", "payload": "online"},
+        )]
+        with patch("camadmiral.frigate.websocket_connect") as connect:
+            connect.return_value.__enter__.return_value = connection
+            client.set_runtime_camera_enabled("synthetic_camera", True)
+        self.assertEqual(2, connection.recv.call_count)
+        self.assertEqual("ws://frigate.example.test/ws", connect.call_args.args[0])
+
+    def test_runtime_control_rejects_missing_ack_and_invalid_messages(self):
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
+        for response, code in ((TimeoutError(), "target_unavailable"), ("not-json", "invalid_response"), ("[]", "invalid_response")):
+            with self.subTest(code=code, response=type(response).__name__):
+                connection = Mock()
+                if isinstance(response, Exception):
+                    connection.recv.side_effect = response
+                else:
+                    connection.recv.return_value = response
+                with patch("camadmiral.frigate.websocket_connect") as connect:
+                    connect.return_value.__enter__.return_value = connection
+                    with self.assertRaises(FrigateApiError) as raised:
+                        client.set_runtime_camera_enabled("synthetic_camera", False)
+                self.assertEqual(code, raised.exception.code)
 
     def test_http_error_detail_is_bounded_and_redacts_url_credentials(self) -> None:
         target = FrigateTarget(
