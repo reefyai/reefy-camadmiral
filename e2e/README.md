@@ -365,3 +365,11 @@ uploaded with the evidence. The unit regression was first run against unchanged
 runtime source: 31 tests passed and the two relay-policy assertions failed.
 After the fix, all 33 media tests passed. Full E2E results belong to the exact
 release-gate run and its retained artifacts.
+
+The imported-identity playback test also isolates the selected recording from
+overlapping rows. Frigate's pinned clip API concatenates all matching rows,
+which can mix old and new codec headers during a resolution change even when
+the requested endpoints are inside the selected row. Synthetic SQL-selection
+tests reproduce that helper defect and verify exclusive intervals. Complete
+post-checkpoint segments, decoded frames, exact dimensions, source identity
+and historical-data assertions remain required.

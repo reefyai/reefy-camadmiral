@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "e2e"))
 from e2e import run as e2e_run
 from e2e import faults
 from e2e import scenarios
-from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback
+from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback, recording_playback_interval
 
 
 class FrigateRecordingPlaybackTests(unittest.TestCase):
@@ -53,6 +53,40 @@ class FrigateRecordingPlaybackTests(unittest.TestCase):
         self.assertEqual(recording_for_playback(rows, 'synthetic-camera', 10), complete)
         self.assertIsNone(recording_for_playback(rows, 'synthetic-camera', 30))
         self.assertIsNone(recording_for_playback(rows[-1:], 'synthetic-camera', 10))
+
+    def test_overlapping_recordings_do_not_contaminate_selected_source(self):
+        selected = ["selected", "synthetic-camera", "/synthetic/selected.mp4", 10, 20]
+        rows = [
+            ["previous", "synthetic-camera", "/synthetic/previous.mp4", 0, 12],
+            selected,
+            ["next", "synthetic-camera", "/synthetic/next.mp4", 18, 30],
+            ["other", "different-camera", "/synthetic/other.mp4", 0, 100],
+        ]
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE recordings (id TEXT, camera TEXT, start_time REAL, end_time REAL)")
+            connection.executemany("INSERT INTO recordings VALUES (?,?,?,?)",
+                                   [(r[0], r[1], r[3], r[4]) for r in rows])
+            start, end = recording_playback_interval(selected, rows)
+            actual = connection.execute(
+                "SELECT id FROM recordings WHERE camera=? AND "
+                "(start_time BETWEEN ? AND ? OR end_time BETWEEN ? AND ? "
+                "OR (? > start_time AND ? < end_time))",
+                ("synthetic-camera", start, end, start, end, start, end)).fetchall()
+        self.assertEqual(actual, [("selected",)])
+        self.assertGreater(start, 12)
+        self.assertLess(end, 18)
+
+    def test_interior_overlap_keeps_an_exclusive_complete_recording_window(self):
+        selected = ["selected", "synthetic-camera", "/synthetic/new.mp4", 10, 30]
+        overlap = ["overlap", "synthetic-camera", "/synthetic/other.mp4", 14, 25]
+        start, end = recording_playback_interval(selected, [selected, overlap])
+        self.assertGreater(start, 25)
+        self.assertLess(end, 30)
+
+    def test_recovery_rejects_new_segment_fully_covered_by_older_recording(self):
+        old = ["old", "synthetic-camera", "/synthetic/old.mp4", 0, 40]
+        new = ["new", "synthetic-camera", "/synthetic/new.mp4", 20, 30]
+        self.assertIsNone(recording_for_playback([old, new], "synthetic-camera", 10))
 
     def test_playback_requires_a_real_decoded_frame_not_only_a_success_exit(self):
         frame = '0, 0, 0, 1, 1024, ' + 'a' * 64

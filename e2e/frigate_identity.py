@@ -33,16 +33,46 @@ def recording_clip_interval(start, end):
     return start + margin, end - margin
 
 
-def recording_playback_url(row):
-    start, end = recording_clip_interval(row[3], row[4])
+def recording_playback_interval(row, rows):
+    # The clip API includes every overlapping recording, not only the selected
+    # ID. Find an exclusive interior so older codec headers cannot contaminate
+    # validation of a new source. Never accept a different camera or an old row.
+    windows = [(row[3], row[4])]
+    for other in rows:
+        if other[0] == row[0] or other[1] != row[1]:
+            continue
+        remaining = []
+        for start, end in windows:
+            if other[4] <= start or other[3] >= end:
+                remaining.append((start, end))
+            else:
+                if start < other[3]:
+                    remaining.append((start, other[3]))
+                if other[4] < end:
+                    remaining.append((other[4], end))
+        windows = remaining
+    windows = [(start, end) for start, end in windows
+               if math.isfinite(start) and math.isfinite(end) and end - start >= 2]
+    if not windows:
+        raise ValueError("Recording has no complete exclusive playback interval")
+    return recording_clip_interval(*max(windows, key=lambda window: window[1] - window[0]))
+
+
+def recording_playback_url(row, rows):
+    start, end = recording_playback_interval(row, rows)
     return f'http://frigate:5000/api/{row[1]}/start/{start}/end/{end}/clip.mp4'
 
 
 def recording_for_playback(rows, key, since=-math.inf):
-    # The pinned clip API rounds playlist cut points to whole seconds. Require
-    # a real segment, not a subsecond fragment left while capture reconnects.
-    return next((row for row in reversed(rows) if row[1] == key and row[3] > since
-                 and math.isfinite(row[3]) and math.isfinite(row[4]) and row[4] - row[3] >= 2), None)
+    for row in reversed(rows):
+        if row[1] != key or row[3] <= since:
+            continue
+        try:
+            recording_playback_interval(row, rows)
+        except ValueError:
+            continue
+        return row
+    return None
 
 
 def decoded_frame_hash(output):
@@ -244,18 +274,18 @@ with sqlite3.connect('/config/frigate.db') as db:
             assert original is not None and latest is not None, 'Complete old and new recording segments are required'
             decoded = []
             for row in (original, latest):
-                playback = recording_playback_url(row)
+                playback = recording_playback_url(row, before if row is original else after)
                 output = run('run', '--rm', '--no-deps', '--entrypoint', 'ffmpeg', 'test-driver',
                     '-v', 'error', '-i', playback, '-map', '0:v:0', '-frames:v', '1', '-threads', '1',
                     '-f', 'framehash', '-hash', 'sha256', '-')
                 decoded.append({'recording_id': row[0], 'frame_sha256': decoded_frame_hash(output)})
-            playback = recording_playback_url(latest)
+            playback = recording_playback_url(latest, after)
             observed = json.loads(run('run', '--rm', '--no-deps', '--entrypoint', 'ffprobe', 'test-driver',
                 '-v', 'error', '-i', playback, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json'))
             moved = address in {'172.28.0.15', '172.28.0.18'}
             width, height = ((960, 540) if moved else (1280, 720)) if key == 'identity_camera' else ((480, 270) if moved else (640, 360))
             result['playback_checks'].append({'camera': key, 'address': address,
-                'recording_id': latest[0], 'interval': recording_clip_interval(latest[3], latest[4]),
+                'recording_id': latest[0], 'interval': recording_playback_interval(latest, after),
                 'decoded_frames': decoded,
                 'expected_dimensions': [width, height], 'observed_streams': observed['streams']})
             assert observed['streams'] == [{'width': width, 'height': height}], 'New recording came from the wrong physical source'
