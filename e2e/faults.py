@@ -430,7 +430,7 @@ def assert_onvif_runtime_config_moved() -> None:
                 source["uri"],
                 source["username"],
                 source["password"],
-            )
+            ) + "#backchannel=0"
         ]
         for source in repository.managed_stream_sources(camera_uuid=str(row[0]))
     }
@@ -448,7 +448,7 @@ def assert_onvif_runtime_config_moved() -> None:
                 source["uri"],
                 source["username"],
                 source["password"],
-            )
+            ) + "#backchannel=0"
         ]
         for source in repository.managed_stream_sources(camera_uuid=str(control_row[0]))
     }

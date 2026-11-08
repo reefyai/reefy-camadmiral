@@ -1,0 +1,20 @@
+services:
+  camadmiral:
+    image: ${PASSIVE_TEST_IMAGE:-camadmiral-e2e:local}
+    environment:
+      CAMADMIRAL_SNAPSHOT_TIMEOUT: "5"
+  camera-open:
+    image: camadmiral-e2e:local
+    volumes:
+      - ./fixtures/camera-passive.yaml:/e2e/camera-open.yaml:ro
+  backchannel-camera:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/backchannel_proxy.py]
+    volumes:
+      - ./backchannel_proxy.py:/e2e/backchannel_proxy.py:ro
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      disable: true

@@ -16,6 +16,7 @@ from camadmiral.media import (
     probe_stream,
     probe_upstreams,
     reconcile_and_probe,
+    reconcile_streams,
     reconcile_preloads,
     reconcile_runtime_drift,
     replace_streams,
@@ -632,6 +633,26 @@ class MediaTests(unittest.TestCase):
         )
 
     @patch("camadmiral.media.wait_for_go2rtc")
+    @patch("camadmiral.media._request", return_value=b"{}")
+    def test_managed_relays_disable_backchannel_without_changing_camera_url(self, request, _wait):
+        sources = [
+            {"stream_key": "stream_main", "uri": "rtsp://[2001:db8::1]:554/live?channel=1#backchannel=1",
+             "username": "camera user", "password": "p@ss:/word"},
+            {"stream_key": "stream_sub", "uri": "rtsps://camera.invalid/sub",
+             "username": "", "password": ""},
+        ]
+        reconcile_streams(sources)
+        self.assertEqual(request.call_args_list[1:], [
+            call("PUT", "/api/streams", {"name": "stream_main",
+                 "src": "rtsp://camera%20user:p%40ss%3A%2Fword@[2001:db8::1]:554/live?channel=1#backchannel=0"}),
+            call("PUT", "/api/streams", {"name": "stream_sub",
+                 "src": "rtsps://camera.invalid/sub#backchannel=0"}),
+        ])
+        # FFprobe URLs remain ordinary camera URLs, not go2rtc directives.
+        self.assertEqual(authenticated_rtsp_uri(sources[0]["uri"], "camera user", "p@ss:/word"),
+                         "rtsp://camera%20user:p%40ss%3A%2Fword@[2001:db8::1]:554/live?channel=1")
+
+    @patch("camadmiral.media.wait_for_go2rtc")
     @patch("camadmiral.media._request")
     @patch("camadmiral.media.time.sleep")
     def test_replace_streams_persists_sources_then_restarts_stock_go2rtc(
@@ -661,8 +682,8 @@ class MediaTests(unittest.TestCase):
             wait_for_go2rtc_mock.call_args_list,
             [call(), call(attempts=50, delay=0.1)],
         )
-        main_uri = "rtsp://camera%20user:synthetic-secret@192.0.2.20:554/main?channel=1"
-        sub_uri = "rtsp://192.0.2.20:554/sub"
+        main_uri = "rtsp://camera%20user:synthetic-secret@192.0.2.20:554/main?channel=1#backchannel=0"
+        sub_uri = "rtsp://192.0.2.20:554/sub#backchannel=0"
         self.assertEqual(request.call_args_list[0].args, ("PATCH", "/api/config"))
         self.assertEqual(
             json.loads(request.call_args_list[0].kwargs["body"]),

@@ -446,6 +446,14 @@ def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     return urllib.parse.urlunsplit(parsed._replace(netloc=host, fragment=""))
 
 
+def go2rtc_source_uri(source: dict[str, str]) -> str:
+    """Keep surveillance relays receive-only while retaining camera audio."""
+    # go2rtc enables ONVIF backchannel negotiation unless explicitly disabled.
+    # Broken talkback setup on a camera must not interrupt recording or detection.
+    uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+    return uri + "#backchannel=0"
+
+
 def _request(
     method: str,
     path: str,
@@ -518,7 +526,7 @@ def reconcile_streams(sources: list[dict[str, str]]) -> None:
         if name.startswith("stream_") and name not in desired:
             _request("DELETE", "/api/streams", {"src": name})
     for source in sources:
-        uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+        uri = go2rtc_source_uri(source)
         _request("PUT", "/api/streams", {"name": source["stream_key"], "src": uri})
 
 
@@ -645,7 +653,7 @@ def replace_streams(sources: list[dict[str, str]]) -> None:
     wait_for_go2rtc()
     persisted: dict[str, list[str]] = {}
     for source in sources:
-        uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+        uri = go2rtc_source_uri(source)
         persisted[source["stream_key"]] = [uri]
     if not persisted:
         return

@@ -336,3 +336,32 @@ Docker-lab helper, action and workflow changes automatically require the full
 parallel PR gate; helper/action changes also trigger the relay benchmark.
 Readiness launches a container and verifies its actual memory and PID limits,
 in addition to checking controller support.
+
+## Receive-only RTSP compatibility regression
+
+Run `python3 e2e/passive_rtsp.py` on a disposable Docker host after fetching the
+repository history. The release gate runs this as an independent parallel job in
+a private Docker daemon; it does not change the other labs' execution policy.
+
+The same black-box media check runs against unmodified source
+`28ee79068ea25017fe670bc9a68808d0528aea5c` and the candidate. Both images are
+built from their exact source. A synthetic camera provides generated H.264 video
+and a PCMU microphone tone. If asked for ONVIF backchannel, it advertises an
+additional receive-only audio track, then returns an incomplete SETUP response.
+Direct FFmpeg preflight must work before the baseline is considered reproduced.
+The baseline must fail real A/V recording with observed broken audio setup;
+unrelated infrastructure failures do not count as a reproduction.
+
+The candidate must decode at least 50 video frames and audible microphone samples
+from each recording, share one upstream playback session between two readers,
+and retain camera IDs, role bindings, downstream URLs and authentication across
+an app restart. An ordinary camera must still supply video and microphone audio.
+Wrong downstream credentials and genuinely missing video must fail, and restoring
+media must recover without changing the camera's identity.
+
+`e2e-artifacts/passive-rtsp/evidence.json` records source commits, built image IDs,
+baseline/fixed outcomes and protocol counters. Driver and container logs are
+uploaded with the evidence. The unit regression was first run against unchanged
+runtime source: 31 tests passed and the two relay-policy assertions failed.
+After the fix, all 33 media tests passed. Full E2E results belong to the exact
+release-gate run and its retained artifacts.
