@@ -89,6 +89,92 @@ class FrigateImportTests(unittest.TestCase):
              patch('camadmiral.frigate_import.snapshot_frame', side_effect=snapshot, return_value=b'frame'):
             return execute(self.repo, self.target, job['id'], ['legacy_entrance'], [], None, lambda: True, self.client)
 
+    def slow_restart(self, clock, seconds=110):
+        restart, config = self.client.restart, self.client.config
+        unavailable_until = [0]
+        def delayed_restart():
+            restart()
+            unavailable_until[0] = clock[0] + seconds
+        def delayed_config():
+            if clock[0] < unavailable_until[0]:
+                raise FrigateApiError('target_unavailable')
+            return config()
+        return patch.object(self.client, 'restart', side_effect=delayed_restart), patch.object(self.client, 'config', side_effect=delayed_config)
+
+    def test_slow_restart_handoff_and_restoration_wait_for_new_ready_instance(self):
+        clock = [0.0]
+        def sleep(seconds): clock[0] += seconds
+        restart, config = self.slow_restart(clock)
+        with patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep', side_effect=sleep), restart, config:
+            job = self.capped(self.preview())
+            self.assertEqual('applied', job['cameras'][0]['status'])
+            restore(self.repo, self.target, 'legacy_entrance', self.client, lambda: True)
+        self.assertGreaterEqual(clock[0], 330)
+        self.assertEqual(self.camera, self.client.raw_config()['cameras']['legacy_entrance'])
+        self.assertEqual({}, ImportStore(self.repo).links(self.target.target_id))
+
+    def test_restore_retries_temporary_outage_and_preserves_operator_conflict(self):
+        class ProcessLost(BaseException): pass
+        job = self.preview()
+        with self.assertRaises(ProcessLost): self.capped(job, after_release=ProcessLost())
+        raw = self.client.raw_config
+        for conflict in (False, True):
+            with self.subTest(conflict=conflict):
+                clock = [0.0]
+                def unavailable():
+                    if clock[0] < 12:
+                        raise FrigateApiError('request_rejected', upstream_status=503)
+                    return raw()
+                def sleep(seconds):
+                    clock[0] += seconds
+                    if conflict:
+                        self.client.current_raw_config['cameras']['legacy_entrance']['detect']['fps'] = 9
+                with patch.object(self.client, 'raw_config', side_effect=unavailable), \
+                     patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda: clock[0]), \
+                     patch('camadmiral.frigate_import.time.sleep', side_effect=sleep):
+                    if conflict:
+                        with self.assertRaises(FrigateApiError) as error:
+                            restore(self.repo, self.target, 'legacy_entrance', self.client)
+                        self.assertEqual('rollback_configuration_conflict', error.exception.code)
+                        self.assertTrue(ImportStore(self.repo).links(self.target.target_id))
+                        self.assertEqual(9, raw()['cameras']['legacy_entrance']['detect']['fps'])
+                    else:
+                        restore(self.repo, self.target, 'legacy_entrance', self.client)
+                        self.assertEqual(self.camera, raw()['cameras']['legacy_entrance'])
+                        # Prepare another interrupted transaction for the conflict case.
+                if not conflict:
+                    with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+
+    def test_interrupted_restoration_does_not_restart_already_restored_capture(self):
+        job = self.capped(self.preview())
+        class ProcessLost(BaseException): pass
+        restart = self.client.restart
+        def lost_reply():
+            restart()
+            raise ProcessLost()
+        with patch.object(self.client, 'restart', side_effect=lost_reply), self.assertRaises(ProcessLost):
+            restore(self.repo, self.target, 'legacy_entrance', self.client, lambda: True)
+        count, writes = self.client.restart_calls, len(self.client.config_writes)
+        recover_handoffs(self.repo, lambda: True, lambda target: self.client)
+        self.assertEqual(count, self.client.restart_calls)
+        self.assertEqual(writes, len(self.client.config_writes))
+        self.assertEqual({}, ImportStore(self.repo).links(self.target.target_id))
+        self.assertFalse(self.repo.consumer_inventory()[0]['enabled'])
+
+    def test_persistent_restoration_outage_is_bounded_and_retains_journal(self):
+        class ProcessLost(BaseException): pass
+        with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+        clock = [0.0]
+        def sleep(seconds): clock[0] += seconds
+        with patch.object(self.client, 'raw_config', side_effect=FrigateApiError('target_unavailable')), \
+             patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep', side_effect=sleep), self.assertRaises(FrigateApiError):
+            restore(self.repo, self.target, 'legacy_entrance', self.client)
+        self.assertGreaterEqual(clock[0], 110)
+        self.assertLessEqual(clock[0], 300)
+        self.assertTrue(ImportStore(self.repo).links(self.target.target_id))
+
     def test_saturated_source_is_journaled_before_releasing_and_default_enabled_is_restored(self):
         self.camera.pop('enabled')
         self.client.seed('legacy_entrance', self.camera)

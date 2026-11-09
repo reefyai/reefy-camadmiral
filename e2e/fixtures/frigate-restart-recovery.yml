@@ -1,0 +1,113 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+detect:
+  fps: 5
+record:
+  enabled: true
+  continuous:
+    days: 1
+go2rtc:
+  streams:
+    slow_stream: rtsp://import-limited:8554/main
+    failure_stream: rtsp://import-failure:8554/main
+    interrupted_stream: rtsp://import-interrupted:8554/main
+camera_groups:
+  Synthetic_group:
+    order: 1
+    icon: LuCamera
+    cameras:
+    - slow_camera
+    - failure_camera
+    - interrupted_camera
+    - untouched_camera
+cameras:
+  slow_camera:
+    enabled: true
+    friendly_name: Synthetic slow_camera
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/slow_stream
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: slow_stream
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+    zones:
+      Synthetic_entry:
+        coordinates: 0,0,1,0,1,1,0,1
+    objects:
+      track:
+      - person
+  failure_camera:
+    enabled: true
+    friendly_name: Synthetic failure_camera
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/failure_stream
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: failure_stream
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+    zones:
+      Synthetic_entry:
+        coordinates: 0,0,1,0,1,1,0,1
+    objects:
+      track:
+      - person
+  interrupted_camera:
+    enabled: true
+    friendly_name: Synthetic interrupted_camera
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/interrupted_stream
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: interrupted_stream
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+    zones:
+      Synthetic_entry:
+        coordinates: 0,0,1,0,1,1,0,1
+    objects:
+      track:
+      - person
+  untouched_camera:
+    ffmpeg:
+      inputs:
+      - path: rtsp://camera-open:8554/sub
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3

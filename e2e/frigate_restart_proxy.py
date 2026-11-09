@@ -16,7 +16,8 @@ import urllib.request
 
 LOCK = threading.Lock()
 STATE = {'armed': False, 'unavailable_until': 0.0, 'dropped_replies': 0,
-         'unavailable_reads': 0, 'mode': 'disconnect'}
+         'unavailable_reads': 0, 'mode': 'disconnect', 'restart_delays': [12],
+         'restart_requests': 0, 'restore_outage_seconds': 0, 'restore_outages': 0}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -36,13 +37,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/__fault__/'):
             with LOCK:
                 if self.path == '/__fault__/arm' and self.command == 'POST':
-                    mode = json.loads(body or b'{}').get('mode', 'disconnect')
-                    assert mode in {'disconnect', 'partial', 'empty'}
-                    STATE.update(armed=True, dropped_replies=0, unavailable_reads=0, mode=mode)
+                    options = json.loads(body or b'{}')
+                    mode = options.get('mode', 'disconnect')
+                    assert mode in {'disconnect', 'partial', 'empty', 'ack'}
+                    delays = options.get('restart_delays', [12])
+                    assert all(0 <= value <= 240 for value in delays)
+                    STATE.update(armed=bool(delays), dropped_replies=0, unavailable_reads=0, mode=mode,
+                                 restart_delays=list(delays), restart_requests=0, restore_outages=0,
+                                 restore_outage_seconds=options.get('restore_outage_seconds', 0))
                 status = {k: v for k, v in STATE.items() if k != 'unavailable_until'}
+                status['api_unavailable'] = time.monotonic() < STATE['unavailable_until']
             self.reply(200, json.dumps(status).encode())
             return
         with LOCK:
+            restoring = (self.command == 'PUT' and self.path == '/api/config/set'
+                         and json.loads(body or b'{}').get('config_data', {}).get('cameras', {})
+                         .get('failure_camera', {}).get('enabled') is True)
+            if restoring and STATE['restore_outage_seconds']:
+                STATE.update(unavailable_until=time.monotonic() + STATE['restore_outage_seconds'],
+                             restore_outage_seconds=0, restore_outages=STATE['restore_outages'] + 1)
             unavailable = time.monotonic() < STATE['unavailable_until']
             if unavailable:
                 STATE['unavailable_reads'] += 1
@@ -62,12 +75,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, b'{"message":"Synthetic upstream restarting"}')
             return
         with LOCK:
+            if self.command == 'POST' and self.path == '/api/restart' and code == 200:
+                STATE['restart_requests'] += 1
             drop = (STATE['armed'] and self.command == 'POST'
                     and self.path == '/api/restart' and code == 200)
             if drop:
-                STATE.update(armed=False, unavailable_until=time.monotonic() + 12,
-                             dropped_replies=STATE['dropped_replies'] + 1)
-        if drop:
+                delay = STATE['restart_delays'].pop(0)
+                STATE.update(armed=bool(STATE['restart_delays']), unavailable_until=time.monotonic() + delay,
+                             dropped_replies=STATE['dropped_replies'] + (STATE['mode'] != 'ack'))
+        if drop and STATE['mode'] != 'ack':
             mode = STATE['mode']
             print('Interrupted an accepted restart reply (' + mode + '); holding API unavailable for 12 seconds.', flush=True)
             if mode in {'partial', 'empty'}:
