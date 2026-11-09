@@ -291,19 +291,31 @@ def driver(stage):
             return
         assert camera['id'] == state['dns_camera_uuid']
         assert signature == [tuple(s) for s in state['dns_signature']]
+        diagnostic = {'attempts': 0}
         def moved_media():
+            diagnostic['attempts'] += 1
             paths = frigate('/config/raw_paths')['cameras']['authenticated_camera']['ffmpeg']['inputs']
             alias = next(i['path'].rsplit('/', 1)[1] for i in paths if 'record' in i['roles'])
             frame = subprocess.run(['ffmpeg', '-v', 'error', '-rtsp_transport', 'tcp',
                                     '-i', 'rtsp://frigate:8554/' + alias, '-frames:v', '1',
                                     '-threads', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-'],
                                    capture_output=True, timeout=30)
+            diagnostic.update(returncode=frame.returncode, frame_bytes=len(frame.stdout), error=frame.stderr.decode(errors='replace')[-2000:])
             if frame.returncode or not frame.stdout.startswith(b'\xff\xd8'): return False
             meta = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=width,height',
                                    '-of', 'json', '-i', 'pipe:0'], input=frame.stdout,
                                   capture_output=True, timeout=10)
-            return json.loads(meta.stdout).get('streams') == [{'width': 480, 'height': 270}]
-        wait_for('imported Frigate camera decodes moved DNS source', moved_media, timeout=180)
+            diagnostic['streams'] = json.loads(meta.stdout).get('streams')
+            return diagnostic['streams'] == [{'width': 480, 'height': 270}]
+        try:
+            wait_for('imported Frigate camera decodes moved DNS source', moved_media, timeout=180)
+        except Exception:
+            for label, path in [('stats', '/stats'), ('paths', '/config/raw_paths'), ('runtime', '/go2rtc/streams')]:
+                try: diagnostic[label] = frigate(path)
+                except Exception: diagnostic[label] = {'unavailable': True}
+            state['dns_failure'] = diagnostic
+            STATE.write_text(json.dumps(state))
+            raise
         assert frigate('/config')['cameras']['authenticated_camera']['friendly_name'] == 'Original authenticated'
         assert frigate('/config')['cameras']['authenticated_camera']['detect']['width'] == 640
         return
@@ -671,6 +683,12 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         except Exception:
             result['session_budget'] = {'unavailable': True}
         (artifacts / 'result.json').write_text(json.dumps(result, indent=2))
+        try:
+            state_text = run('run', '--rm', '--entrypoint', 'python', 'test-driver', '-c',
+                             "from pathlib import Path;print(Path('/state/frigate-import.json').read_text())")
+            (artifacts / 'driver-state.json').write_text(state_text)
+        except Exception:
+            pass
         run('logs', '--no-color', check=False)
         if not os.environ.get('CAMADMIRAL_E2E_KEEP'):
             run('down', '--volumes', '--remove-orphans', check=False)

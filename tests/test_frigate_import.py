@@ -296,6 +296,79 @@ class FrigateImportTests(unittest.TestCase):
             return execute(self.repo, self.target, job['id'], selected or ['legacy_entrance'], list(keep), None,
                            lambda: True, self.client)
 
+    def legacy_masked_job(self):
+        job = self.preview()
+        for source in job['cameras'][0]['sources'].values():
+            source.update(username='*', password='*')
+        job['status'] = 'completed'
+        job['cameras'][0].update(status='error', reason='source_auth_failed', configuration_status='unchanged')
+        ImportStore(self.repo).save_job(self.target.target_id, job)
+        return job
+
+    def test_retry_recovers_credentials_in_a_persisted_masked_import(self):
+        job = self.legacy_masked_job()
+        result = self.execute(job)
+        self.assertEqual('applied', result['cameras'][0]['status'])
+        candidate = 'frigate-import:' + self.target.target_id + ':legacy_entrance'
+        self.assertEqual(('operator', 'synthetic-password'), self.repo.credentials_for_candidate(candidate))
+
+    def test_retry_does_not_retarget_a_persisted_masked_import(self):
+        job = self.legacy_masked_job()
+        self.client.current_raw_paths['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'] = 'rtsp://operator:synthetic-password@192.0.2.99/changed'
+        result = self.execute(job)
+        self.assertEqual('camera_changed_refresh_preview', result['cameras'][0]['reason'])
+        self.assertEqual([], self.client.config_writes)
+        self.assertEqual([], self.repo.consumer_inventory())
+
+    def test_preview_uses_unmasked_admin_paths_for_authenticated_direct_inputs(self):
+        camera = self.client.current_config['cameras']['legacy_entrance']
+        camera['ffmpeg']['inputs'][0]['path'] = 'rtsp://*:*@192.0.2.10/main'
+        before = copy.deepcopy(self.client.current_config)
+        job = self.preview()
+        source = next(iter(job['cameras'][0]['sources'].values()))
+        self.assertEqual(('operator', 'synthetic-password'), (source['username'], source['password']))
+        self.assertEqual('rtsp://192.0.2.10/main', source['uri'])
+        self.assertEqual(before, self.client.current_config)
+        self.assertEqual([], self.client.config_writes)
+        self.assertNotIn('synthetic-password', json.dumps(public_job(job)))
+
+    def test_preview_uses_resolved_admin_paths_when_saved_yaml_has_variables(self):
+        saved = self.client.current_raw_config['cameras']['legacy_entrance']
+        saved['ffmpeg']['inputs'][0]['path'] = 'rtsp://{FRIGATE_SYNTHETIC_USER}:{FRIGATE_SYNTHETIC_PASSWORD}@192.0.2.10/main'
+        self.client.current_config['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'] = 'rtsp://*:*@192.0.2.10/main'
+        job = self.preview()
+        source = next(iter(job['cameras'][0]['sources'].values()))
+        self.assertEqual(('operator', 'synthetic-password'), (source['username'], source['password']))
+        self.assertEqual(saved, job['cameras'][0]['original'])
+
+    def test_preview_rejects_missing_admin_input_paths(self):
+        self.client.current_raw_paths['cameras'].pop('legacy_entrance')
+        self.client.current_raw_config['cameras']['legacy_entrance'].pop('ffmpeg')
+        job = self.preview()
+        self.assertFalse(job['cameras'][0]['can_import'])
+        self.assertEqual('unsupported_source', job['cameras'][0]['reason'])
+        self.assertEqual([], self.client.config_writes)
+        self.assertEqual([], self.repo.consumer_inventory())
+
+    def test_preview_uses_trusted_saved_paths_before_runtime_restart(self):
+        self.client.current_raw_paths['cameras'].pop('legacy_entrance')
+        self.client.current_config['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'] = 'rtsp://*:*@192.0.2.10/main'
+        job = self.preview()
+        self.assertTrue(job['cameras'][0]['can_import'])
+        source = next(iter(job['cameras'][0]['sources'].values()))
+        self.assertEqual(('operator', 'synthetic-password'), (source['username'], source['password']))
+        self.assertEqual([], self.client.config_writes)
+
+    def test_preview_rejects_unresolved_saved_variables_without_runtime_paths(self):
+        self.client.current_raw_paths['cameras'].pop('legacy_entrance')
+        self.client.current_raw_config['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'] = 'rtsp://{FRIGATE_SYNTHETIC_USER}:{FRIGATE_SYNTHETIC_PASSWORD}@192.0.2.10/main'
+        self.client.current_config['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'] = 'rtsp://*:*@192.0.2.10/main'
+        job = self.preview()
+        self.assertFalse(job['cameras'][0]['can_import'])
+        self.assertEqual('unresolved_secret', job['cameras'][0]['reason'])
+        self.assertEqual([], self.client.config_writes)
+        self.assertEqual([], self.repo.consumer_inventory())
+
     def test_preview_redacts_credentials_and_does_not_adopt_or_write(self):
         job = self.preview()
         self.assertEqual('new', job['cameras'][0]['category'])

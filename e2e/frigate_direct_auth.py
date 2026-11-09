@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -77,7 +78,7 @@ def driver(stage):
         assert 'synthetic-camera-secret' not in json.dumps(job) and 'rtsp://' not in json.dumps(job)
         return preview['id'], next(r for r in job['cameras'] if r['key'] == key)
 
-    if stage == 'prepare':
+    if stage in {'prepare', 'negative'}:
         _, denied = import_one('denied_camera')
         assert denied['status'] == 'error' and denied['reason'] == 'source_auth_failed', denied
         assert denied['configuration_status'] == 'unchanged', denied
@@ -85,8 +86,27 @@ def driver(stage):
         assert not consumer_directory()['cameras'], 'Wrong credentials adopted an invalid source'
         state['evidence']['wrong_credentials_rejected_without_changes'] = True
         save(state)
-    elif stage == 'takeover':
+    elif stage == 'legacy-failure':
         jid, row = import_one('direct_authenticated')
+        assert row['status'] == 'error' and row['reason'] == 'source_auth_failed', row
+        assert frigate('/config/raw') == state['saved'], 'Baseline failure changed configuration'
+        assert not consumer_directory()['cameras'], 'Baseline failure adopted a camera'
+        state['legacy_job_id'] = jid
+        state['evidence']['baseline_failure'] = row
+        save(state)
+    elif stage == 'takeover':
+        if state.get('legacy_job_id'):
+            jid = state['legacy_job_id']
+            request_json(base + '/import/' + jid, method='POST', expected=202,
+                headers={'X-CamAdmiral-Action': 'import-frigate-cameras'},
+                payload={'selected': ['direct_authenticated'], 'allow_restart': True})
+            job = wait_for('persisted failed-job retry', lambda:
+                (j if (j := request_json(base + '/import/' + jid))['status'] == 'completed' else False), timeout=240)
+            row = next(r for r in job['cameras'] if r['key'] == 'direct_authenticated')
+            state['evidence']['retried_baseline_job_without_new_preview'] = jid == state['legacy_job_id']
+        else:
+            jid, row = import_one('direct_authenticated')
+        assert 'synthetic-camera-secret' not in json.dumps(row) and 'rtsp://' not in json.dumps(row)
         state['job_id'] = jid
         state['evidence']['import_result'] = row
         state['evidence']['failed_import_preserved_configuration'] = frigate('/config/raw') == state['saved']
@@ -120,6 +140,23 @@ def driver(stage):
         wait_for('repeat import completion', lambda: request_json(base + '/import/' + state['job_id'])['status'] == 'completed')
         assert directory_signature(consumer_directory()) == prior, 'Repeated import changed stable identities or URLs'
         state['evidence']['repeat_import_preserved_identity'] = True
+        save(state)
+    elif stage == 'pending-runtime':
+        pending = copy.deepcopy(yaml.safe_load(state['saved'])['cameras']['direct_authenticated'])
+        pending['friendly_name'] = 'Synthetic pending camera'
+        for inp in pending['ffmpeg']['inputs']:
+            inp['path'] += '?case=synthetic-pending'
+        payload = {'requires_restart': 1, 'config_data': {'cameras': {'pending_camera': pending}}}
+        req = urllib.request.Request('http://frigate:5000/api/config/set', data=json.dumps(payload).encode(),
+                                     headers={'Content-Type': 'application/json'}, method='PUT')
+        assert json.load(urllib.request.urlopen(req, timeout=15))['success']
+        assert 'pending_camera' not in frigate('/config/raw_paths')['cameras']
+        assert yaml.safe_load(frigate('/config/raw'))['cameras']['pending_camera'] == pending
+        preview = request_json(base + '/import')
+        row = next(r for r in preview['cameras'] if r['key'] == 'pending_camera')
+        assert row['can_import'] and row['category'] == 'new', row
+        assert 'synthetic-camera-secret' not in json.dumps(preview) and 'rtsp://' not in json.dumps(preview)
+        state['evidence']['saved_camera_before_runtime_restart_supported'] = True
         save(state)
     else:
         raise ValueError(stage)
@@ -158,6 +195,15 @@ def host():
     try:
         run('down', '--volumes', '--remove-orphans')
         run('build', 'camadmiral')
+        if result['application_tree'] != result['baseline_application_tree']:
+            with tempfile.TemporaryDirectory(prefix='direct-auth-baseline-') as temp:
+                archive = subprocess.Popen(['git', 'archive', BASELINE], cwd=ROOT, stdout=subprocess.PIPE)
+                subprocess.run(['tar', '-x', '-C', temp], stdin=archive.stdout, check=True)
+                archive.stdout.close()
+                assert archive.wait() == 0
+                subprocess.run(['docker', 'build', '--build-arg', 'CHECKPOINT_REVISION=e2e',
+                                '-t', 'camadmiral-direct-auth:baseline', temp], check=True)
+            env['DIRECT_AUTH_APP_IMAGE'] = 'camadmiral-direct-auth:baseline'
         run('up', '-d', 'camadmiral', 'camera-open', 'camera-auth', 'frigate')
         result['images'] = json.loads(subprocess.check_output(['docker', 'image', 'inspect',
             'camadmiral-e2e:local', env['FRIGATE_TEST_IMAGE']], text=True))
@@ -190,6 +236,15 @@ with sqlite3.connect('/config/frigate.db') as db:
         result['baseline_recordings'] = before; result['history_before'] = history
         update = "import json;from pathlib import Path;p=Path('/state/direct-auth-state.json');s=json.loads(p.read_text());s['baseline_recording']=" + repr(selected) + ";p.write_text(json.dumps(s))"
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '-c', update)
+        if env.get('DIRECT_AUTH_APP_IMAGE'):
+            stage('legacy-failure')
+            assert json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_read)) == history
+            result['baseline_failure_reproduced'] = True
+            result['baseline_image'] = json.loads(subprocess.check_output(
+                ['docker', 'image', 'inspect', 'camadmiral-direct-auth:baseline', '--format', '{{json .Id}}'], text=True))
+            env['DIRECT_AUTH_APP_IMAGE'] = 'camadmiral-e2e:local'
+            run('up', '-d', '--no-deps', '--force-recreate', 'camadmiral')
+            stage('negative')
         stage('takeover')
         after_import = time.time()
         deadline = time.monotonic() + 180
@@ -204,6 +259,7 @@ with sqlite3.connect('/config/frigate.db') as db:
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '-c',
             "import json;from pathlib import Path;Path('/state/direct-auth-recordings.json').write_text(" + repr(json.dumps(after)) + ")")
         stage('playback')
+        stage('pending-runtime')
         assert json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_read)) == history, 'Historical events or reviews changed'
         current = recordings()
         assert {r[0] for r in before} <= {r[0] for r in current}, 'Historical recordings disappeared'

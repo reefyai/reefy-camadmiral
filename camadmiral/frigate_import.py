@@ -204,6 +204,41 @@ def match_signature(repository, camera_uuid):
     return digest({'enabled': camera['enabled'], 'roles': {s['stream_uuid']: s['roles'] for s in camera['streams']}, 'sources': sources})
 
 
+def _import_source_config(key, effective, paths, saved):
+    # The normal configuration response masks embedded video credentials.
+    inputs = paths.get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs')
+    if inputs is None or inputs == []:
+        # A camera saved with restart pending is absent from runtime paths.
+        # Its admin-only raw YAML is trusted too; unresolved variables are
+        # still rejected by source resolution, never read from masked metadata.
+        inputs = saved.get('ffmpeg', {}).get('inputs')
+    if not isinstance(inputs, list) or not inputs:
+        raise FrigateApiError('unsupported_source')
+    return {**effective, 'ffmpeg': {**effective.get('ffmpeg', {}), 'inputs': inputs}}
+
+
+def _refresh_masked_import_sources(row, client):
+    # Failed jobs survive upgrades and the browser reconnects to their old ID.
+    # Re-read only known masked credentials after the original config guard.
+    if row.get('camera_uuid') or not any(
+        source.get('username') and source.get('password') and
+        set(source['username']) <= {'*'} and set(source['password']) <= {'*'}
+        for source in row.get('sources', {}).values()
+    ):
+        return
+    paths = client.raw_paths()
+    actual = client.config().get('cameras', {}).get(row['key'], {})
+    resolved = inspect_camera(row['key'], row['original'],
+                              _import_source_config(row['key'], actual, paths, row['original']),
+                              paths.get('go2rtc', {}).get('streams', {}))
+    if (resolved['roles'] != row['roles'] or resolved['live'] != row['live'] or
+        set(resolved['sources']) != set(row['sources']) or any(
+            any(source.get(field) != row['sources'][sid].get(field) for field in ('uri', 'wrapper'))
+            for sid, source in resolved['sources'].items())):
+        raise FrigateApiError('camera_changed_refresh_preview')
+    row['sources'] = resolved['sources']
+
+
 def preview(repository, target, client=None):
     client = client or FrigateClient(target)
     raw = client.raw_config()
@@ -234,7 +269,7 @@ def preview(repository, target, client=None):
                 row.update(category='conflict', reason='incomplete_import_use_retry', can_import=False)
             continue
         try:
-            row.update(inspect_camera(key, saved, actual, streams))
+            row.update(inspect_camera(key, saved, _import_source_config(key, actual, paths, saved), streams))
             row['original_streams'] = {alias: raw.get('go2rtc', {}).get('streams', {}).get(alias)
                                        for alias in row['live']}
             # A live alias shared with another camera cannot be reassigned
@@ -630,6 +665,7 @@ def execute(repository, target, job_id, selected, keep_existing, inventory, reco
                 row.pop(field, None)
             row['state'] = 'preparing'
             _check_original(client, row)
+            _refresh_masked_import_sources(row, client)
             if row.get('camera_uuid') and any(link['camera_uuid'] == row['camera_uuid'] for key, link in store.links(target.target_id).items() if key != row['key']):
                 raise FrigateApiError('camera_already_linked')
             candidate_id = 'frigate-import:' + target.target_id + ':' + row['key']

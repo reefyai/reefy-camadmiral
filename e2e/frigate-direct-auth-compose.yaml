@@ -1,4 +1,6 @@
 services:
+  camadmiral:
+    image: ${DIRECT_AUTH_APP_IMAGE:-camadmiral-e2e:local}
   frigate:
     tmpfs: !reset []
     image: ${FRIGATE_TEST_IMAGE:-ghcr.io/blakeblackshear/frigate:0.17.2}

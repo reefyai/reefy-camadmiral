@@ -446,3 +446,15 @@ recording/event/review history, decode both historical and fresh full-resolution
 playback, and keep stable identities on repeat import. Artifacts include exact
 source/application-tree and image provenance, JSON results, logs, and selected
 synthetic playback files. No real device data is used.
+
+The direct-input driver also boots the unchanged baseline application first,
+reproduces its real authentication failure, then upgrades the application while
+keeping its database and the existing failed job ID. Retrying that exact job
+without a new preview must recover credentials from the guarded admin paths.
+The fixed application must still reject genuinely incorrect credentials. This
+models the browser reconnecting to a failed job after an application upgrade.
+
+Both versions also save a new literal-path camera with restart pending. Its
+runtime API entry must still be absent, while its trusted saved configuration
+remains available and the import preview must accept it without leaking
+credentials.
