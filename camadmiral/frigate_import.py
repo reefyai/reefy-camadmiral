@@ -889,6 +889,29 @@ def recover_handoffs(repository, reconcile_media, client_factory=FrigateClient):
                 store.save_job(target.target_id, job)
 
 
+def _missing_runtime_yaml(exc):
+    return (exc.code == 'request_rejected' and exc.upstream_status == 400
+            and exc.upstream_detail in {'yaml: path not exist',
+                'Failed to delete stream: yaml: path not exist'})
+
+
+def _delete_runtime_alias(client, alias, source):
+    # go2rtc deletes the live entry before trying to patch its generated YAML.
+    # A missing YAML path is harmless only when the live deletion is observed.
+    for attempt in range(2):
+        try:
+            client.delete_runtime_stream(alias)
+            return
+        except FrigateApiError as exc:
+            if not _missing_runtime_yaml(exc):
+                raise
+            if alias not in client.runtime_streams():
+                return
+            if attempt:
+                raise
+            client.set_runtime_stream(alias, source)
+
+
 def _refresh_imported_readers(client, row):
     # A stable downstream URL can now supply different codec parameters.
     # Recreate only owned aliases so Frigate discards its cached upstream SDP.
@@ -904,19 +927,7 @@ def _refresh_imported_readers(client, row):
         for alias in sorted(sources):
             if alias not in runtime:
                 continue
-            try:
-                client.delete_runtime_stream(alias)
-            except FrigateApiError as exc:
-                missing_yaml = (exc.code == "request_rejected" and exc.upstream_status == 400
-                                and exc.upstream_detail in {"yaml: path not exist",
-                                    "Failed to delete stream: yaml: path not exist"})
-                if not missing_yaml:
-                    raise
-                # Normalize the owned runtime/YAML entry, then retry deletion
-                # once while capture is already stopped. A second failure stays
-                # retryable; it must never be accepted as a successful refresh.
-                client.set_runtime_stream(alias, sources[alias][0])
-                client.delete_runtime_stream(alias)
+            _delete_runtime_alias(client, alias, sources[alias][0])
     except FrigateApiError as exc:
         error = exc
     finally:
@@ -1075,6 +1086,9 @@ def _refresh_capture(repository, target, client, links, row):
     row.pop("capture_resume_pending", None)
     store.save_link(target.target_id, row["key"], row)
     if error is not None:
+        if _missing_runtime_yaml(error):
+            _restart_imported_target(repository, target, client, links, row)
+            return True
         raise error
     return False
 

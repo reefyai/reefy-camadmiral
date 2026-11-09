@@ -1252,17 +1252,22 @@ class FrigateImportTests(unittest.TestCase):
             self.assertEqual(operations, self.client.operations)
         self.assertEqual(before, self.client.raw_config())
 
-    def test_missing_yaml_cleanup_retry_is_bounded_and_capture_resumes(self):
+    def test_missing_yaml_cleanup_retry_is_bounded_then_one_restart_recovers_capture(self):
         self.execute(self.preview())
         store = ImportStore(self.repo)
         row = store.links(self.target.target_id)["legacy_entrance"]
         self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
         before = self.client.raw_config()
+        restarts = self.client.restart_calls
         with patch.object(self.client, "delete_runtime_stream", side_effect=FrigateApiError(
                 "request_rejected", upstream_status=400, upstream_detail="yaml: path not exist")) as delete:
             sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual(2, delete.call_count)
-        self.assertNotIn("relay_address_revision", store.links(self.target.target_id)["legacy_entrance"])
+        self.assertEqual(restarts + 1, self.client.restart_calls)
+        self.assertEqual(self.repo.latest_camera_address_revision(row['camera_uuid']),
+                         store.links(self.target.target_id)['legacy_entrance']['relay_address_revision'])
+        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertEqual(restarts + 1, self.client.restart_calls)
         self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
         self.assertEqual(before, self.client.raw_config())
 

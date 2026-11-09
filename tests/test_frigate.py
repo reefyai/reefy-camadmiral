@@ -205,6 +205,21 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertNotIn("camadmiral_synthetic", transformed)
         self.assertEqual(yaml.safe_load(transformed)["cameras"], {})
 
+    def test_control_reads_bypass_stale_frigate_cache(self):
+        client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate.example.test'))
+        seen = []
+        def response(request, timeout):
+            seen.append(request)
+            result = io.BytesIO(b'{}')
+            result.headers = {}
+            return result
+        with patch.object(client._opener, 'open', side_effect=response):
+            client.config()
+            client.runtime_streams()
+            client.raw_paths()
+        self.assertEqual(3, len(seen))
+        self.assertTrue(all(request.get_header('X-cache-bypass') == '1' for request in seen))
+
     def test_raw_config_save_uses_plain_text_endpoint(self) -> None:
         target = FrigateTarget(
             "frigate-primary",
