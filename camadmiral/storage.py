@@ -2310,6 +2310,7 @@ class CameraRepository:
         *,
         camera_origin: str = "discovery",
         reject_source_keys: set[tuple[str, str, int, str, str]] | None = None,
+        initially_enabled: bool = True,
     ) -> dict[str, Any]:
         if camera_origin not in {"discovery", "direct"}:
             raise ValueError("Camera origin is invalid")
@@ -2348,8 +2349,8 @@ class CameraRepository:
                 (credential_uuid, username, encrypted, timestamp, timestamp),
             )
             connection.execute(
-                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at, camera_origin) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
+                "INSERT INTO cameras(camera_uuid, candidate_uuid, display_name, credential_uuid, adopted_at, updated_at, camera_origin, enabled) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_uuid) DO UPDATE SET "
                 "display_name=excluded.display_name, credential_uuid=excluded.credential_uuid, "
                 "updated_at=excluded.updated_at, camera_origin=excluded.camera_origin",
                 (
@@ -2360,6 +2361,7 @@ class CameraRepository:
                     timestamp,
                     timestamp,
                     camera_origin,
+                    int(initially_enabled),
                 ),
             )
             if camera_origin == "discovery":

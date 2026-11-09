@@ -43,7 +43,12 @@ class ImportStore:
         with self.repository.connect() as c:
             c.execute('INSERT INTO frigate_import_jobs VALUES (?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at',
                       (job['id'], target_id, self.encode(job, job['id']), str(time.time())))
-            c.execute('DELETE FROM frigate_import_jobs WHERE target_id=? AND job_id NOT IN (SELECT job_id FROM frigate_import_jobs WHERE target_id=? ORDER BY CAST(created_at AS REAL) DESC LIMIT 20)', (target_id, target_id))
+            old = c.execute('SELECT job_id,payload FROM frigate_import_jobs WHERE target_id=? ORDER BY CAST(created_at AS REAL) DESC LIMIT -1 OFFSET 20', (target_id,)).fetchall()
+            for old_id, payload in old:
+                previous = self.decode(payload, old_id)
+                if previous.get('batch', {}).get('phase') not in (None, 'complete'):
+                    continue
+                c.execute('DELETE FROM frigate_import_jobs WHERE job_id=? AND target_id=?', (old_id, target_id))
             c.commit()
 
     def interrupt_jobs(self):
@@ -616,17 +621,8 @@ def _finish_restore(repository, target, key, row, client, store):
     store.delete_link(target.target_id, key)
 
 
-def _restore_once(repository, target, key, client, reconcile_media):
-    store = ImportStore(repository)
-    row = store.links(target.target_id).get(key)
-    if row is None:
-        raise FrigateApiError('import_not_found')
-    if row.get('target_api_url', target.api_url) != target.api_url:
-        raise FrigateApiError('rollback_target_changed')
-    try:
-        current = client.raw_config()
-    except FrigateApiError as exc:
-        raise exc.with_context(stage='restore_read') from exc
+def _restore_guard(row, current):
+    key = row['key']
     actual = current.get('cameras', {}).get(key)
     # Do not clobber edits made after takeover. An operator must resolve them.
     if actual not in (row['original'], row.get('managed_camera'), row.get('paused_camera')):
@@ -642,6 +638,21 @@ def _restore_once(repository, target, key, client, reconcile_media):
     for alias, value in row.get('released_streams', {}).items():
         if configured.get(alias) not in (row.get('paused_streams', {}).get(alias), value, owned_streams.get(alias)):
             raise FrigateApiError('rollback_configuration_conflict')
+    return actual, configured, originals
+
+
+def _restore_once(repository, target, key, client, reconcile_media):
+    store = ImportStore(repository)
+    row = store.links(target.target_id).get(key)
+    if row is None:
+        raise FrigateApiError('import_not_found')
+    if row.get('target_api_url', target.api_url) != target.api_url:
+        raise FrigateApiError('rollback_target_changed')
+    try:
+        current = client.raw_config()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage='restore_read') from exc
+    actual, configured, originals = _restore_guard(row, current)
     # A newly created relay must relinquish its camera slot when returning the
     # original reader. Retain its data; never disable a reused/operator camera.
     if row.get('handoff') and row.get('created_camera'):
@@ -688,6 +699,9 @@ def _restore_once(repository, target, key, client, reconcile_media):
 
 def execute(repository, target, job_id, selected, keep_existing, inventory, reconcile_media,
             client=None):
+    if len(selected) > 1:
+        from .frigate_batch import execute_batch
+        return execute_batch(repository, target, job_id, selected, keep_existing, inventory, reconcile_media, client)
     client = client or FrigateClient(target)
     store = ImportStore(repository)
     job = store.job(target.target_id, job_id)
@@ -868,7 +882,11 @@ def recover_handoffs(repository, reconcile_media, client_factory=FrigateClient):
     store = ImportStore(repository)
     for saved in repository.frigate_targets():
         target = FrigateTarget(saved['target_id'], saved['name'], saved['api_url'])
+        from .frigate_batch import recover_batches
+        pending_batches = recover_batches(repository, target, reconcile_media, client_factory(target))
         for key, row in store.links(target.target_id).items():
+            if row.get('batch_job_id') in pending_batches:
+                continue
             if not row.get('handoff') or row.get('state') == 'active':
                 continue
             reason = 'interrupted_import'

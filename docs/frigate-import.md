@@ -30,23 +30,30 @@ Frigate-specific settings remain operator-owned. Detection-resolution changes
 in the normal chooser are not applied to imported entries; edit their preserved
 Frigate configuration when needed.
 
-Before changing each camera's sources, CamAdmiral validates upstream and relayed
-media, saves an encrypted rollback journal, and rechecks the preview against the
-current configuration. Each migrated camera can require a Frigate restart,
-briefly interrupting recording on other cameras. If the restart disconnects its
-API response, CamAdmiral waits for the expected running inputs and video before
-deciding whether to finish the import or restore the original configuration.
-Failed imports retain or restore their original configuration; unselected
-camera entries stay unchanged. Disabled cameras are reported as pending and
-are never enabled or probed by the import.
+For a multi-camera selection, CamAdmiral checks the whole preview and saves an
+encrypted group journal before releasing any reader. Working, supported RTSP
+URLs and credentials are transferred from Frigate without opening extra physical
+camera connections first. The selected Frigate readers are paused together and
+their private upstream aliases released. Newly created CamAdmiral cameras remain
+disabled until that release, then their relays and decoded video are validated.
+Successful cameras are saved together and share one final Frigate restart.
+If runtime pause or alias release is unavailable, one shared initial restart
+releases the group, followed by the final restart. This fallback uses two shared
+restarts, rather than two per camera.
 
-If a working camera refuses an additional connection, import journals its original
-configuration before temporarily disabling that Frigate entry and holding its
-private upstream aliases. A Frigate restart releases the old reader, then
-CamAdmiral validates its direct source and decoded relay before enabling the same
-Frigate entry with the managed sources. This can require an extra acknowledged
-restart. Shared aliases, offline entries and authentication failures are not
-automatically interrupted. Other recorders are never stopped by import.
+A failed camera returns to its original connection while successful peers remain
+managed. Unselected entries and conflicting operator edits stay unchanged.
+Disabled, offline, ambiguous, shared-source, or unsupported entries are left for
+review. Runtime control overrides block a grouped import so its final restart
+cannot silently discard an operator's temporary settings. Other recorders are
+never stopped. Single-camera imports retain their existing validation and
+connection-limited handoff behavior.
+
+An uncertain restart reply is verified against the new running service and actual
+media before committing ownership. After process loss, startup resumes a saved
+cutover or restores an unfinished group. An already accepted restart is not
+repeated merely because its reply was lost. Recovery journals remain encrypted
+and survive ordinary preview pruning until the group is complete.
 
 Failure results distinguish an unchanged configuration from one restored after
 a temporary handoff. Restoration confirms the saved Frigate configuration and
@@ -58,7 +65,7 @@ Check both recording and video availability after restoration. Retries clear the
 previous restoration result and report the new attempt's outcome.
 
 Failed handoffs restore the original entry and aliases. After a CamAdmiral crash,
-startup automatically attempts restoration of unfinished handoffs. Operator edits
+startup automatically resumes grouped cutovers or attempts restoration of unfinished handoffs. Operator edits
 or a changed integration address stop restoration and retain the encrypted
 journal for manual recovery. When restoring a connection-limited import, a newly
 created CamAdmiral camera is kept disabled with its data retained, so its relay
@@ -93,7 +100,7 @@ recovery is validated separately. Cameras that cannot expose a unique physical
 identity can continue using a stable hostname or an operator-maintained address.
 
 The progress window can reconnect to an interrupted job in the same browser
-session. A server restart marks interrupted jobs for retry. Completed cameras
+session. A server restart marks interrupted jobs for recovery; saved grouped cutovers can complete automatically. Completed cameras
 are reused on subsequent imports. **Restore original Frigate connection**
 releases the binding and restores the saved sources, with a restart. Restore an
 imported camera before removing its binding or unadopting it; ordinary removal
@@ -101,7 +108,7 @@ will not silently delete the legacy entry or restart Frigate. Restoration
 refuses to overwrite conflicting operator edits and keeps adopted CamAdmiral
 camera data. Rollback snapshots are inside the existing persistent data and
 master-key backup boundary. Old previews are bounded to twenty per integration;
-active rollback snapshots are retained separately.
+active rollback snapshots and unfinished group journals are retained separately.
 
 Validation lives in the established GitHub Actions release gate. See
 [the E2E lab](../e2e/README.md#frigate-import-and-takeover-regression) for the
