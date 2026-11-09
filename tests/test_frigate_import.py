@@ -175,6 +175,67 @@ class FrigateImportTests(unittest.TestCase):
         self.assertLessEqual(clock[0], 300)
         self.assertTrue(ImportStore(self.repo).links(self.target.target_id))
 
+    def test_old_instance_positive_capture_cannot_acknowledge_a_restart(self):
+        from camadmiral.frigate_import import _restart
+        clock = [0.0]
+        def sleep(seconds): clock[0] += seconds
+        # Model healthy-looking responses from the shutting-down process,
+        # including the sub-second rounding drift of Frigate's uptime clock.
+        with patch.object(self.client, 'service_started_at', side_effect=lambda: 1000 + min(clock[0] / 1000, 0.75)), \
+             patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep', side_effect=sleep), self.assertRaises(FrigateApiError):
+            _restart(self.client)
+        self.assertEqual(1, self.client.restart_calls)
+        self.assertGreaterEqual(clock[0], 110)
+        self.assertLessEqual(clock[0], 300)
+
+    def test_restore_does_not_retry_rejected_access_or_invalid_configuration(self):
+        class ProcessLost(BaseException): pass
+        with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+        for error in (FrigateApiError('authorization_required', upstream_status=403),
+                      FrigateApiError('request_rejected', upstream_status=400)):
+            with self.subTest(code=error.code), \
+                 patch.object(self.client, 'raw_config', side_effect=error) as read, \
+                 patch('camadmiral.frigate_import.time.sleep') as sleep, self.assertRaises(FrigateApiError):
+                restore(self.repo, self.target, 'legacy_entrance', self.client)
+            self.assertEqual(1, read.call_count)
+            sleep.assert_not_called()
+            self.assertTrue(ImportStore(self.repo).links(self.target.target_id))
+
+    def test_restore_retries_lost_save_acknowledgement_without_losing_originals(self):
+        class ProcessLost(BaseException): pass
+        with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+        write = self.client.set_config
+        interrupted = [False]
+        def lost_save(*args, **kwargs):
+            write(*args, **kwargs)
+            if not interrupted[0]:
+                interrupted[0] = True
+                raise FrigateApiError('target_unavailable')
+        with patch.object(self.client, 'set_config', side_effect=lost_save), \
+             patch('camadmiral.frigate_import.time.sleep'):
+            restore(self.repo, self.target, 'legacy_entrance', self.client)
+        self.assertEqual(self.camera, self.client.raw_config()['cameras']['legacy_entrance'])
+        self.assertGreater(self.client.stats()['legacy_entrance']['camera_fps'], 0)
+        self.assertEqual({}, ImportStore(self.repo).links(self.target.target_id))
+
+    def test_startup_internal_error_is_retried_only_for_reads(self):
+        class ProcessLost(BaseException): pass
+        with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+        raw = self.client.raw_config
+        with patch.object(self.client, 'raw_config', side_effect=[
+                FrigateApiError('request_rejected', upstream_status=500), raw()]), \
+             patch('camadmiral.frigate_import.time.sleep'):
+            restore(self.repo, self.target, 'legacy_entrance', self.client)
+        self.assertEqual({}, ImportStore(self.repo).links(self.target.target_id))
+        with self.assertRaises(ProcessLost): self.capped(self.preview(), after_release=ProcessLost())
+        with patch.object(self.client, 'set_config', side_effect=FrigateApiError('request_rejected', upstream_status=500)) as write, \
+             patch('camadmiral.frigate_import.time.sleep') as sleep, self.assertRaises(FrigateApiError):
+            restore(self.repo, self.target, 'legacy_entrance', self.client)
+        self.assertEqual(1, write.call_count)
+        sleep.assert_not_called()
+        self.assertTrue(ImportStore(self.repo).links(self.target.target_id))
+
     def test_saturated_source_is_journaled_before_releasing_and_default_enabled_is_restored(self):
         self.camera.pop('enabled')
         self.client.seed('legacy_entrance', self.camera)

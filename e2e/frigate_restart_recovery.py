@@ -39,6 +39,7 @@ def driver(stage):
         assert json.load(urllib.request.urlopen(req, timeout=15))['success']
 
     def import_camera(key):
+        started = time.monotonic()
         preview = request_json(base + '/import')
         row = next(r for r in preview['cameras'] if r['key'] == key)
         assert row['can_import'], row
@@ -48,7 +49,7 @@ def driver(stage):
         job = wait_for('synthetic handoff completion', lambda:
             (j if (j := request_json(base + '/import/' + preview['id']))['status'] == 'completed' else False), timeout=480)
         row = next(r for r in job['cameras'] if r['key'] == key)
-        state['results'][stage] = {'row': row, 'fault': fault()}; remember()
+        state['results'][stage] = {'row': row, 'fault': fault(), 'elapsed_seconds': time.monotonic() - started}; remember()
         return row
 
     def restore_camera(key, **kwargs):
@@ -87,7 +88,19 @@ def driver(stage):
         row = import_camera('slow_camera')
         assert row['status'] == 'applied', 'SLOW_RESTART_HANDOFF_FAILED: ' + json.dumps(row)
         assert fault()['unavailable_reads'] > 0
+        assert state['results'][stage]['elapsed_seconds'] >= 110
         state['results'][stage]['completed_at'] = time.time(); remember()
+    elif stage == 'takeover-playback':
+        rows = json.loads(Path('/state/restart-takeover.json').read_text())
+        fresh = recording_for_playback(rows, 'slow_camera', since=state['results']['slow-import']['completed_at'])
+        assert fresh, 'Successful handoff must produce complete new recordings'
+        destination = Path('/state/slow-takeover.mp4')
+        destination.write_bytes(urllib.request.urlopen(recording_playback_url(fresh, rows), timeout=30).read())
+        decoded = subprocess.run(['ffmpeg', '-v', 'error', '-threads', '1', '-i', str(destination),
+            '-an', '-frames:v', '15', '-f', 'framemd5', '-'], capture_output=True, timeout=30)
+        frames = sum(bool(l.strip()) and not l.startswith(b'#') for l in decoded.stdout.splitlines())
+        assert decoded.returncode == 0 and frames >= 15, 'New CamAdmiral recording must decode actual video'
+        state['results'][stage] = {'decoded_frames': frames, 'bytes': destination.stat().st_size}; remember()
     elif stage == 'slow-restore':
         # A real saved operator edit must remain protected even with recovery enabled.
         configured = yaml.safe_load(frigate('/config/raw'))
@@ -221,9 +234,21 @@ with sqlite3.connect('/config/frigate.db') as d:
         run('exec', '-T', 'frigate', 'python3', '-c', seed)
         history = json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_read))
         assert history['events'] and history['reviews']; result['history_before'] = history
-        for name in ('slow-import', 'slow-restore', 'failed-restore', 'interrupt-prepare'):
+        stage('slow-import')
+        takeover_since = time.time()
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            rows = recordings()
+            # Driver completion precedes the host's return from the import stage.
+            if recording_for_playback(rows, 'slow_camera', since=takeover_since): break
+            time.sleep(3)
+        else: raise AssertionError('Slow handoff did not create complete fresh recordings')
+        shared_file('restart-takeover.json', rows)
+        stage('takeover-playback')
+        for name in ('slow-restore', 'failed-restore'):
             stage(name)
             assert json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_read)) == history, 'History changed during recovery'
+        stage('interrupt-prepare')
         run('restart', 'camadmiral')
         stage('interrupt-verify')
         since = time.time()

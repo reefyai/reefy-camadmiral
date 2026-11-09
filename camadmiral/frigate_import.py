@@ -22,7 +22,7 @@ MAX_CAMERAS = 256
 MAX_SOURCES = 8
 # A relay restart can reset RTP timing without changing any saved source URL.
 RELAY_RUNTIME_REVISION = uuid.uuid4().hex
-READER_RESTART_VERIFY_TIMEOUT_SECONDS = 90
+READER_RESTART_VERIFY_TIMEOUT_SECONDS = 180
 
 
 def digest(value):
@@ -445,9 +445,7 @@ def _wait_capture(client, keys, expected_inputs=None):
             stats = client.stats()
             if all(float(stats.get(k, {}).get('camera_fps') or 0) > 0 for k in keys):
                 if expected_inputs is not None:
-                    paths = client.raw_paths().get('cameras', {}).get(keys[0], {}).get('ffmpeg', {}).get('inputs', [])
-                    simplify = lambda items: [{'path': i['path'], 'roles': i['roles']} for i in items]
-                    if simplify(paths) != simplify(expected_inputs):
+                    if not _running_inputs_match(client, keys[0], expected_inputs):
                         time.sleep(1)
                         continue
                 return
@@ -457,18 +455,54 @@ def _wait_capture(client, keys, expected_inputs=None):
     raise FrigateApiError('capture_verification_failed')
 
 
-def _restart(client):
+# Restart readiness and media readiness are separate budgets. A busy recorder
+# can take longer than the capture deadline just to stop its old workers.
+RESTART_READY_TIMEOUT_SECONDS = 180
+RESTORE_RETRY_TIMEOUT_SECONDS = 180
+
+
+def _temporary_api_error(exc):
+    return exc.code in {'target_unavailable', 'invalid_response'} or (
+        exc.code == 'request_rejected' and (exc.upstream_status in {502, 503, 504}
+        or exc.upstream_status == 500 and exc.stage in {'restore_read', 'restart_read'})
+    )
+
+
+def _running_inputs_match(client, key, expected_inputs):
+    paths = client.raw_paths().get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs', [])
+    simplify = lambda items: [{'path': i['path'], 'roles': i['roles']} for i in items]
+    return simplify(paths) == simplify(expected_inputs)
+
+
+def _request_restart(client):
     try:
         client.restart()
     except FrigateApiError as exc:
-        # Frigate terminates PID 1 before returning its restart response.
-        # A lost response is uncertain acknowledgement, not a rejected restart.
-        # Confirm the running inputs and media before committing or restoring.
-        uncertain = exc.code in {'target_unavailable', 'invalid_response'} or (
-            exc.code == 'request_rejected' and exc.upstream_status in {502, 503, 504}
-        )
-        if not uncertain:
+        # A dropped acknowledgement can still mean Frigate accepted the restart.
+        if not _temporary_api_error(exc):
             raise
+
+
+def _restart(client):
+    try:
+        before = client.service_started_at()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage='restart_read') from exc
+    _request_restart(client)
+    deadline = time.monotonic() + RESTART_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            # last_updated - integer uptime can drift by less than one second.
+            # The old process may still serve healthy-looking capture statistics.
+            if client.service_started_at() > before + 1:
+                client.config()
+                return
+        except FrigateApiError as exc:
+            # Startup can briefly return 500 while IPC workers initialize.
+            if not _temporary_api_error(exc) and not (exc.code == 'request_rejected' and exc.upstream_status == 500):
+                raise
+        time.sleep(1)
+    raise FrigateApiError('target_unavailable')
 
 
 def _restart_and_wait_capture(client, key, expected_inputs):
@@ -558,22 +592,45 @@ def _probe_import(row, uri, username='', password=''):
 
 def restore(repository, target, key, client=None, reconcile_media=None):
     client = client or FrigateClient(target)
+    deadline = time.monotonic() + RESTORE_RETRY_TIMEOUT_SECONDS
+    while True:
+        try:
+            return _restore_once(repository, target, key, client, reconcile_media)
+        except FrigateApiError as exc:
+            if not _temporary_api_error(exc) or time.monotonic() >= deadline:
+                raise
+            # Re-read the journal and recheck ownership after every outage or
+            # uncertain save. Never replay a stale snapshot over operator edits.
+            time.sleep(1)
+
+
+def _finish_restore(repository, target, key, row, client, store):
+    if row.get('camera_uuid'):
+        repository.deselect_frigate_camera(target.target_id, row['camera_uuid'])
+        repository.remove_frigate_binding(target.target_id, row['camera_uuid'])
+    for alias in row.get('aliases', {}).values():
+        try:
+            client.delete_runtime_stream(alias)
+        except FrigateApiError:
+            pass
+    store.delete_link(target.target_id, key)
+
+
+def _restore_once(repository, target, key, client, reconcile_media):
     store = ImportStore(repository)
     row = store.links(target.target_id).get(key)
     if row is None:
         raise FrigateApiError('import_not_found')
     if row.get('target_api_url', target.api_url) != target.api_url:
         raise FrigateApiError('rollback_target_changed')
-    current = client.raw_config()
+    try:
+        current = client.raw_config()
+    except FrigateApiError as exc:
+        raise exc.with_context(stage='restore_read') from exc
     actual = current.get('cameras', {}).get(key)
     # Do not clobber edits made after takeover. An operator must resolve them.
     if actual not in (row['original'], row.get('managed_camera'), row.get('paused_camera')):
         raise FrigateApiError('rollback_configuration_conflict')
-    if not row.get('handoff') and actual == row['original'] and not any(alias in current.get('go2rtc', {}).get('streams', {}) for alias in row.get('aliases', {}).values()) and all(current.get('go2rtc', {}).get('streams', {}).get(k) == v for k, v in row['original_streams'].items()):
-        repository.deselect_frigate_camera(target.target_id, row['camera_uuid'])
-        repository.remove_frigate_binding(target.target_id, row['camera_uuid'])
-        store.delete_link(target.target_id, key)
-        return
     owned_streams = row.get('managed_streams', {})
     configured = current.get('go2rtc', {}).get('streams', {})
     originals = {**row.get('released_streams', {}), **row['original_streams']}
@@ -601,6 +658,22 @@ def restore(repository, target, key, client=None, reconcile_media=None):
             repository.set_camera_enabled(row['camera_uuid'], False)
             if reconcile_media:
                 reconcile_media()
+    original_saved = (actual == row['original']
+                      and all(configured.get(alias) == value for alias, value in originals.items())
+                      and not any(alias in configured for alias in row.get('aliases', {}).values()))
+    running_original = False
+    if original_saved:
+        try:
+            running_original = (client.config().get('cameras', {}).get(key, {}).get('enabled', True)
+                                and float(client.stats().get(key, {}).get('camera_fps') or 0) > 0
+                                and _running_inputs_match(client, key, row['original']['ffmpeg']['inputs']))
+        except FrigateApiError as exc:
+            raise exc.with_context(stage='restore_read') from exc
+    if running_original:
+        # A previous process can lose the reply after restoring healthy video.
+        # Clear that journal without writing configuration or restarting again.
+        _finish_restore(repository, target, key, row, client, store)
+        return
     client.set_config({'cameras': {key: _camera_write(row, row['original'], actual)}, 'go2rtc': {'streams': {
         **{alias: '' for alias in row.get('aliases', {}).values() if alias in configured},
         **row.get('released_streams', {}), **row['original_streams']}}}, requires_restart=True)
@@ -610,12 +683,7 @@ def restore(repository, target, key, client=None, reconcile_media=None):
     row['state'] = 'restored'
     store.save_link(target.target_id, key, row)
     _restart_and_wait_capture(client, key, row['original']['ffmpeg']['inputs'])
-    for alias in row['aliases'].values():
-        try:
-            client.delete_runtime_stream(alias)
-        except FrigateApiError:
-            pass
-    store.delete_link(target.target_id, key)
+    _finish_restore(repository, target, key, row, client, store)
 
 
 def execute(repository, target, job_id, selected, keep_existing, inventory, reconcile_media,
@@ -800,21 +868,10 @@ def recover_handoffs(repository, reconcile_media, client_factory=FrigateClient):
             if not row.get('handoff') or row.get('state') == 'active':
                 continue
             reason = 'interrupted_import'
-            deadline = time.monotonic() + 90
-            while True:
-                try:
-                    restore(repository, target, key, client_factory(target), reconcile_media)
-                except FrigateApiError as exc:
-                    transient = exc.code in {'target_unavailable', 'invalid_response'} or (
-                        exc.code == 'request_rejected' and exc.upstream_status in {502, 503, 504}
-                    )
-                    if transient and time.monotonic() < deadline:
-                        time.sleep(1)
-                        continue
-                    reason = 'rollback_required'
-                except Exception:
-                    reason = 'rollback_required'
-                break
+            try:
+                restore(repository, target, key, client_factory(target), reconcile_media)
+            except Exception:
+                reason = 'rollback_required'
             if row.get('import_job_id'):
                 try:
                     job = store.job(target.target_id, row['import_job_id'])
@@ -934,7 +991,7 @@ def _restart_imported_target(repository, target, client, links, trigger):
         # Save before dispatch: an uncertain reply must never cause a restart loop.
         trigger["target_restart"] = pending
         store.save_link(target.target_id, trigger["key"], trigger)
-        _restart(client)
+        _request_restart(client)
     if digest(raw) != pending["raw_hash"]:
         raise FrigateApiError("import_source_conflict")
     deadline = time.monotonic() + READER_RESTART_VERIFY_TIMEOUT_SECONDS
