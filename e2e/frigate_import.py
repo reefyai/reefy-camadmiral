@@ -396,6 +396,27 @@ def host():
         print('Import regression stage: ' + name, flush=True)
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/frigate_import.py', name)
 
+    def source_generations():
+        code = """import json,sys
+from pathlib import Path
+sys.path.insert(0,'/opt/camadmiral')
+from camadmiral import media
+from camadmiral.crypto import load_master_key
+from camadmiral.storage import CameraRepository
+from camadmiral.frigate_import import ImportStore
+repository=CameraRepository(Path('/var/lib/camadmiral/camadmiral.db'),load_master_key())
+helper=getattr(media,'source_connection_revisions',None)
+live=helper(repository.managed_stream_runtime_sources()) if callable(helper) else {}
+result={'supported':callable(helper),'saved':{},'live':{}}
+for target in repository.frigate_targets():
+ row=ImportStore(repository).links(target['target_id']).get('authenticated_camera')
+ if row:
+  saved=row.get('relay_source_revisions') or {}
+  result.update(saved=saved,live={key:live[key] for key in saved if key in live})
+print(json.dumps(result))
+"""
+        return json.loads(run('exec', '-T', 'camadmiral', 'python', '-c', code))
+
     def recordings(camera='operator_camera'):
         code = """import json,sqlite3
 from pathlib import Path
@@ -510,11 +531,22 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                 expect(page.get_by_label('Import Original offline', exact=True)).to_be_checked()
                 expect(page.get_by_label('Import Original offline', exact=True)).to_be_enabled()
                 page.get_by_label('Allow Frigate restart').check()
+                retry_busy = {'injected': False}
+                def busy_once(route):
+                    if route.request.method == 'POST' and not retry_busy['injected']:
+                        retry_busy['injected'] = True
+                        route.fulfill(status=409, content_type='application/json', body=json.dumps({'status': 'sync_busy'}))
+                    else:
+                        route.continue_()
+                page.route('**/internal/frigate-targets/*/import/*', busy_once)
                 with page.expect_request(lambda r: r.method == 'POST' and '/import/' in r.url) as retried:
                     page.get_by_role('button', name='Retry selected', exact=True).click()
                 assert retried.value.post_data_json['selected'] == ['offline_camera'], 'Retry must exclude completed cameras'
                 expect(page.locator('#app-modal').get_by_role('status')).to_contain_text('Import finished with errors: 3 cameras managed, 1 failed, 0 pending.', timeout=120000)
                 expect(page.locator('#app-modal').get_by_role('status')).to_be_in_viewport()
+                assert retry_busy['injected'], 'Retry must exercise a real temporary-busy response'
+                page.unroute('**/internal/frigate-targets/*/import/*', busy_once)
+                result['busy_import_retry_preserved_selection'] = True
                 result['ui_progress_and_partial_results'] = True
                 page.screenshot(path=str(artifacts / 'import-results.png'))
             except Exception:
@@ -528,10 +560,30 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         stage('sync')
         stage('roles')
         stage('dns-before')
+        source_before = source_generations()
+        if source_before['supported']:
+            deadline = time.monotonic() + 90
+            while not (source_before['saved'] and source_before['saved'] == source_before['live']):
+                if time.monotonic() >= deadline:
+                    raise AssertionError('Source generations must be acknowledged before the move')
+                time.sleep(1)
+                source_before = source_generations()
+        result['dns_source_generations_before'] = source_before
         run('stop', 'camera-auth')
         run('rm', '--force', 'camera-auth')
         run('up', '-d', 'camera-auth-import-moved')
         stage('dns-after')
+        if source_before['supported']:
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                source_after = source_generations()
+                if (source_after['saved'] and source_after['saved'] == source_after['live']
+                        and source_after['saved'] != source_before['saved']):
+                    break
+                time.sleep(1)
+            else:
+                raise AssertionError('Recovered media did not acknowledge its new upstream connections')
+            result['dns_source_generations_after'] = source_after
         result['address_recovery_decoded'] = True
         switched = time.time()
         deadline = time.monotonic() + 150

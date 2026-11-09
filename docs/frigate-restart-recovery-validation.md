@@ -97,3 +97,42 @@ and isolated UI labs as separate parallel jobs. Their test commands, fixture
 builders, private Docker isolation, resource limits, deadlines and assertions
 are unchanged. Unit/component checks and the publisher's existing isolated-UI
 step remain in the main gate job. Each lab retains its own normal artifacts.
+
+## Upstream reconnect recovery
+
+[Gate 42661870523](https://github.com/reefyai/reefy-camadmiral/actions/runs/42661870523)
+passes both complete restart matrices and identity recovery, but its unchanged
+DNS-move assertion exposes stale downstream codec metadata: positive capture
+and packet counters coexist with decoded frames at the old dimensions.
+A focused unit case reproduces the missing reader refresh on unchanged source
+`ad1339b089849b1e3f47c619d547d637eb0ab44d`.
+
+The importer now observes active upstream connection identities through the
+existing local relay statistics API, without opening camera connections. A
+changed required source refreshes both owned readers while preserving saved
+configuration. Recovery acknowledges the connections present after capture and
+Record resume, preventing a loop caused by its own pause. Missing samples remain
+pending, snapshot-only/idle sources are ignored, disabled recording is respected,
+and failed targeted media verification uses the existing guarded restart fallback.
+
+Connection markers remain private inside encrypted import journals. The broad
+DNS test retains its original dimensions, decoded-frame and 180-second media
+assertion; capable versions additionally retain and verify source-generation
+acknowledgement. Historical baselines keep the original behavioral assertion.
+
+The first reconnect correction exposed a scheduling interaction in the existing
+multi-channel address-move gate: blocking capture/Record waits on one camera
+could delay recovery of its peer beyond the unchanged 240-second deadline.
+A permanent unit case reproduces that starvation. Media verification now polls
+pending recovery across reconciliation cycles, allowing peers to progress while
+retaining the 90-second verified-media fallback deadline. The identity gate also
+requires the new private pending marker to clear before declaring readiness.
+Its deadline and decoded historical/fresh playback requirements are unchanged.
+
+The import UI retries only an explicitly rejected `sync_busy` submission, with
+its exact original selection and restart consent, for at most 90 seconds. Closing
+the dialog stops unaccepted retries; authorization and other rejections remain
+immediate errors. The existing UI import test injects a genuine busy response
+and still requires only the failed camera to be retried and the original final
+results within its unchanged deadline. Functional JavaScript coverage verifies
+selection preservation, cancellation, permanent errors and the retry bound.

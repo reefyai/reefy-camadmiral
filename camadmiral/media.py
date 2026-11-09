@@ -450,6 +450,30 @@ class RelayRuntimeActivityMonitor:
         return set(stalled_camera_uuids)
 
 
+def source_connection_revisions(sources: list[dict[str, str]]) -> dict[str, str]:
+    """Observe live upstream connections without opening camera connections."""
+    if not sources:
+        return {}
+    try:
+        runtime = json.loads(_request("GET", "/api/streams"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    if not isinstance(runtime, dict):
+        return {}
+    revisions = {}
+    for source in sources:
+        stream = runtime.get(source["stream_key"])
+        if not RelayHealthMonitor._has_external_consumers(stream):
+            continue
+        try:
+            sample = RelayHealthMonitor._active_video_sample(stream)
+        except (TypeError, ValueError):
+            continue
+        if sample and sample[0] != "producer" and sample[1] > 0:
+            revisions[str(source["stream_uuid"])] = sample[0]
+    return revisions
+
+
 def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     parsed = urllib.parse.urlsplit(uri)
     if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.hostname:

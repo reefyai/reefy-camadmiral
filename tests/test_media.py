@@ -44,6 +44,37 @@ class RelayHealthMonitor(AsyncRelayHealthMonitor):
 
 
 class MediaTests(unittest.TestCase):
+    @patch('camadmiral.media._request')
+    def test_source_connection_generation_changes_only_when_active_upstream_reconnects(self, request):
+        from camadmiral.media import source_connection_revisions
+        sources = [{'stream_uuid': 'synthetic-stream', 'stream_key': 'stream_synthetic'}]
+        producer = {'id': 7, 'bytes_recv': 10, 'receivers': [
+            {'codec': {'codec_type': 'video', 'codec_name': 'h264'}, 'packets': 2}]}
+        runtime = {'stream_synthetic': {'producers': [producer], 'consumers': [{'user_agent': 'Synthetic recorder'}]}}
+        request.side_effect = lambda *_: json.dumps(runtime).encode()
+        self.assertEqual({'synthetic-stream': '7'}, source_connection_revisions(sources))
+        producer['receivers'][0]['packets'] += 20
+        self.assertEqual({'synthetic-stream': '7'}, source_connection_revisions(sources))
+        producer['id'] = 8
+        self.assertEqual({'synthetic-stream': '8'}, source_connection_revisions(sources))
+        self.assertTrue(all(args == ('GET', '/api/streams') for args, _ in request.call_args_list))
+
+    @patch('camadmiral.media._request')
+    def test_idle_snapshot_only_and_unavailable_sources_have_no_connection_revision(self, request):
+        from camadmiral.media import source_connection_revisions, SNAPSHOT_USER_AGENT
+        sources = [{'stream_uuid': 'synthetic-stream', 'stream_key': 'stream_synthetic'}]
+        producer = {'id': 7, 'bytes_recv': 10, 'receivers': [
+            {'codec': {'codec_type': 'video'}, 'packets': 2}]}
+        for consumers, producers in [([], [producer]), ([{'user_agent': SNAPSHOT_USER_AGENT}], [producer]),
+                                      ([{}], []), ([{}], [{**producer, 'receivers': []}])]:
+            request.return_value = json.dumps({'stream_synthetic': {'producers': producers, 'consumers': consumers}}).encode()
+            self.assertEqual({}, source_connection_revisions(sources))
+        request.side_effect = OSError('synthetic unavailable API')
+        self.assertEqual({}, source_connection_revisions(sources))
+        request.side_effect = None
+        request.return_value = b'not json'
+        self.assertEqual({}, source_connection_revisions(sources))
+
     @patch("camadmiral.media._request", return_value=b"{}")
     def test_relay_restart_discards_old_snapshot_results_with_unchanged_source(self, request):
         source = {"stream_uuid": "synthetic-stream", "stream_key": "stream_synthetic",

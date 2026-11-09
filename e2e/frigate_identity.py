@@ -105,7 +105,7 @@ def reader_recovery_ready(readers, camera_ids, address_revisions, previous_runti
         row = readers.get(key, {})
         generation = row.get("relay_runtime_revision")
         if (row.get("camera_uuid") != camera_uuid or not generation or not address_revisions.get(camera_uuid)
-                or row.get("capture_resume_pending") or row.get("target_restart")
+                or row.get("capture_resume_pending") or row.get("source_recovery_pending") or row.get("target_restart")
                 or row.get("relay_address_revision") != address_revisions.get(camera_uuid)):
             return False
         if previous_runtime is not None and generation == previous_runtime.get(key):
@@ -147,6 +147,7 @@ def driver(stage):
             result[row['camera_key']] = {field: saved.get(field) for field in (
                 'camera_uuid', 'relay_address_revision', 'relay_runtime_revision')}
             result[row['camera_key']].update(capture_resume_pending=bool(saved.get('capture_resume_pending')),
+                                            source_recovery_pending=bool(saved.get('source_recovery_pending')),
                                             target_restart=bool(saved.get('target_restart')))
         return result
 

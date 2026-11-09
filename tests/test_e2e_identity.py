@@ -111,7 +111,7 @@ class FrigateReaderReadinessTests(unittest.TestCase):
     def test_recording_checkpoint_waits_for_both_committed_readers(self):
         self.assertTrue(reader_recovery_ready(self.rows, self.ids, self.revisions))
         for key in self.ids:
-            for field, value in (("capture_resume_pending", True), ("target_restart", True),
+            for field, value in (("capture_resume_pending", True), ("source_recovery_pending", True), ("target_restart", True),
                                  ("relay_address_revision", "address-previous"), ("camera_uuid", "unrelated")):
                 with self.subTest(key=key, field=field):
                     changed = {name: dict(row) for name, row in self.rows.items()}
