@@ -675,6 +675,8 @@ def _media_runtime_reconciliation_loop() -> None:
                         f"from={result.previous_address} to={result.current_address}",
                         flush=True,
                     )
+                if any(result.status == "recovered" for result in recovery_results):
+                    _queue_frigate_reconciliation(wait=True)
             except Exception as exc:
                 print(
                     f"media: address recovery failed ({type(exc).__name__})",
@@ -705,11 +707,14 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
             if not repository.selected_frigate_camera_uuids(target.target_id):
                 continue
             try:
-                reconcile_frigate(
-                    repository,
-                    target,
-                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
-                )
+                # Finish a shared relay update before reconnecting downstream
+                # capture, and prevent another reset during that recovery.
+                with MEDIA_LOCK:
+                    reconcile_frigate(
+                        repository,
+                        target,
+                        media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                    )
             except FrigateApiError as exc:
                 for selected_uuid in repository.selected_frigate_camera_uuids(target.target_id):
                     repository.set_frigate_selection_error(target.target_id, selected_uuid, exc.code)
@@ -736,10 +741,10 @@ def _frigate_reconciliation_loop() -> None:
         time.sleep(FRIGATE_RECONCILE_INTERVAL)
 
 
-def _queue_frigate_reconciliation() -> None:
+def _queue_frigate_reconciliation(*, wait: bool = False) -> None:
     threading.Thread(
         target=_reconcile_frigate,
-        kwargs={"wait": False},
+        kwargs={"wait": wait},
         name="frigate-reconcile-now",
         daemon=True,
     ).start()
@@ -759,12 +764,13 @@ def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
                 return
             target = FrigateTarget(target_id, str(current["name"]), str(current["api_url"]))
             try:
-                reconcile_frigate(
-                    repository,
-                    target,
-                    media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
-                    camera_uuid=camera_uuid,
-                )
+                with MEDIA_LOCK:
+                    reconcile_frigate(
+                        repository,
+                        target,
+                        media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                        camera_uuid=camera_uuid,
+                    )
             except FrigateApiError as exc:
                 repository.set_frigate_selection_error(target_id, camera_uuid, exc.code)
                 repository.record_frigate_target_check(
@@ -2672,14 +2678,16 @@ def link_camera_identity(camera_uuid: str, request: CameraIdentityRequest,
     # Existing recovery validates all saved RTSP profiles before changing their
     # hosts. Linking metadata alone never declares video or recording healthy.
     def recover_linked():
-        if not MEDIA_LOCK.acquire(blocking=False):
-            return
         try:
-            recover_inventory_addresses(repository, INVENTORY)
+            # Confirmation must survive another source update or health probe.
+            # Wake downstream recovery after the validated source commit, as in
+            # periodic address recovery, rather than waiting for its next poll.
+            with MEDIA_LOCK:
+                results = recover_inventory_addresses(repository, INVENTORY)
+                if any(result.status == "recovered" for result in results):
+                    _queue_frigate_reconciliation(wait=True)
         except Exception as exc:
             LOGGER.warning('Identity recovery deferred (%s)', type(exc).__name__)
-        finally:
-            MEDIA_LOCK.release()
     threading.Thread(target=recover_linked, name='camera-identity-recovery', daemon=True).start()
     return _secured_json({'status': 'linked', 'identity': review})
 

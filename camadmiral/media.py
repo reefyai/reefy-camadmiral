@@ -93,6 +93,8 @@ class RelayHealthMonitor:
         self._frame_probe_retries: set[str] = set()
         self._snapshot_executor = None
         self._pending_snapshots: dict[str, tuple[Any, dict[str, str], float]] = {}
+        self._snapshot_revisions: dict[str, str | None] = {}
+        self._relay_revision: str | None = None
         self._frame_probe_interval = max(0.0, frame_probe_interval)
         self._frame_probe_batch_size = max(1, frame_probe_batch_size)
         self._thumbnail_width = max(1, thumbnail_width)
@@ -179,6 +181,12 @@ class RelayHealthMonitor:
                 if not future.done():
                     continue
                 del self._pending_snapshots[stream_uuid]
+                revision = self._snapshot_revisions.pop(stream_uuid, None)
+                # A shared relay reset invalidates in-flight work even for a
+                # camera whose source address did not change.
+                if revision != self._relay_revision:
+                    print("media: discarded snapshot result from previous relay generation", flush=True)
+                    continue
                 # Unadopt, credential changes and address recovery invalidate
                 # observations started against the previous source.
                 if current.get(stream_uuid) != source:
@@ -228,6 +236,7 @@ class RelayHealthMonitor:
                 rtsp_password=rtsp_password,
             )
             self._pending_snapshots[stream_uuid] = (future, dict(source), now)
+            self._snapshot_revisions[stream_uuid] = self._relay_revision
         collect()
         return results
 
@@ -261,6 +270,16 @@ class RelayHealthMonitor:
         return None
 
     def probe(self, repository: Any) -> dict[str, ProbeResult]:
+        revision = repository.latest_relay_runtime_revision()
+        revision = revision if isinstance(revision, str) else None
+        if revision != self._relay_revision:
+            self._relay_revision = revision
+            self._video_samples.clear()
+            self._failure_samples.clear()
+            self._frame_probe_attempts.clear()
+            self._frame_probe_retries.clear()
+            # Keep old futures in the bounded worker set until they complete;
+            # collect() discards their results and then schedules fresh work.
         self._retry_authentication(repository)
         started = time.monotonic()
         sources = repository.managed_stream_sources(
@@ -446,6 +465,14 @@ def authenticated_rtsp_uri(uri: str, username: str, password: str) -> str:
     return urllib.parse.urlunsplit(parsed._replace(netloc=host, fragment=""))
 
 
+def go2rtc_source_uri(source: dict[str, str]) -> str:
+    """Keep surveillance relays receive-only while retaining camera audio."""
+    # go2rtc enables ONVIF backchannel negotiation unless explicitly disabled.
+    # Broken talkback setup on a camera must not interrupt recording or detection.
+    uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+    return uri + "#backchannel=0"
+
+
 def _request(
     method: str,
     path: str,
@@ -518,7 +545,7 @@ def reconcile_streams(sources: list[dict[str, str]]) -> None:
         if name.startswith("stream_") and name not in desired:
             _request("DELETE", "/api/streams", {"src": name})
     for source in sources:
-        uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+        uri = go2rtc_source_uri(source)
         _request("PUT", "/api/streams", {"name": source["stream_key"], "src": uri})
 
 
@@ -645,7 +672,7 @@ def replace_streams(sources: list[dict[str, str]]) -> None:
     wait_for_go2rtc()
     persisted: dict[str, list[str]] = {}
     for source in sources:
-        uri = authenticated_rtsp_uri(source["uri"], source["username"], source["password"])
+        uri = go2rtc_source_uri(source)
         persisted[source["stream_key"]] = [uri]
     if not persisted:
         return

@@ -3303,5 +3303,69 @@ class AdoptionTests(unittest.TestCase):
         self.assertIsNone(self.repository.saved_credentials)
 
 
+class FrigateRelayRecoverySerializationTests(unittest.TestCase):
+    def test_selected_camera_job_waits_for_shared_relay_changes(self):
+        repository = Mock()
+        entered, called = threading.Event(), threading.Event()
+        media = threading.Lock()
+        ownership = []
+        def selected(_):
+            entered.set()
+            return {"name": "Synthetic", "api_url": "http://frigate.example.test"}
+        def recover(*args, **kwargs):
+            ownership.append(media.locked())
+            called.set()
+        repository.frigate_target.side_effect = selected
+        media.acquire()
+        with patch.object(app_module, "_repository", return_value=repository), \
+             patch.object(app_module, "reconcile_frigate", side_effect=recover), \
+             patch.object(app_module, "FRIGATE_LOCK", threading.Lock()), \
+             patch.object(app_module, "MEDIA_LOCK", media):
+            worker = threading.Thread(target=app_module._sync_frigate_camera_job,
+                                      args=("synthetic-target", "synthetic-camera"))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                recovered_during_source_update = called.wait(0.1)
+            finally:
+                media.release()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(recovered_during_source_update)
+            self.assertEqual([True], ownership)
+
+    def test_downstream_recovery_waits_for_and_excludes_shared_relay_changes(self):
+        repository = Mock()
+        target = FrigateTarget("synthetic-target", "Synthetic", "http://frigate.example.test")
+        entered = threading.Event()
+        called = threading.Event()
+        media = threading.Lock()
+        ownership = []
+        def selected(_):
+            entered.set()
+            return ["synthetic-camera"]
+        def recover(*args, **kwargs):
+            ownership.append(media.locked())
+            called.set()
+        repository.selected_frigate_camera_uuids.side_effect = selected
+        media.acquire()
+        with patch.object(app_module, "_repository", return_value=repository), \
+             patch.object(app_module, "load_frigate_targets", return_value=[target]), \
+             patch.object(app_module, "reconcile_frigate", side_effect=recover), \
+             patch.object(app_module, "FRIGATE_LOCK", threading.Lock()), \
+             patch.object(app_module, "MEDIA_LOCK", media):
+            worker = threading.Thread(target=app_module._reconcile_frigate)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                recovered_during_source_update = called.wait(0.1)
+            finally:
+                media.release()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(recovered_during_source_update)
+            self.assertEqual([True], ownership)
+
+
 if __name__ == "__main__":
     unittest.main()

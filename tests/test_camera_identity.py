@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -196,6 +198,57 @@ class ImportedIdentityTests(unittest.TestCase):
         self.assertEqual(targets[0]['candidate_uuid'], 'physical-device')
         self.assertEqual(len(app_module.RECOVERY_SCAN_ATTEMPTS), 2)
         app_module.RECOVERY_SCAN_ATTEMPTS.clear()
+
+    def test_confirmed_identity_recovery_waits_for_busy_media_and_notifies_readers(self):
+        camera = self.adopt()
+        lock = threading.Lock()
+        entered = threading.Event()
+        def recover(*args):
+            self.assertTrue(lock.locked())
+            entered.set()
+            return [SimpleNamespace(status="recovered")]
+        with patch.object(app_module, "_repository", return_value=self.repository), \
+             patch.object(app_module, "discover_identity", return_value=device("192.168.50.15")), \
+             patch.object(app_module.threading, "Thread") as dispatch, \
+             patch.object(app_module, "MEDIA_LOCK", lock), \
+             patch.object(app_module, "recover_inventory_addresses", side_effect=recover), \
+             patch.object(app_module, "_queue_frigate_reconciliation") as notify:
+            app_module.link_camera_identity(camera["camera_uuid"],
+                app_module.CameraIdentityRequest(address="192.168.50.15", confirm=True,
+                                                endpoint_reference="urn:uuid:synthetic-device"),
+                "link-camera-identity")
+            target = dispatch.call_args.kwargs["target"]
+        # Restore Thread before starting the captured background callback.
+        with patch.object(app_module, "MEDIA_LOCK", lock), \
+             patch.object(app_module, "recover_inventory_addresses", side_effect=recover), \
+             patch.object(app_module, "_queue_frigate_reconciliation") as notify:
+            lock.acquire()
+            worker = threading.Thread(target=target)
+            worker.start()
+            try:
+                self.assertFalse(entered.wait(0.1))
+            finally:
+                lock.release()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(entered.is_set(), "Confirmed recovery was dropped while media was busy")
+            notify.assert_called_once_with(wait=True)
+
+    def test_confirmed_identity_failed_source_recovery_does_not_notify_readers(self):
+        camera = self.adopt()
+        with patch.object(app_module, "_repository", return_value=self.repository), \
+             patch.object(app_module, "discover_identity", return_value=device("192.168.50.15")), \
+             patch.object(app_module.threading, "Thread") as dispatch:
+            app_module.link_camera_identity(camera["camera_uuid"],
+                app_module.CameraIdentityRequest(address="192.168.50.15", confirm=True,
+                                                endpoint_reference="urn:uuid:synthetic-device"),
+                "link-camera-identity")
+            target = dispatch.call_args.kwargs["target"]
+        with patch.object(app_module, "MEDIA_LOCK", threading.Lock()), \
+             patch.object(app_module, "recover_inventory_addresses", return_value=[SimpleNamespace(status="runtime_failed")]), \
+             patch.object(app_module, "_queue_frigate_reconciliation") as notify:
+            target()
+            notify.assert_not_called()
 
     @patch.object(app_module, 'discover_identity')
     def test_identification_requires_review_and_rechecks_device_before_binding(self, discover):

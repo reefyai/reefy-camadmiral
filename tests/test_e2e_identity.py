@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "e2e"))
 from e2e import run as e2e_run
 from e2e import faults
 from e2e import scenarios
-from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback
+from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback, recording_playback_interval, reader_recovery_ready, FRIGATE_CONTROL_FAULT_SCRIPT
 
 
 class FrigateRecordingPlaybackTests(unittest.TestCase):
@@ -54,12 +54,83 @@ class FrigateRecordingPlaybackTests(unittest.TestCase):
         self.assertIsNone(recording_for_playback(rows, 'synthetic-camera', 30))
         self.assertIsNone(recording_for_playback(rows[-1:], 'synthetic-camera', 10))
 
+    def test_overlapping_recordings_do_not_contaminate_selected_source(self):
+        selected = ["selected", "synthetic-camera", "/synthetic/selected.mp4", 10, 20]
+        rows = [
+            ["previous", "synthetic-camera", "/synthetic/previous.mp4", 0, 12],
+            selected,
+            ["next", "synthetic-camera", "/synthetic/next.mp4", 18, 30],
+            ["other", "different-camera", "/synthetic/other.mp4", 0, 100],
+        ]
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE recordings (id TEXT, camera TEXT, start_time REAL, end_time REAL)")
+            connection.executemany("INSERT INTO recordings VALUES (?,?,?,?)",
+                                   [(r[0], r[1], r[3], r[4]) for r in rows])
+            start, end = recording_playback_interval(selected, rows)
+            actual = connection.execute(
+                "SELECT id FROM recordings WHERE camera=? AND "
+                "(start_time BETWEEN ? AND ? OR end_time BETWEEN ? AND ? "
+                "OR (? > start_time AND ? < end_time))",
+                ("synthetic-camera", start, end, start, end, start, end)).fetchall()
+        self.assertEqual(actual, [("selected",)])
+        self.assertGreater(start, 12)
+        self.assertLess(end, 18)
+
+    def test_interior_overlap_keeps_an_exclusive_complete_recording_window(self):
+        selected = ["selected", "synthetic-camera", "/synthetic/new.mp4", 10, 30]
+        overlap = ["overlap", "synthetic-camera", "/synthetic/other.mp4", 14, 25]
+        start, end = recording_playback_interval(selected, [selected, overlap])
+        self.assertGreater(start, 25)
+        self.assertLess(end, 30)
+
+    def test_recovery_rejects_new_segment_fully_covered_by_older_recording(self):
+        old = ["old", "synthetic-camera", "/synthetic/old.mp4", 0, 40]
+        new = ["new", "synthetic-camera", "/synthetic/new.mp4", 20, 30]
+        self.assertIsNone(recording_for_playback([old, new], "synthetic-camera", 10))
+
     def test_playback_requires_a_real_decoded_frame_not_only_a_success_exit(self):
         frame = '0, 0, 0, 1, 1024, ' + 'a' * 64
         self.assertEqual(decoded_frame_hash('#format: frame checksums\n' + frame), 'a' * 64)
         for output in ('', '#format: frame checksums\n', 'not a frame', frame.replace('1024', '0'), frame + '\n' + frame):
             with self.subTest(output=output), self.assertRaises(AssertionError):
                 decoded_frame_hash(output)
+
+
+class FrigateControlFaultFixtureTests(unittest.TestCase):
+    def test_embedded_control_fault_is_valid_standalone_python(self):
+        compile(FRIGATE_CONTROL_FAULT_SCRIPT, "synthetic-frigate-control-fault", "exec")
+
+
+class FrigateReaderReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.ids = {"first": "synthetic-first", "second": "synthetic-second"}
+        self.revisions = {uid: "address-current" for uid in self.ids.values()}
+        self.rows = {key: {"camera_uuid": uid, "relay_address_revision": "address-current",
+                          "relay_runtime_revision": "runtime-current"} for key, uid in self.ids.items()}
+
+    def test_recording_checkpoint_waits_for_both_committed_readers(self):
+        self.assertTrue(reader_recovery_ready(self.rows, self.ids, self.revisions))
+        for key in self.ids:
+            for field, value in (("capture_resume_pending", True), ("target_restart", True),
+                                 ("relay_address_revision", "address-previous"), ("camera_uuid", "unrelated")):
+                with self.subTest(key=key, field=field):
+                    changed = {name: dict(row) for name, row in self.rows.items()}
+                    changed[key][field] = value
+                    self.assertFalse(reader_recovery_ready(changed, self.ids, self.revisions))
+
+    def test_restart_waits_for_a_new_consistent_runtime_for_each_reader(self):
+        previous = {key: "runtime-current" for key in self.ids}
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+        self.rows["first"]["relay_runtime_revision"] = "runtime-new"
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+        self.rows["second"]["relay_runtime_revision"] = "runtime-new"
+        self.assertTrue(reader_recovery_ready(self.rows, self.ids, self.revisions, previous))
+
+    def test_missing_readers_or_generation_cannot_mark_new_runtime_ready(self):
+        self.assertFalse(reader_recovery_ready({}, self.ids, self.revisions))
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, {}))
+        self.rows["first"].pop("relay_runtime_revision")
+        self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions))
 
 
 class IdentityConsumerTelemetryTests(unittest.TestCase):

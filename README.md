@@ -109,6 +109,13 @@ RTSP cameras use the exact IP address or DNS hostname supplied by the operator a
 
 ## Latency
 
+Managed camera connections explicitly disable ONVIF audio backchannel negotiation.
+Video and ordinary camera microphone audio remain available. Implicit two-way talkback
+is not enabled: a camera's broken speaker-channel setup must not interrupt recording
+or detection. This policy applies to new and existing cameras, including address
+recovery and restored configuration. Stable downstream URLs and stored camera data
+do not change; upgrading reconnects the relay sessions.
+
 CamAdmiral relays RTSP video through go2rtc without transcoding. One additional relay hop
 measured `0.04-0.17 ms` median and `0.21-0.47 ms` p95 on an uncongested Linux host,
 consistent with go2rtc's [“zero-delay” design](https://github.com/AlexxIT/go2rtc/blob/v1.9.14/README.md#L14-L23).
