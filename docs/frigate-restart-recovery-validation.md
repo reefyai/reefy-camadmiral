@@ -91,3 +91,9 @@ shared the application's network namespace, so restarting the application
 removed its localhost API path. The isolated restart lab now gives that proxy
 an independent network endpoint and explicitly requires its outage state to
 survive application interruption. Product assertions and deadlines are retained.
+
+The complete gate now runs its independent recording-continuity, broad import,
+and isolated UI labs as separate parallel jobs. Their test commands, fixture
+builders, private Docker isolation, resource limits, deadlines and assertions
+are unchanged. Unit/component checks and the publisher's existing isolated-UI
+step remain in the main gate job. Each lab retains its own normal artifacts.

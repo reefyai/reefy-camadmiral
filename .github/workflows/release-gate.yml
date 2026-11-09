@@ -348,6 +348,131 @@ jobs:
             core.setOutput("e2e", decision.e2e ? "true" : "false");
             core.info(decision.reason);
 
+  recording-continuity:
+    name: Recording continuity
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true'
+    # Never execute code from a fork on Reefy's persistent infrastructure.
+    # Trusted branches use the general runner pool, retaining Docker and browser
+    # caches between release-gate runs.
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
+    timeout-minutes: 60
+    steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        if: needs.classify-changes.outputs.e2e == 'true'
+        uses: ./.github/actions/docker-lab
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Validate Reefy app version
+        run: python3 scripts/validate-release.py
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt -r e2e/requirements.txt
+
+      - name: Verify recording continuity after camera removal
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python3 e2e/recording_continuity.py
+
+      - name: Upload recording continuity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recording-continuity-evidence
+          path: e2e-artifacts/recording-continuity/
+          if-no-files-found: error
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
+  frigate-import:
+    name: Frigate import and history
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true'
+    # Never execute code from a fork on Reefy's persistent infrastructure.
+    # Trusted branches use the general runner pool, retaining Docker and browser
+    # caches between release-gate runs.
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
+    timeout-minutes: 60
+    steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+      - name: Start private Docker lab
+        if: needs.classify-changes.outputs.e2e == 'true'
+        uses: ./.github/actions/docker-lab
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Validate Reefy app version
+        run: python3 scripts/validate-release.py
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt -r e2e/requirements.txt
+
+      - name: Install browser for UI E2E
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python -m playwright install --with-deps webkit
+
+      - name: Verify Frigate import and camera history preservation
+        if: needs.classify-changes.outputs.e2e == 'true'
+        run: python3 e2e/frigate_import.py
+
+      - name: Upload Frigate import evidence
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frigate-import-evidence
+          path: e2e-artifacts/frigate-import/
+          if-no-files-found: ignore
+
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always() && needs.classify-changes.outputs.e2e == 'true'
+        with:
+          name: docker-lab-${{ github.job }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
   release-gate:
     name: Unit, component, and E2E
     needs: classify-changes
@@ -395,22 +520,6 @@ jobs:
       - name: Install browser for UI E2E
         if: needs.classify-changes.outputs.e2e == 'true'
         run: python -m playwright install --with-deps webkit
-
-      - name: Verify recording continuity after camera removal
-        if: needs.classify-changes.outputs.e2e == 'true'
-        run: python3 e2e/recording_continuity.py
-
-      - name: Verify Frigate import and camera history preservation
-        if: needs.classify-changes.outputs.e2e == 'true'
-        run: python3 e2e/frigate_import.py
-
-      - name: Upload Frigate import evidence
-        if: always() && needs.classify-changes.outputs.e2e == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: frigate-import-evidence
-          path: e2e-artifacts/frigate-import/
-          if-no-files-found: ignore
 
       - name: Run isolated E2E lab
         if: needs.classify-changes.outputs.e2e == 'true'
