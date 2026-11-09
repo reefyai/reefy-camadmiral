@@ -28,7 +28,7 @@ function classifyReleaseGate(files, complete = true) {
   );
   const importChanged = complete && files.some(file =>
     [file.filename, file.previous_filename].some(path =>
-      path === "camadmiral/frigate_import.py" || path === "camadmiral/camera_identity.py" ||
+      path === "camadmiral/frigate_import.py" || path === "camadmiral/frigate_batch.py" || path === "e2e/frigate_batch.py" || path === "camadmiral/camera_identity.py" ||
       path === "camadmiral/recovery.py" || path === "e2e/frigate_import.py" || path === "e2e/frigate_direct_auth.py" || path === "e2e/frigate_restart_recovery.py" ||
       (path || "").startsWith("e2e/frigate-restart-recovery") || path === "e2e/frigate_restart_proxy.py" ||
       (path || "").startsWith("e2e/frigate-direct-auth") ||
@@ -39,7 +39,7 @@ function classifyReleaseGate(files, complete = true) {
     [file.filename, file.previous_filename].some(path =>
       path === "scripts/ci_docker.py" ||
       (path || "").startsWith(".github/actions/docker-lab/") ||
-      ["release-gate.yml", "stalled-snapshot.yml", "memory-pressure.yml", "relay-latency.yml"]
+      ["batch-import-regression.yml", "release-gate.yml", "stalled-snapshot.yml", "memory-pressure.yml", "relay-latency.yml"]
         .some(name => path === `.github/workflows/${name}`)
     )
   );

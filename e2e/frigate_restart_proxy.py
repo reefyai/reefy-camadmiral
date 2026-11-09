@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import select
 import socket
 import threading
 import time
@@ -17,7 +18,8 @@ import urllib.request
 LOCK = threading.Lock()
 STATE = {'armed': False, 'unavailable_until': 0.0, 'dropped_replies': 0,
          'unavailable_reads': 0, 'mode': 'disconnect', 'restart_delays': [12],
-         'restart_requests': 0, 'restore_outage_seconds': 0, 'restore_outages': 0}
+         'restart_requests': 0, 'restore_outage_seconds': 0, 'restore_outages': 0,
+         'runtime_delete_fault': None, 'runtime_delete_requests': 0, 'runtime_controls': False}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -31,6 +33,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def websocket_tunnel(self):
+        # Preserve real Frigate runtime controls in the grouped-import lab.
+        # Other recovery scenarios deliberately keep their old fallback path.
+        self.close_connection = True
+        with socket.create_connection(('frigate', 5000), timeout=30) as upstream:
+            request = (self.requestline + '\r\n' + ''.join(
+                name + ': ' + value + '\r\n' for name, value in self.headers.items()) + '\r\n')
+            upstream.sendall(request.encode('latin-1'))
+            while True:
+                ready, _, _ = select.select([self.connection, upstream], [], [], 35)
+                if not ready:
+                    return
+                for source in ready:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    (upstream if source is self.connection else self.connection).sendall(data)
+
     def handle_request(self):
         size = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(size) if size else None
@@ -42,7 +62,9 @@ class Handler(BaseHTTPRequestHandler):
                     assert mode in {'disconnect', 'partial', 'empty', 'ack'}
                     delays = options.get('restart_delays', [12])
                     assert all(0 <= value <= 240 for value in delays)
-                    STATE.update(armed=bool(delays), dropped_replies=0, unavailable_reads=0, mode=mode,
+                    delete_fault = options.get('runtime_delete_fault')
+                    assert delete_fault in {None, 'before', 'after'}
+                    STATE.update(runtime_controls=options.get('runtime_controls', False), runtime_delete_fault=delete_fault, runtime_delete_requests=0, armed=bool(delays), dropped_replies=0, unavailable_reads=0, mode=mode,
                                  restart_delays=list(delays), restart_requests=0, restore_outages=0,
                                  restore_outage_seconds=options.get('restore_outage_seconds', 0))
                 status = {k: v for k, v in STATE.items() if k != 'unavailable_until'}
@@ -62,6 +84,17 @@ class Handler(BaseHTTPRequestHandler):
         if unavailable:
             self.reply(503, b'{"message":"Synthetic restart still in progress"}')
             return
+        if self.headers.get('Upgrade', '').lower() == 'websocket' and STATE['runtime_controls']:
+            self.websocket_tunnel()
+            return
+        runtime_delete = self.command == 'DELETE' and self.path.startswith('/api/go2rtc/streams/')
+        with LOCK:
+            delete_fault = STATE['runtime_delete_fault']
+            if runtime_delete:
+                STATE['runtime_delete_requests'] += 1
+        if runtime_delete and delete_fault == 'before':
+            self.reply(400, b'{"success":false,"message":"Failed to delete stream: yaml: path not exist"}')
+            return
         headers = {k: v for k, v in self.headers.items()
                    if k.lower() not in {'host', 'content-length', 'connection'}}
         request = urllib.request.Request('http://frigate:5000' + self.path,
@@ -73,6 +106,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = exc.code, exc.read()
         except (OSError, urllib.error.URLError):
             self.reply(503, b'{"message":"Synthetic upstream restarting"}')
+            return
+        if runtime_delete and delete_fault == 'after':
+            # The real deletion has happened; fail only the persistence reply.
+            self.reply(400, b'{"success":false,"message":"Failed to delete stream: yaml: path not exist"}')
             return
         with LOCK:
             if self.command == 'POST' and self.path == '/api/restart' and code == 200:

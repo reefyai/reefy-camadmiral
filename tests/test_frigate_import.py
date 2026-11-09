@@ -1167,6 +1167,59 @@ class FrigateImportTests(unittest.TestCase):
         self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
         self.assertEqual(before, self.client.raw_config())
 
+    def test_runtime_delete_with_missing_yaml_is_acknowledged_after_observed_removal(self):
+        _, _, ids = self.source_generation_fixture()
+        self.source_runtime.return_value = {ids['record']: 'record-reconnected', ids['detect']: 'detect-reconnected'}
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        runtime = {name: {'producers': [{'bytes_recv': 1}], 'consumers': [{'id': 'synthetic-reader'}]}
+                   for name in row['managed_streams']}
+        deleted = []
+        def delete(name):
+            deleted.append(name)
+            runtime.pop(name, None)
+            raise FrigateApiError('request_rejected', upstream_status=400,
+                                 upstream_detail='Failed to delete stream: yaml: path not exist')
+        def replace(name, source):
+            runtime[name] = {'producers': [{'bytes_recv': 1}], 'consumers': [{'id': 'synthetic-reader'}]}
+        with patch.object(self.client, 'runtime_streams', side_effect=lambda: copy.deepcopy(runtime)), \
+             patch.object(self.client, 'delete_runtime_stream', side_effect=delete), \
+             patch.object(self.client, 'set_runtime_stream', side_effect=replace):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+            first = list(self.client.operations)
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertEqual(sorted(row['managed_streams']), sorted(deleted))
+        self.assertEqual(first, self.client.operations, 'Acknowledged deletion must not cause repeated reader pauses')
+        self.assertEqual(self.source_runtime.return_value, store.links(self.target.target_id)['legacy_entrance']['relay_source_revisions'])
+        self.assertEqual(restarts, self.client.restart_calls)
+        self.assertEqual(before, self.client.raw_config())
+
+    def test_live_multi_camera_import_has_one_shared_restart_and_no_preflight_camera_connections(self):
+        second = copy.deepcopy(self.camera)
+        second['ffmpeg']['inputs'][0]['path'] = 'rtsp://operator:synthetic-password@192.0.2.11/main'
+        self.client.seed('second_camera', second)
+        probes = []
+        def probe(uri, *credentials):
+            probes.append(uri)
+            self.assertFalse(any(self.client.config()['cameras'][key].get('enabled', True)
+                                 for key in ('legacy_entrance', 'second_camera')),
+                             'Release the selected readers before making any replacement camera connection')
+            return ProbeResult('ready', 1, 'h264', width=640, height=360, fps=10)
+        before = self.client.raw_config()
+        with patch('camadmiral.frigate_import.probe_source', side_effect=probe), \
+             patch('camadmiral.frigate_import._target_host', return_value='192.0.2.20'), \
+             patch('camadmiral.frigate_import.snapshot_frame', return_value=b'frame'):
+            result = execute(self.repo, self.target, self.preview()['id'],
+                             ['legacy_entrance', 'second_camera'], [], None, lambda: True, self.client)
+        self.assertEqual(['applied', 'applied'], [r['status'] for r in result['cameras']])
+        self.assertEqual(1, self.client.restart_calls, 'A batch shares the final Frigate restart')
+        self.assertTrue(probes)
+        for key in before['cameras']:
+            saved = self.client.raw_config()['cameras'][key]
+            self.assertEqual(before['cameras'][key]['record'], saved['record'])
+            self.assertEqual(before['cameras'][key]['motion'], saved['motion'])
+
     def test_missing_yaml_cleanup_is_repaired_with_one_seed_and_delete_retry(self):
         self.execute(self.preview())
         store = ImportStore(self.repo)
