@@ -196,6 +196,10 @@ def driver(stage):
                 if field not in {'ffmpeg', 'live'}:
                     assert current['cameras'][key][field] == value, (key, field)
         initial = links()
+        state['initial_identity_links'] = {key: {
+            'candidate_uuid': value.get('candidate_uuid'), 'mac': value.get('mac'),
+            'endpoint_reference': (value.get('onvif') or {}).get('endpoint_reference')}
+            for key, value in initial.items()}
         state['initial_identity_learned'] = (len(initial) == 2 and
             all(link.get('onvif', {}).get('endpoint_reference') == ENDPOINT for link in initial.values()) and
             len({link['candidate_uuid'] for link in initial.values()}) == 1)

@@ -63,6 +63,46 @@ class ImportedIdentityTests(unittest.TestCase):
         self.assertEqual(scan.call_count, 1)
 
     @patch('camadmiral.camera_identity.scan_explicit_address')
+    def test_channels_share_physical_identity_when_discovery_cache_arrives_between_imports(self, scan):
+        cameras = [self.adopt('channel-one'), self.adopt('channel-two')]
+        scan.return_value = {'devices': [device()]}
+        self.assertTrue(learn_import_identity(self.repository, cameras[0]['camera_uuid'], self.inventory))
+        first = self.repository.camera_identity_links()[cameras[0]['camera_uuid']]
+        # A background scan assigns its own discovery-cache identifier after
+        # the first direct import learned the same freshly verified device.
+        self.inventory.write_text(json.dumps({'devices': [device()]}))
+        self.assertTrue(learn_import_identity(self.repository, cameras[1]['camera_uuid'], self.inventory))
+        links = self.repository.camera_identity_links()
+        self.assertEqual({first['candidate_uuid']}, {link['candidate_uuid'] for link in links.values()})
+        self.assertEqual(2, scan.call_count, 'Each channel still requires fresh physical verification')
+        for camera in cameras:
+            self.assertEqual(camera, self.repository.adoption_for_candidate(camera['candidate_uuid']))
+            self.assertEqual(('viewer', 'synthetic-secret'), self.repository.credentials_for_candidate(camera['candidate_uuid']))
+
+    @patch('camadmiral.camera_identity.scan_explicit_address')
+    def test_discovery_cache_does_not_merge_different_verified_devices(self, scan):
+        first, second = self.adopt('channel-one'), self.adopt('channel-two')
+        scan.return_value = {'devices': [device()]}
+        self.assertTrue(learn_import_identity(self.repository, first['camera_uuid'], self.inventory))
+        other = device(endpoint='urn:uuid:synthetic-other-device', mac='02:00:00:00:50:11')
+        self.inventory.write_text(json.dumps({'devices': [other]}))
+        scan.return_value = {'devices': [other]}
+        self.assertTrue(learn_import_identity(self.repository, second['camera_uuid'], self.inventory))
+        links = self.repository.camera_identity_links()
+        self.assertNotEqual(links[first['camera_uuid']]['candidate_uuid'], links[second['camera_uuid']]['candidate_uuid'])
+
+    @patch('camadmiral.camera_identity.scan_explicit_address')
+    def test_ambiguous_existing_physical_anchors_do_not_select_an_arbitrary_peer(self, scan):
+        cameras = [self.adopt('channel-one'), self.adopt('channel-two'), self.adopt('channel-three')]
+        for camera, identifier in zip(cameras, ('anchor-one', 'anchor-two')):
+            self.repository.bind_camera_identity(camera['camera_uuid'], {**device(), 'candidate_uuid': identifier})
+        before = self.repository.camera_identity_links()
+        scan.return_value = {'devices': [device()]}
+        self.assertFalse(learn_import_identity(self.repository, cameras[2]['camera_uuid'], self.inventory))
+        self.assertEqual(before, self.repository.camera_identity_links())
+        self.assertEqual(cameras[2], self.repository.adoption_for_candidate(cameras[2]['candidate_uuid']))
+
+    @patch('camadmiral.camera_identity.scan_explicit_address')
     def test_ip_or_stale_arp_alone_never_establishes_identity(self, scan):
         self.inventory.write_text(json.dumps({'devices': [device()]}))
         for observations in ([], [{'ip': '192.168.50.10'}], [device(), device()],

@@ -67,3 +67,27 @@ Each E2E command requires its own established private Docker lab. The full
 release gate retains its default parallel scheduling and all existing readiness,
 media, memory, and history assertions. Final fixed-run links and source/artifact
 provenance are recorded in the pull request validation notes.
+
+## Identity-cache race exposed by the complete gate
+
+[Gate 42658038090](https://github.com/reefyai/reefy-camadmiral/actions/runs/42658038090)
+exposed the existing identity assertion when a discovery-cache entry arrived
+between two imports of channels from one physical device. Each fresh scan
+verified the same physical keys, but one link used a deterministic identifier
+and the other used the new cache identifier. The new unit case reproduces the
+mismatch on `dc9550afc88f41be82c66620f965b7257ed9edeb`.
+
+Identity learning now reuses a uniquely verified peer anchor for the same
+physical device. Fresh physical verification remains mandatory, ambiguous
+anchors remain ineligible, and independent logical camera IDs, roles and
+credentials are preserved. Different verified devices remain separate. The
+existing identity E2E assertion and all its deadlines remain unchanged; initial
+anchor metadata is retained for future diagnosis.
+
+The first fixed-run matrix passed slow takeover with decoded new recording,
+slow restoration, operator-edit protection, and retried automatic rollback on
+both versions. Its interruption case exposed a lab topology error: the proxy
+shared the application's network namespace, so restarting the application
+removed its localhost API path. The isolated restart lab now gives that proxy
+an independent network endpoint and explicitly requires its outage state to
+survive application interruption. Product assertions and deadlines are retained.

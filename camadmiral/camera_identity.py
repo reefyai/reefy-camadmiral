@@ -94,6 +94,15 @@ def learn_import_identity(repository, camera_uuid, inventory_path):
     candidate = discover_identity(next(iter(hosts)) or '', inventory_path)
     if candidate is None:
         return False
+    # Discovery can fill its cache between channel imports. Keep the verified
+    # physical anchor already learned by a peer, independent of cache timing.
+    peers = [link for link in repository.camera_identity_links().values()
+             if same_identity(link, candidate)]
+    peer_ids = {link.get('candidate_uuid') for link in peers}
+    if peers:
+        if len(peer_ids) != 1 or not next(iter(peer_ids)) or any(link.get('identity_conflict') for link in peers):
+            return False
+        candidate['candidate_uuid'] = next(iter(peer_ids))
     repository.bind_camera_identity(camera_uuid, candidate)
     return True
 
