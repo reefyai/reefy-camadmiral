@@ -1,0 +1,12 @@
+services:
+  frigate:
+    tmpfs: !reset []
+    image: ${FRIGATE_TEST_IMAGE:-ghcr.io/blakeblackshear/frigate:0.17.2}
+    volumes:
+      - ./fixtures/frigate-direct-auth.yml:/e2e/frigate.yml:ro
+      - direct-auth-cache:/tmp/cache
+  camera-auth:
+    volumes:
+      - ./fixtures/camera-auth-import.yaml:/e2e/camera-auth.yaml:ro
+volumes:
+  direct-auth-cache:

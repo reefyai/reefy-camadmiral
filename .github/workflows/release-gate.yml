@@ -28,6 +28,54 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
+  direct-auth-import:
+    name: Direct authenticated import / ${{ matrix.frigate }}
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        frigate: ["0.17.2", "0.18.2"]
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    container:
+      image: ubuntu:24.04
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
+      FRIGATE_TEST_VERSION: ${{ matrix.frigate }}
+    timeout-minutes: 20
+    steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
+      - name: Verify authenticated direct-input import and history
+        run: python3 e2e/frigate_direct_auth.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: direct-auth-import-${{ matrix.frigate }}
+          path: e2e-artifacts/frigate-direct-auth/
+          if-no-files-found: error
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-direct-auth-${{ matrix.frigate }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
   frigate-identity:
     name: Imported camera address recovery
     needs: classify-changes

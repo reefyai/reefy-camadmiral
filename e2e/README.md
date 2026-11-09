@@ -426,3 +426,23 @@ remain available. The next relay restart must use the real whole-instance
 fallback, with a changed Frigate service start identity, completed reader journals,
 new decodable recordings, exact source dimensions and unchanged historical data.
 This deterministic negative case does not rely on a timing-dependent stop hang.
+
+
+## Authenticated direct-input import regression
+
+`FRIGATE_TEST_VERSION=0.17.2 python3 e2e/frigate_direct_auth.py` and
+`FRIGATE_TEST_VERSION=0.18.2 python3 e2e/frigate_direct_auth.py` use the existing
+isolated Docker lab with real Frigate, a credential-protected synthetic RTSP
+camera, direct Record/Detect inputs, and disposable persistent volumes. The
+release gate runs both versions in separate parallel jobs and retains
+`direct-auth-import-<version>` artifacts on success or failure.
+
+The preflight requires masked `/api/config` input credentials, unmasked admin
+`raw_paths`, successful camera authentication with the fixture password, and
+rejection with a wrong password. The wrong-password import must fail without
+changing saved configuration or adopting a camera. The valid direct-input import
+must succeed, retain roles and unrelated camera settings/groups, preserve
+recording/event/review history, decode both historical and fresh full-resolution
+playback, and keep stable identities on repeat import. Artifacts include exact
+source/application-tree and image provenance, JSON results, logs, and selected
+synthetic playback files. No real device data is used.
