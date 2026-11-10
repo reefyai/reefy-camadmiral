@@ -17,8 +17,10 @@ def main():
     metadata=json.loads(MARKER.read_text())
     assert platform.python_version()==metadata['python_version']
     tools={}
-    for command in [['dockerd','--version'],['docker','--version'],['docker','compose','version'],['docker','buildx','version']]:
+    for command in [['dockerd','--version'],['docker','--version'],['docker','compose','version'],['docker','buildx','version'],['node','--version']]:
         tools[' '.join(command[:-1])]=subprocess.check_output(command,text=True,timeout=10).strip()
+    subprocess.run(['node','.github/scripts/release-source.test.cjs'],check=True,
+                   capture_output=True,text=True,timeout=15)
     with sync_playwright() as browser:
         process=browser.webkit.launch()
         page=process.new_page()

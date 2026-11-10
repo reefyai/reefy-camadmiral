@@ -13,7 +13,7 @@ RUN --mount=type=bind,source=apt-cache,target=/tmp/cached-archives \
     && python3 -c "from pathlib import Path; p=Path('/etc/apt/sources.list.d/ubuntu.sources'); p.write_text(p.read_text().replace('http://archive.ubuntu.com/', 'https://archive.ubuntu.com/').replace('http://security.ubuntu.com/', 'https://security.ubuntu.com/'))" \
     && python3 /opt/camadmiral-ci/scripts/ci_packages.py update \
     && CAMADMIRAL_CI_PACKAGE_COMMAND_SECONDS=300 CAMADMIRAL_CI_PACKAGE_BUDGET_SECONDS=2100 \
-       python3 /opt/camadmiral-ci/scripts/ci_packages.py install -y --no-install-recommends docker.io docker-compose-v2 docker-buildx \
+       python3 /opt/camadmiral-ci/scripts/ci_packages.py install -y --no-install-recommends docker.io docker-compose-v2 docker-buildx nodejs \
     && mv /opt/camadmiral-ci/docker-clean /etc/apt/apt.conf.d/docker-clean \
     && rm -f /var/cache/apt/archives/*.deb
 

@@ -272,7 +272,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('page.reload(wait_until="domcontentloaded")', browser)
         self.assertIn('data-camera-filter="blocked"', browser)
         self.assertIn('get_by_role("button", name="Unblock")', browser)
-        self.assertIn("python -m playwright install --with-deps webkit", gate)
+        self.assertIn("python -m playwright install webkit", gate)
+        self.assertIn("python3 scripts/ci_tools.py", gate)
+        tools = (ROOT / "ci/tools.Dockerfile").read_text()
+        self.assertIn("playwright install --with-deps webkit", tools)
 
     def test_e2e_covers_direct_rtsp_camera_isolation(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()

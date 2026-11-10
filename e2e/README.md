@@ -549,7 +549,7 @@ no lock error is treated as a successful import or hidden by retrying assertions
 ## Prepared CI tools
 
 Trusted CI jobs use a digest-pinned `ghcr.io/reefyai/camadmiral-ci` image. It
-contains the existing Ubuntu base, Docker clients and daemon, Python 3.13.18,
+contains the existing Ubuntu base, Docker clients and daemon, Node, Python 3.13.18,
 the exact runtime and E2E Python requirements, and Playwright WebKit with its
 system dependencies. Every job checks the dependency hashes and installed
 Python/browser files before starting its own empty private Docker daemon.
