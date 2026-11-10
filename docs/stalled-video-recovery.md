@@ -65,3 +65,12 @@ falls back to a hosted runner or uses the shared host Docker engine.
 Evidence in `e2e-artifacts/stall-recovery/` records test/application commit and
 application-tree provenance, the functional result, fault counters, app and
 recorder start times, and the normal synthetic lab logs on both pass and failure.
+
+
+The unchanged-application baseline is `0106d5d92b6e5926381cc2c3bf1fde9f9226cd81`.
+Test source `fe4ef68abf92da5a22b3d9ed1f88675ebc5e325e`, run 42814240307,
+artifact `stall-recovery-evidence`, reproduces failed fresh video decoding while
+the proxy confirms dropped video packets and continuing audio on frozen sessions.
+Earlier fixture-development runs without confirmed audio are not baseline proof.
+Final fixed validation uses the same committed black-box regression, including
+negative outage, settings preservation and historical/new recording playback.

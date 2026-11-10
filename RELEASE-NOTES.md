@@ -1,3 +1,18 @@
+# CamAdmiral v2026.11.10-01
+
+Recover video that stops advancing while its relay transport remains active.
+The bounded watchdog verifies a failed decoded-frame check before restarting
+only the shared relay, then verifies decoded video after recovery. Persistent
+limits prevent repeated shared interruptions; silent cameras keep native retries.
+Camera identities, settings, credentials and recording history are preserved.
+
+Add timestamped, credential-free packet counters, restart decisions and decoded
+recovery evidence for diagnosis. The synthetic end-to-end lab freezes video while
+audio continues, requires automatic recovery and decodable old/new recordings,
+and verifies that an offline camera does not reset unrelated healthy streams.
+
+Includes the single-input import corrections from v2026.11.10-00.
+
 # CamAdmiral v2026.11.10-00
 
 Fix Frigate import readiness for cameras with a single input whose saved roles
