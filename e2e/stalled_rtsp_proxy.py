@@ -20,16 +20,28 @@ session_denials = 0
 fail_available = 0
 stall_available = False
 stalled_sessions = 0
+video_connections = {}
+frozen_video_packets = 0
 
 
 async def control(reader, writer):
     global stalled, stalled_path, delay_until, rejected_path, fail_available, stall_available
     line = await reader.readline()
     path = line.split()[1]
-    if path == b'/stall':
+    if path == b'/freeze-current-video':
+        for connection in video_connections.values():
+            connection['frozen'] = True
+    elif path == b'/freeze-all-video':
+        for connection in video_connections.values():
+            connection['frozen'] = True
+        os.environ['FREEZE_ALL_VIDEO'] = '1'
+    elif path == b'/stall':
         stalled = True
     elif path == b'/resume':
         stalled = False
+        os.environ.pop('FREEZE_ALL_VIDEO', None)
+        for connection in video_connections.values():
+            connection['frozen'] = False
         stalled_path = None
         delay_until = 0.0
         rejected_path = None
@@ -53,7 +65,8 @@ async def control(reader, writer):
         body = json.dumps({'active': active_streams, 'describes': describes,
                            'sessions': sessions, 'session_limit': session_limit,
                            'session_denials': session_denials, 'stalled_sessions': stalled_sessions,
-                           'fail_available': fail_available}).encode()
+                           'fail_available': fail_available, 'frozen_video_packets': frozen_video_packets,
+                           'video_sessions': len(video_connections)}).encode()
     writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: '
                  + str(len(body)).encode() + b'\r\n\r\n' + body)
     await writer.drain()
@@ -62,7 +75,9 @@ async def control(reader, writer):
 
 
 async def relay(reader, writer):
-    global dropped, session_denials, fail_available, stall_available, stalled_sessions
+    global dropped, session_denials, fail_available, stall_available, stalled_sessions, frozen_video_packets
+    connection = {'frozen': bool(os.environ.get('FREEZE_ALL_VIDEO'))}
+    video_connections[id(writer)] = connection
     upstream = None
     task = None
     stream_name = ''
@@ -136,6 +151,9 @@ async def relay(reader, writer):
             if first == b'$':
                 header = await source.readexactly(3)
                 payload = await source.readexactly(int.from_bytes(header[1:], 'big'))
+                if (connection['frozen'] and len(payload) >= 12 and payload[1] & 127 == 96):
+                    frozen_video_packets += 1
+                    continue
                 if stalled or stream_name == stalled_path or time.monotonic() < delay_until or hold_media:
                     dropped += 1
                     continue
@@ -150,6 +168,7 @@ async def relay(reader, writer):
     except (OSError, asyncio.IncompleteReadError, ConnectionError):
         pass
     finally:
+        video_connections.pop(id(writer), None)
         if counted_name is not None:
             active_streams[counted_name] -= 1
         if slot_name is not None:
