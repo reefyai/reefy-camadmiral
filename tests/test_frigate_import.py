@@ -65,6 +65,7 @@ class FrigateImportTests(unittest.TestCase):
         self.target = FrigateTarget('synthetic-target', 'Synthetic target', 'http://frigate:5000')
         self.client = ImportClient(self.target)
         self.source_runtime = self.enterContext(patch('camadmiral.frigate_import.source_connection_revisions', create=True, return_value={}))
+        self.enterContext(patch('camadmiral.frigate_import.snapshot_frame', return_value=b'fresh-synthetic-frame'))
         self.camera = {'friendly_name': 'Original entrance', 'enabled': True,
                        'ffmpeg': {'inputs': [{'path': 'rtsp://operator:synthetic-password@192.0.2.10/main',
                                              'roles': ['record', 'detect']}]},
@@ -286,6 +287,54 @@ class FrigateImportTests(unittest.TestCase):
                 sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
         self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', False), self.client.operations)
         self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', True), self.client.operations)
+
+    def test_unavailable_source_does_not_block_a_healthy_peer(self):
+        from camadmiral.media import SnapshotError
+        other = copy.deepcopy(self.camera)
+        other['ffmpeg']['inputs'][0]['path'] = 'rtsp://operator:synthetic-password@192.0.2.11/main'
+        self.client.seed('second_camera', other)
+        self.execute(self.preview(), selected=['legacy_entrance', 'second_camera'])
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        failed_keys = {source['stream_key'] for source in self.repo.managed_stream_sources()
+                       if source['camera_uuid'] == row['camera_uuid']}
+        def frame(key, **kwargs):
+            if key in failed_keys:
+                raise SnapshotError('synthetic unavailable source')
+            return b'fresh-frame'
+        before = self.client.raw_config()
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'), \
+             patch('camadmiral.frigate_import.snapshot_frame', side_effect=frame):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        touched = {op[1] for op in self.client.operations if op[0] == 'set_runtime_camera_enabled'}
+        self.assertEqual({'second_camera'}, touched)
+        self.assertEqual(before, self.client.raw_config())
+
+    def test_unused_record_stream_is_not_probed_for_disabled_recording(self):
+        self.source_generation_fixture()
+        self.client.current_config['cameras']['legacy_entrance']['record']['enabled'] = False
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        sources = self.repo.managed_stream_sources()
+        detect = next(source for source in sources if source['stream_uuid'] == row['stream_map'][row['roles']['detect']])
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'), \
+             patch('camadmiral.frigate_import.snapshot_frame', return_value=b'fresh-frame') as snapshot:
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertEqual([detect['stream_key']], [call.args[0] for call in snapshot.call_args_list])
+
+    def test_restart_diagnostics_identify_the_cause_without_source_credentials(self):
+        import contextlib
+        import io
+        self.capped(self.preview())
+        output = io.StringIO()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'), \
+             patch.object(self.client, 'set_runtime_camera_enabled', side_effect=FrigateApiError('target_unavailable')), \
+             contextlib.redirect_stdout(output):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        log = output.getvalue()
+        self.assertIn('"reason": "runtime_pause_failed"', log)
+        self.assertIn('"event": "restart_verified"', log)
+        self.assertNotIn('synthetic-password', log)
+        self.assertNotIn('rtsp://', log)
 
     def test_source_reconnect_refreshes_both_readers_and_acknowledges_post_refresh_connections(self):
         job, adopted, ids = self.source_generation_fixture()

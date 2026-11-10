@@ -497,3 +497,13 @@ Their Ubuntu 24.04 job image is pinned to the same manifest digest previously
 pulled from Docker Hub. Only each job's disposable Docker daemon gets the HTTPS
 registry-mirror setting; no runner host daemon configuration changes. This avoids
 Docker Hub throttling while retaining parallelism and the resource-limit gate.
+
+
+The application in run 42820632922 also reproduced a
+previously timing-sensitive address-recovery failure: one unavailable unanchored
+source triggered downstream recovery while holding the media lock, delaying its
+independent identity correction. The existing identity lab's 240-second recovery
+baseline is retained. Reader preflight now requires fresh upstream video before
+pausing capture or entering restart fallback, leaving its revision pending when
+source video or snapshot capacity is unavailable. Unit coverage verifies deferred
+retry, healthy peers, disabled recording and credential-free fallback diagnostics.
