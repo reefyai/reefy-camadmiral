@@ -371,8 +371,13 @@ def build_managed(repository, row, host):
     inputs = []
     # Keep all original non-source tuning. Split a combined Record/Detect
     # input so later role changes do not require changing capture topology.
-    for inp in managed.get('ffmpeg', {}).get('inputs', []):
-        assigned = inp.get('roles', [])
+    original_inputs = managed.get('ffmpeg', {}).get('inputs', [])
+    for inp in original_inputs:
+        assigned = set(inp.get('roles') or [])
+        if len(original_inputs) == 1:
+            # The saved role list omits Frigate's implicit Record/Detect pair.
+            # Both explicit readers are needed after the input is split.
+            assigned.update(('record', 'detect'))
         for role in ('record', 'detect'):
             if role in assigned:
                 changed = copy.deepcopy(inp)

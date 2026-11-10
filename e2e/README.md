@@ -470,3 +470,23 @@ Only image acquisition is retried; lab startup and assertions still execute once
 The wrapper retains the job's private daemon and credential route and never
 uses the shared host engine. Synthetic retry regressions are registered in
 `tests/test_ci_image_retry.py`.
+
+
+## Single-input role normalization regression
+
+The grouped-import and slow-restart fixtures save one input with Detect only and
+another with Record only. Both real Frigate versions add the missing role at
+runtime. The labs require successful shared handoff, explicit Record and Detect
+readers, original-setting restoration, preserved history and decoded recordings.
+Run the established parallel matrix with `release-gate.yml` and `batch_only=true`,
+or the complete gate for release qualification.
+
+Baseline test source `3c5ead5fee4cab329661d104c0fc3772f765c8c5` retains the unchanged
+application tree. Run 42815857222, artifact `batch-batch-0.18.2`, reproduces
+`source_unavailable` before adoption with unchanged original settings. The first
+partial fix passed that check but run 42816263915 reproduced
+`capture_verification_failed`: its Detect-only input did not consume the managed
+Record alias. `tests/test_import_input_roles.py` also reproduces that conversion
+failure before the fix, including audio preservation. Final validation must use
+the same committed fixtures against the complete fix. Results and Docker image
+provenance are retained in each matrix job's normal artifacts.

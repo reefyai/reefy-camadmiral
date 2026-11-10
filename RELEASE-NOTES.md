@@ -2,7 +2,8 @@
 
 Fix Frigate import readiness for cameras with a single input whose saved roles
 omit Record or Detect. Frigate automatically assigns both roles at runtime;
-CamAdmiral now compares those equivalent configurations correctly. Source URLs,
+CamAdmiral now compares those equivalent configurations correctly and preserves
+both roles when splitting the managed capture inputs. Source URLs,
 credentials, audio roles and multi-input role assignments remain protected.
 Original saved settings and recording history are preserved for restoration.
 
