@@ -458,3 +458,15 @@ Both versions also save a new literal-path camera with restart pending. Its
 runtime API entry must still be absent, while its trusted saved configuration
 remains available and the import preview must accept it without leaking
 credentials.
+
+## Transient image-transfer failures
+
+The private CI Docker wrapper prefetches missing images for the selected Compose
+services before startup. It reuses the Reefy CI ISP-transfer policy: at most six
+pulls, 90 seconds per attempt, and 5/10/15/20/25-second backoffs. Docker's TLS and
+layer verification stay enabled. Access, missing-image, certificate-trust and disk
+errors fail immediately. Existing verified or locally built images are retained.
+Only image acquisition is retried; lab startup and assertions still execute once.
+The wrapper retains the job's private daemon and credential route and never
+uses the shared host engine. Synthetic retry regressions are registered in
+`tests/test_ci_image_retry.py`.

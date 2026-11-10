@@ -59,6 +59,42 @@ class PrivateDockerTests(unittest.TestCase):
         self.assertIsNone(observed['host'])
         self.assertEqual(environment['DOCKER_HOST'], 'unix:///synthetic-parent.sock')
 
+    def test_wrapper_prefetch_retries_tls_without_repeating_lab_startup(self):
+        root = prepare(self.environment)
+        binary = self.root / 'synthetic-docker-download'
+        state = self.root / 'transfer-state'
+        binary.write_text("""#!/usr/bin/env python3
+import json,pathlib,sys
+state=pathlib.Path(""" + repr(str(state)) + """)
+args=sys.argv[1:]
+while args and args[0] in ('--config','--host'):args=args[2:]
+if args[:2]==['compose','config']:
+ print(json.dumps({'services':{'application':{'image':'synthetic/image:1'}}}));sys.exit(0)
+if args[:2]==['image','inspect']:
+ sys.exit(0 if state.with_name('verified').exists() else 1)
+if args[:1]==['pull']:
+ count=int(state.read_text())+1 if state.exists() else 1
+ state.write_text(str(count))
+ if count==1:
+  print('local error: tls: bad record MAC',file=sys.stderr);sys.exit(1)
+ state.with_name('verified').write_text('verified');sys.exit(0)
+if args[:2]==['compose','up']:
+ startup=state.with_name('startups')
+ startup.write_text(str(int(startup.read_text())+1 if startup.exists() else 1))
+ if state.with_name('verified').exists():sys.exit(0)
+ print('local error: tls: bad record MAC',file=sys.stderr);sys.exit(1)
+sys.exit(99)
+""")
+        binary.chmod(0o755)
+        wrapper=self.root/'docker'
+        wrapper.write_text(client_wrapper(root,binary));wrapper.chmod(0o755)
+        result=subprocess.run([str(wrapper),'compose','up','-d','application'],
+                              capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(state.read_text(),'2')
+        self.assertEqual(state.with_name('startups').read_text(),'1')
+        self.assertIn('CI image transfer retry',result.stdout)
+
     def test_cleanup_refuses_another_jobs_data_and_preserves_it(self):
         root = prepare(self.environment)
         sentinel = root / 'retained.txt'
