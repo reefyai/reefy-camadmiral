@@ -252,6 +252,41 @@ class FrigateImportTests(unittest.TestCase):
         self.client.config_writes.clear()
         return job, adopted, ids
 
+    def test_unavailable_relay_video_defers_reader_refresh_without_acknowledging_revision(self):
+        from camadmiral.media import SnapshotError
+        self.capped(self.preview())
+        before = self.client.raw_config()
+        revision = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision']
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'), \
+             patch('camadmiral.frigate_import.snapshot_frame', side_effect=SnapshotError('synthetic unavailable source')):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertEqual([], self.client.operations, 'An unavailable source must not pause readers or restart their recorder')
+        self.assertEqual(before, self.client.raw_config())
+        self.assertEqual(revision, ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision'])
+
+    def test_snapshot_capacity_does_not_pause_readers_or_trigger_global_recovery(self):
+        from camadmiral.media import SnapshotBusyError
+        self.capped(self.preview())
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'), \
+             patch('camadmiral.frigate_import.snapshot_frame', side_effect=SnapshotBusyError('synthetic busy')):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertEqual([], self.client.operations)
+
+    def test_deferred_reader_refresh_resumes_after_source_decodes(self):
+        from camadmiral.media import SnapshotError
+        self.capped(self.preview())
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'synthetic-new-epoch'):
+            with patch('camadmiral.frigate_import.snapshot_frame', side_effect=SnapshotError('synthetic unavailable source')):
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+            self.client.operations.clear()
+            with patch('camadmiral.frigate_import.snapshot_frame', return_value=b'fresh-frame'):
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', False), self.client.operations)
+        self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', True), self.client.operations)
+
     def test_source_reconnect_refreshes_both_readers_and_acknowledges_post_refresh_connections(self):
         job, adopted, ids = self.source_generation_fixture()
         before = self.client.raw_config()
