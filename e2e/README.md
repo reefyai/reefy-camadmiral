@@ -95,6 +95,28 @@ Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay
 under `tests/`. They may use mocks to isolate a single behavior. Real synthetic
 media and multi-process failure workflows belong here.
 
+### Exact-source image publication
+
+The publisher accepts an optional full `application_ref` commit for manual
+dispatch. Its complete release gate must have succeeded, including the isolated
+E2E job. Workflow-only maintenance does not change the application checkout or
+reuse another application's qualification. Without an override, the workflow
+continues to qualify its own commit.
+
+The application checkout supplies VERSION, manifest validation and Docker build
+context. Image version/revision labels and the runtime revision environment name
+that exact source. Publication checks existing tags before writing an image,
+never moves tags or overwrites existing version images, and creates a missing
+version tag using the workflow token after successful publication. Retrying a
+completed publication verifies matching version/source labels and retains the
+existing image. Registry access, checksum and provenance errors fail closed.
+
+`node .github/scripts/release-source.test.cjs` tests exact-source qualification,
+required E2E evidence, missing tags, conflicting tags and non-404 lookup errors.
+`python3 -m unittest discover -s tests -p test_release_image.py -v` tests immutable
+publication, registry failure boundaries and verified transfer retries. Neither
+test requires registry credentials or mutates a repository.
+
 ## Media memory regression
 
 ### Stalled snapshot cleanup
@@ -426,3 +448,143 @@ remain available. The next relay restart must use the real whole-instance
 fallback, with a changed Frigate service start identity, completed reader journals,
 new decodable recordings, exact source dimensions and unchanged historical data.
 This deterministic negative case does not rely on a timing-dependent stop hang.
+
+
+## Authenticated direct-input import regression
+
+`FRIGATE_TEST_VERSION=0.17.2 python3 e2e/frigate_direct_auth.py` and
+`FRIGATE_TEST_VERSION=0.18.2 python3 e2e/frigate_direct_auth.py` use the existing
+isolated Docker lab with real Frigate, a credential-protected synthetic RTSP
+camera, direct Record/Detect inputs, and disposable persistent volumes. The
+release gate runs both versions in separate parallel jobs and retains
+`direct-auth-import-<version>` artifacts on success or failure.
+
+The preflight requires masked `/api/config` input credentials, unmasked admin
+`raw_paths`, successful camera authentication with the fixture password, and
+rejection with a wrong password. The wrong-password import must fail without
+changing saved configuration or adopting a camera. The valid direct-input import
+must succeed, retain roles and unrelated camera settings/groups, preserve
+recording/event/review history, decode both historical and fresh full-resolution
+playback, and keep stable identities on repeat import. Artifacts include exact
+source/application-tree and image provenance, JSON results, logs, and selected
+synthetic playback files. No real device data is used.
+
+The direct-input driver also boots the unchanged baseline application first,
+reproduces its real authentication failure, then upgrades the application while
+keeping its database and the existing failed job ID. Retrying that exact job
+without a new preview must recover credentials from the guarded admin paths.
+The fixed application must still reject genuinely incorrect credentials. This
+models the browser reconnecting to a failed job after an application upgrade.
+
+Both versions also save a new literal-path camera with restart pending. Its
+runtime API entry must still be absent, while its trusted saved configuration
+remains available and the import preview must accept it without leaking
+credentials.
+
+## Transient image-transfer failures
+
+The private CI Docker wrapper prefetches missing images for the selected Compose
+services before startup. It reuses the Reefy CI ISP-transfer policy: at most six
+pulls, 90 seconds per attempt, and 5/10/15/20/25-second backoffs. Docker's TLS and
+layer verification stay enabled. Access, missing-image, certificate-trust and disk
+errors fail immediately. Existing verified or locally built images are retained.
+Only image acquisition is retried; lab startup and assertions still execute once.
+The wrapper retains the job's private daemon and credential route and never
+uses the shared host engine. Synthetic retry regressions are registered in
+`tests/test_ci_image_retry.py`.
+
+
+## Single-input role normalization regression
+
+The grouped-import and slow-restart fixtures save one input with Detect only and
+another with Record only. Both real Frigate versions add the missing role at
+runtime. The labs require successful shared handoff, explicit Record and Detect
+readers, original-setting restoration, preserved history and decoded recordings.
+Run the established parallel matrix with `release-gate.yml` and `batch_only=true`,
+or the complete gate for release qualification.
+
+Baseline test source `3c5ead5fee4cab329661d104c0fc3772f765c8c5` retains the unchanged
+application tree. Run 42815857222, artifact `batch-batch-0.18.2`, reproduces
+`source_unavailable` before adoption with unchanged original settings. The first
+partial fix passed that check but run 42816263915 reproduced
+`capture_verification_failed`: its Detect-only input did not consume the managed
+Record alias. `tests/test_import_input_roles.py` also reproduces that conversion
+failure before the fix, including audio preservation. Final validation must use
+the same committed fixtures against the complete fix. Results and Docker image
+provenance are retained in each matrix job's normal artifacts.
+
+
+The isolated jobs also reuse Reefy's existing Google Docker Hub cache policy.
+Their Ubuntu 24.04 job image is pinned to the same manifest digest previously
+pulled from Docker Hub. Only each job's disposable Docker daemon gets the HTTPS
+registry-mirror setting; no runner host daemon configuration changes. This avoids
+Docker Hub throttling while retaining parallelism and the resource-limit gate.
+
+
+The application in run 42820632922 also reproduced a
+previously timing-sensitive address-recovery failure: one unavailable unanchored
+source triggered downstream recovery while holding the media lock, delaying its
+independent identity correction. The existing identity lab's 240-second recovery
+baseline is retained. Reader preflight now requires fresh upstream video before
+pausing capture or entering restart fallback, leaving its revision pending when
+source video or snapshot capacity is unavailable. Unit coverage verifies deferred
+retry, healthy peers, disabled recording and credential-free fallback diagnostics.
+
+
+## Database lifetime during concurrent requests
+
+The unchanged candidate `7d9e8e9f49efe0c1cbb5c4b571857cd86eb9f43d` failed the
+existing authenticated-import lab in run 42829838994 with a SQLite locked read and
+an import rollback. The repository opens a short connection per operation.
+SQLite documents an exclusive cleanup window when the last WAL connection closes:
+https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
+
+The supervisor now retains one idle connection until all child processes stop.
+Worker transactions remain independent and keep the existing timeout. The real
+SQLite lifecycle regression fails on the prior supervisor and verifies concurrent
+reads, writer exclusion, clean shutdown and database integrity with the fix.
+The existing real import/history and upgrade scenarios remain the final E2E gate;
+no lock error is treated as a successful import or hidden by retrying assertions.
+
+## Prepared CI tools
+
+Trusted CI jobs use a digest-pinned `ghcr.io/reefyai/camadmiral-ci` image. It
+contains the existing Ubuntu base, Docker clients and daemon, Node, Python 3.13.18,
+the exact runtime and E2E Python requirements, and Playwright WebKit with its
+system dependencies. Every job checks the dependency hashes and installed
+Python/browser files before starting its own empty private Docker daemon.
+The isolation, resource checks, test scenarios and parallel execution stay
+the same. No shared host Docker socket or writable test state is reused.
+
+After changing either requirements file, rebuild with the `Build prepared CI
+tools` workflow, verify `e2e/prepared_tools.py` passes against the resulting
+image, and update the workflow digest pins together with their policy check
+in `tests/test_ci_docker.py`. Qualify the resulting source with the complete
+release gate. Dependency mismatch fails before tests instead of silently
+falling back to network installation.
+
+The image builder uses bounded package acquisition. Only index and package
+downloads are retried after transient transfer failures; package configuration
+runs once. Certificate, signature, authentication and disk failures stop
+immediately. Reproduce the transfer failure boundaries with:
+
+```console
+python -m unittest discover -s tests -p 'test_ci_*.py' -v
+```
+
+The acquisition wrapper also prefetches literal Dockerfile `FROM` images for
+selected Compose build services through the same job-private Docker route and
+bounded image-pull policy. Internal build stages, `scratch` and unresolved build
+arguments stay with BuildKit. The build, application startup and assertions each
+execute once; only external image acquisition can retry.
+
+The real base-layer failure is retained in relay benchmark run 42865738488.
+Test-only baseline `aa4c0f4` reproduces two failures with:
+
+```console
+python -m unittest discover -s tests -p test_ci_image_retry.py -v
+```
+
+The fixed helper passes the same ten checks, including the existing finite
+retry budget, certificate/authentication rejection, cache reuse and private
+endpoint checks. Full release qualification retains the real media scenarios.

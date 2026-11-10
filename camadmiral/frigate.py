@@ -146,6 +146,10 @@ class FrigateClient:
             raise ValueError("payload and raw_body are mutually exclusive")
         body = None
         headers = {"Accept": "application/json"}
+        if method == "GET":
+            # Frigate caches successful API reads for five seconds. Cutover
+            # guards and observed alias deletion require current server state.
+            headers["X-Cache-Bypass"] = "1"
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"

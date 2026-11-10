@@ -14,6 +14,46 @@ class DiscoveryUiTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.html = (ROOT / "camadmiral" / "index.html").read_text(encoding="utf-8")
 
+    def test_import_submission_retries_only_busy_without_changing_selection(self) -> None:
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('Node.js is not installed')
+        start = self.html.index('    async function postFrigateImportWhenAvailable(')
+        end = self.html.index('\n    }', start) + len('\n    }')
+        helper = self.html[start:end]
+        script = r"""
+const assert = require('node:assert/strict');
+async function check(responses, {abort = false, timeout = false} = {}) {
+  let active = true, now = 0, calls = [], waits = 0;
+  const performance = {now: () => now};
+  const setTimeout = (callback, delay) => {now += timeout ? 90000 : delay; callback();};
+  const fetch = async (url, options) => {
+    calls.push({url, ...options});
+    const [status, value] = responses[Math.min(calls.length - 1, responses.length - 1)];
+    return {status, ok: status < 300, json: async () => value};
+  };
+HELPER
+  const payload = {selected: ['synthetic-pending'], keep_existing: [], allow_restart: true};
+  let result, error;
+  try {result = await postFrigateImportWhenAvailable('/synthetic/import/job', payload,
+    () => active, () => {waits++; if (abort) active = false;});} catch (failure) {error = failure;}
+  for (const call of calls) assert.deepEqual(JSON.parse(call.body), payload);
+  return {result, error, calls, waits};
+}
+(async () => {
+  const busy = [409, {status: 'sync_busy'}], accepted = [202, {id: 'synthetic-job', status: 'running'}];
+  let value = await check([busy, accepted]);
+  assert.equal(value.calls.length, 2); assert.equal(value.result.id, 'synthetic-job'); assert.equal(value.waits, 1);
+  for (const denied of [[403, {status: 'authorization_required'}], [409, {status: 'restart_confirmation_required'}]]) {
+    value = await check([denied]); assert.equal(value.calls.length, 1); assert(value.error); assert.equal(value.waits, 0);
+  }
+  value = await check([busy], {abort: true}); assert.equal(value.calls.length, 1); assert(value.error);
+  value = await check([busy], {timeout: true}); assert.equal(value.calls.length, 2); assert(value.error);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+""".replace('HELPER', helper)
+        completed = subprocess.run([node, '-'], input=script, text=True, capture_output=True)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
     def test_inline_javascript_parses(self) -> None:
         node = shutil.which("node")
         if node is None:

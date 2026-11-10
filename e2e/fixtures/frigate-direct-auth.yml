@@ -1,0 +1,58 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+ffmpeg:
+  output_args:
+    record: preset-record-generic
+record:
+  enabled: true
+  continuous:
+    days: 1
+detect:
+  fps: 5
+cameras:
+  direct_authenticated:
+    friendly_name: Synthetic authenticated entrance
+    ffmpeg:
+      inputs:
+        - path: rtsp://operator:synthetic-camera-secret@camera-auth:8554/live
+          roles: [record]
+        - path: rtsp://operator:synthetic-camera-secret@camera-auth:8554/sub
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+    objects:
+      track: [person]
+    zones:
+      Synthetic_entry:
+        coordinates: 0,0,1,0,1,1,0,1
+  denied_camera:
+    friendly_name: Synthetic denied source
+    ffmpeg:
+      inputs:
+        - path: rtsp://operator:synthetic-wrong-secret@camera-auth:8554/live
+          roles: [record, detect]
+    detect:
+      width: 1280
+      height: 720
+  untouched_camera:
+    friendly_name: Synthetic unrelated source
+    ffmpeg:
+      inputs:
+        - path: rtsp://camera-open:8554/main
+          roles: [record, detect]
+    detect:
+      width: 1280
+      height: 720
+camera_groups:
+  Synthetic_group:
+    order: 1
+    icon: LuCamera
+    cameras: [direct_authenticated, untouched_camera]

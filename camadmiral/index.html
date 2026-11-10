@@ -1307,6 +1307,25 @@
       renderDiscoveryNetworks();
     }
 
+    async function postFrigateImportWhenAvailable(url, payload, isActive, onWaiting) {
+      const deadline = performance.now() + 90000;
+      const body = JSON.stringify(payload);
+      while (isActive()) {
+        const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "import-frigate-cameras"}, body});
+        if (response.status === 409) {
+          const result = await response.json();
+          if (result.status === "sync_busy" && performance.now() < deadline) {
+            onWaiting();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+        }
+        if (!response.ok) throw new Error(response.status === 409 ? "Synchronization is busy. Try again shortly." : "Import could not be started.");
+        return await response.json();
+      }
+      throw new Error("Import was not submitted. Reopen import to continue.");
+    }
+
     async function loadDiscoveryNetworks() {
       scanNetworkSettingsStatus.className = "scan-network-settings-status";
       setText(scanNetworkSettingsStatus, "Loading networks...");
@@ -2456,9 +2475,10 @@
         submitting = true;
         render(false);
         try {
-          const response = await fetch(`${endpoint}/import/${encodeURIComponent(job.id)}`, {method: "POST", headers: {"Content-Type": "application/json", "X-CamAdmiral-Action": "import-frigate-cameras"}, body: JSON.stringify({selected: lastSelected, keep_existing: lastKeep, allow_restart: restart.checked})});
-          if (!response.ok) throw new Error(response.status === 409 ? "Synchronization is busy. Try again shortly." : "Import could not be started.");
-          job = await response.json();
+          job = await postFrigateImportWhenAvailable(`${endpoint}/import/${encodeURIComponent(job.id)}`,
+            {selected: lastSelected, keep_existing: lastKeep, allow_restart: restart.checked},
+            () => content.isConnected && appModalKind === "frigate-import",
+            () => setMessage("Waiting for the current camera update to finish.", true));
           submitting = false;
           render();
           await poll();

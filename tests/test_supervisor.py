@@ -1,4 +1,7 @@
 import os
+import sqlite3
+import threading
+from types import SimpleNamespace
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +17,61 @@ from camadmiral.supervisor import (
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_database_lifetime_spans_children_without_sharing_worker_transactions(self):
+        from camadmiral import supervisor
+        from camadmiral.storage import CameraRepository
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'synthetic.db'
+            repository = CameraRepository(path, b'x' * 32)
+            errors = []
+            starts = []
+            def worker():
+                try:
+                    repository.save_frigate_target('synthetic-target', 'Synthetic recorder', 'http://recorder:5000')
+                    self.assertEqual('Synthetic recorder', repository.frigate_target('synthetic-target')['name'])
+                    with repository.connect() as writer, repository.connect() as reader:
+                        writer.execute('BEGIN IMMEDIATE')
+                        # An idle lifetime connection must not weaken real SQLite
+                        # writer exclusion or block ordinary WAL readers.
+                        reader.execute('PRAGMA busy_timeout=0')
+                        self.assertEqual(1, reader.execute('SELECT count(*) FROM frigate_targets').fetchone()[0])
+                        with self.assertRaises(sqlite3.OperationalError):
+                            reader.execute('DELETE FROM frigate_targets')
+                        writer.rollback()
+                except BaseException as exc:
+                    errors.append(exc)
+            def start_child():
+                self.assertTrue(Path(str(path) + '-wal').exists(),
+                                'Closing every short operation recreated the exclusive WAL cleanup window')
+                thread = threading.Thread(target=worker)
+                thread.start(); thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+                if errors: raise errors[0]
+                self.assertTrue(Path(str(path) + '-wal').exists())
+                starts.append(True)
+            child = Mock()
+            child.start.side_effect = start_child
+            child.process.poll.return_value = None
+            def tick(_seconds): supervisor.STOP = True
+            def stop(_children):
+                self.assertTrue(Path(str(path) + '-wal').exists(), 'Database lifetime ended before children stopped')
+            with patch.object(supervisor, 'settings', return_value=SimpleNamespace(server=SimpleNamespace(listen='127.0.0.1', port=18080))), \
+                 patch.object(supervisor, 'database_path', return_value=path), \
+                 patch.object(supervisor, 'load_master_key', return_value=b'x' * 32), \
+                 patch.object(supervisor, 'signal'), \
+                 patch.object(supervisor, 'open', unittest.mock.mock_open(read_data='streams:\n'), create=True), \
+                 patch.object(supervisor.os, 'chmod'), \
+                 patch.object(supervisor, 'render_go2rtc_config', return_value='streams:\n'), \
+                 patch.object(supervisor, 'Child', return_value=child), \
+                 patch.object(supervisor, 'stop_children', side_effect=stop), \
+                 patch.object(supervisor.time, 'sleep', side_effect=tick), \
+                 patch.object(supervisor, 'STOP', False):
+                self.assertEqual(0, supervisor.main())
+            self.assertEqual(3, len(starts))
+            self.assertEqual('Synthetic recorder', repository.frigate_target('synthetic-target')['name'])
+            with repository.connect() as connection:
+                self.assertEqual('ok', connection.execute('PRAGMA integrity_check').fetchone()[0])
+
     def test_go2rtc_template_uses_extendable_stream_block(self) -> None:
         template = Path(__file__).parents[1] / "go2rtc.yaml"
         self.assertIn("\nstreams:\n", template.read_text())

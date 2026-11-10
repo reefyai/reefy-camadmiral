@@ -27,9 +27,10 @@ function runClassifierTests() {
   ]);
   assert.equal(renamedPatch.e2e, true, "renaming a go2rtc patch requires full E2E");
 
-  for (const filename of ["camadmiral/frigate_import.py", "e2e/frigate_import.py",
-    "camadmiral/camera_identity.py", "camadmiral/recovery.py", "e2e/frigate_identity.py",
-    "e2e/frigate-identity-compose.yaml"]) {
+  for (const filename of ["camadmiral/frigate_batch.py", "e2e/frigate_batch.py", "camadmiral/frigate_import.py", "e2e/frigate_import.py",
+    "camadmiral/watchdog.py", "e2e/stall_recovery.py", "camadmiral/camera_identity.py", "camadmiral/recovery.py", "e2e/frigate_identity.py",
+    "e2e/frigate-identity-compose.yaml", "e2e/frigate_direct_auth.py",
+    "e2e/frigate-direct-auth-compose.yaml"]) {
     assert.equal(classifyReleaseGate([{ filename }]).e2e, true,
       "import implementation and regression changes require full E2E");
   }
@@ -38,7 +39,7 @@ function runClassifierTests() {
     { filename: "README.md" },
     { filename: "docs/recovery.md" },
   ]);
-  for (const filename of ["scripts/ci_docker.py", ".github/actions/docker-lab/start.js",
+  for (const filename of [".github/workflows/batch-import-regression.yml", "scripts/ci_docker.py", ".github/actions/docker-lab/start.js",
     ".github/actions/docker-lab/action.yml", ".github/workflows/release-gate.yml",
     ".github/workflows/stalled-snapshot.yml", ".github/workflows/memory-pressure.yml",
     ".github/workflows/relay-latency.yml"]) {

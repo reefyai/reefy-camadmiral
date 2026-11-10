@@ -33,6 +33,8 @@ class PrivateDockerTests(unittest.TestCase):
         self.assertEqual(json.loads((root / 'config/config.json').read_text()), {'auths': {}})
         self.assertEqual((root / 'config/config.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(json.loads((root / 'daemon.json').read_text()),
+                         {'registry-mirrors': ['https://mirror.gcr.io']})
         self.assertEqual(owned_root(str(root), self.environment), root)
 
     def test_different_jobs_get_distinct_daemon_state(self):
@@ -58,6 +60,42 @@ class PrivateDockerTests(unittest.TestCase):
                          'unix://' + str(root / 'docker.sock'), 'info', '--format', 'synthetic format'])
         self.assertIsNone(observed['host'])
         self.assertEqual(environment['DOCKER_HOST'], 'unix:///synthetic-parent.sock')
+
+    def test_wrapper_prefetch_retries_tls_without_repeating_lab_startup(self):
+        root = prepare(self.environment)
+        binary = self.root / 'synthetic-docker-download'
+        state = self.root / 'transfer-state'
+        binary.write_text("""#!/usr/bin/env python3
+import json,pathlib,sys
+state=pathlib.Path(""" + repr(str(state)) + """)
+args=sys.argv[1:]
+while args and args[0] in ('--config','--host'):args=args[2:]
+if args[:2]==['compose','config']:
+ print(json.dumps({'services':{'application':{'image':'synthetic/image:1'}}}));sys.exit(0)
+if args[:2]==['image','inspect']:
+ sys.exit(0 if state.with_name('verified').exists() else 1)
+if args[:1]==['pull']:
+ count=int(state.read_text())+1 if state.exists() else 1
+ state.write_text(str(count))
+ if count==1:
+  print('local error: tls: bad record MAC',file=sys.stderr);sys.exit(1)
+ state.with_name('verified').write_text('verified');sys.exit(0)
+if args[:2]==['compose','up']:
+ startup=state.with_name('startups')
+ startup.write_text(str(int(startup.read_text())+1 if startup.exists() else 1))
+ if state.with_name('verified').exists():sys.exit(0)
+ print('local error: tls: bad record MAC',file=sys.stderr);sys.exit(1)
+sys.exit(99)
+""")
+        binary.chmod(0o755)
+        wrapper=self.root/'docker'
+        wrapper.write_text(client_wrapper(root,binary));wrapper.chmod(0o755)
+        result=subprocess.run([str(wrapper),'compose','up','-d','application'],
+                              capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(state.read_text(),'2')
+        self.assertEqual(state.with_name('startups').read_text(),'1')
+        self.assertIn('CI image transfer retry',result.stdout)
 
     def test_cleanup_refuses_another_jobs_data_and_preserves_it(self):
         root = prepare(self.environment)
@@ -124,22 +162,25 @@ class PrivateDockerTests(unittest.TestCase):
 
     def test_docker_workloads_get_an_isolated_job_container_and_post_cleanup(self):
         repository = Path(__file__).resolve().parents[1]
-        for name in ('release-gate.yml', 'stalled-snapshot.yml', 'memory-pressure.yml', 'relay-latency.yml'):
+        for name in ('release-gate.yml', 'batch-import-regression.yml', 'stalled-snapshot.yml', 'memory-pressure.yml', 'relay-latency.yml'):
             jobs = yaml.safe_load((repository / '.github/workflows' / name).read_text())['jobs']
             for job_id, job in jobs.items():
                 steps = job.get('steps', [])
                 if not any('e2e/' in step.get('run', '') for step in steps):
                     continue
                 with self.subTest(workflow=name, job=job_id):
-                    self.assertEqual(job['container'], {'image': 'ubuntu:24.04', 'options': '--privileged --cgroupns=private',
+                    self.assertEqual(job['container'], {'image': 'ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67', 'options': '--privileged --cgroupns=private',
                                      'volumes': ['/var/lib/camadmiral-ci-docker']})
                     self.assertEqual(job['env']['CAMADMIRAL_CI_JOB_CONTAINER'], '1')
                     self.assertEqual(job['env']['AGENT_TOOLSDIRECTORY'], '/opt/camadmiral-toolcache')
                     self.assertEqual(job['env']['PIP_CACHE_DIR'], '/opt/camadmiral-pipcache')
                     checkout = next(i for i, step in enumerate(steps) if step.get('uses') == 'actions/checkout@v4')
                     setup = next(i for i, step in enumerate(steps) if step.get('uses') == './.github/actions/docker-lab')
+                    verify = next(i for i, step in enumerate(steps) if step.get('run') == 'python3 scripts/ci_tools.py')
                     workload = next(i for i, step in enumerate(steps) if 'e2e/' in step.get('run', ''))
                     self.assertLess(checkout, setup)
+                    self.assertLess(checkout, verify)
+                    self.assertLess(verify, setup)
                     self.assertLess(setup, workload)
         action = yaml.safe_load((repository / '.github/actions/docker-lab/action.yml').read_text())
         self.assertEqual(action['runs']['post'], 'stop.js')

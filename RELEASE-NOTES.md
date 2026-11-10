@@ -1,3 +1,37 @@
+# CamAdmiral v2026.11.10-00
+
+Recover video that stops advancing while its relay transport remains active.
+The bounded watchdog verifies a failed decoded-frame check before restarting
+only the shared relay, then verifies decoded video after recovery. Persistent
+limits prevent repeated shared interruptions; silent cameras keep native retries.
+Camera identities, settings, credentials and recording history are preserved.
+
+Add timestamped, credential-free packet counters, restart decisions and decoded
+recovery evidence for diagnosis. The synthetic end-to-end lab freezes video while
+audio continues, requires automatic recovery and decodable old/new recordings,
+and verifies that an offline camera does not reset unrelated healthy streams.
+
+Fix Frigate import readiness for cameras with a single input whose saved roles
+omit Record or Detect. Frigate automatically assigns both roles at runtime;
+CamAdmiral now compares those equivalent configurations correctly and preserves
+both roles when splitting the managed capture inputs. Source URLs,
+credentials, audio roles and multi-input role assignments remain protected.
+Original saved settings and recording history are preserved for restoration.
+
+The established grouped-import and restart/restoration E2E labs cover detect-only
+and record-only single inputs against both Frigate 0.17.2 and 0.18.2.
+
+Reader recovery also requires fresh upstream video before pausing capture or
+using its restart fallback. Unavailable sources now yield so independent address
+or identity correction can restore them. Safe fallback diagnostics record the
+request cause and verification duration without source URLs or credentials.
+
+Keep an idle SQLite connection through the supervised process lifetime so short
+worker operations do not repeatedly trigger last-connection WAL cleanup. Workers
+retain separate transactions and writer exclusion; shutdown closes the connection
+after child processes stop. Unexpected import diagnostics include SQLite error
+codes and phases while keeping credentials and source URLs private.
+
 # CamAdmiral v2026.10.02-00
 
 Brings the Frigate, stream and authentication improvements that were previously only

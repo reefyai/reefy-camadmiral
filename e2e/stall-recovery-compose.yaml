@@ -1,0 +1,11 @@
+services:
+  camera-open:
+    volumes:
+      - ./fixtures/camera-stall-recovery.yaml:/e2e/camera-open.yaml:ro
+  camadmiral:
+    volumes:
+      - ./stall_recovery.py:/e2e/stall_recovery.py:ro
+  frigate:
+    image: ${FRIGATE_TEST_IMAGE:-ghcr.io/blakeblackshear/frigate:0.18.2}
+    volumes:
+      - ./fixtures/frigate-stream-settings.yml:/e2e/frigate.yml:ro

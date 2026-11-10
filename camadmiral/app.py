@@ -71,6 +71,7 @@ from .roles import select_stream_roles
 from .rtsp_catalog import CatalogCandidate, CatalogError, catalog_candidates
 from .inventory import inventory_summary
 from .recovery import recover_inventory_addresses
+from .watchdog import StalledVideoWatchdog
 from .camera_identity import (discover_identity, enrich_existing_imports,
                               linked_candidate, physical_identity, same_identity)
 from .scan_state import preserve_inventory
@@ -99,6 +100,7 @@ SCAN_REQUEST_LOCK = threading.Lock()
 RELAY_HEALTH_MONITOR = RelayHealthMonitor()
 RELAY_RUNTIME_ACTIVITY_MONITOR = RelayRuntimeActivityMonitor()
 RELAY_RUNTIME_POLL_FAILURE_ACTIVE = False
+STALLED_VIDEO_WATCHDOG = StalledVideoWatchdog()
 HEALTH_INTERVAL = max(10.0, float(os.environ.get("CAMADMIRAL_HEALTH_INTERVAL", "10")))
 RUNTIME_RECONCILE_INTERVAL = max(
     2.0,
@@ -682,6 +684,11 @@ def _media_runtime_reconciliation_loop() -> None:
                     f"media: address recovery failed ({type(exc).__name__})",
                     flush=True,
                 )
+            try:
+                STALLED_VIDEO_WATCHDOG.cycle(repository)
+            except Exception as exc:
+                print('media-watchdog: ' + json.dumps({'event': 'cycle_failed',
+                      'error_type': type(exc).__name__}), flush=True)
             try:
                 enrich_existing_imports(repository, INVENTORY)
             except Exception:
