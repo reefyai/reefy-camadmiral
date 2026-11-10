@@ -176,7 +176,7 @@ def main() -> int:
                     delay = min(8, 2 ** (child.restarts - 1))
                     print(
                         f"supervisor: {child.name} exited; restart "
-                        f"{child.restarts}/5 in {delay}s",
+                        f"{child.restarts}/5 in {delay}s exit_code={process.returncode}",
                         flush=True,
                     )
                     time.sleep(delay)

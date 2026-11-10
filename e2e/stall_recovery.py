@@ -2,6 +2,8 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
+import tempfile
 import os
 from pathlib import Path
 import subprocess
@@ -95,6 +97,13 @@ def driver(stage):
         assert get('/config/raw') == state['config'], 'Watchdog changed saved recorder configuration'
         print('PASS: real video decoded on every role; identities and configuration preserved', flush=True)
         return
+    if stage == 'verify-unaffected':
+        key=state['keys'][1]
+        assert get('/stats').get('cameras',{}).get(key,{}).get('camera_fps',0)>0,'Unrelated camera lost capture during camera outage'
+        decode(f'rtsp://frigate:8554/{key}_record')
+        assert get('/config/raw')==state['config'],'Offline camera changed recorder settings'
+        print('PASS: unrelated camera continues decoding while the failed camera is offline',flush=True)
+        return
     if stage == 'playback':
         rows = json.loads(Path('/state/stall-after.json').read_text())
         before = json.loads(Path('/state/stall-before.json').read_text())
@@ -140,7 +149,19 @@ def host():
     result={'source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()}
     try:
         run('down','--volumes','--remove-orphans')
-        run('build','camadmiral')
+        application_ref=os.environ.get('CAMADMIRAL_E2E_APPLICATION_REF','')
+        if application_ref:
+            assert re.fullmatch('[0-9a-f]{40}',application_ref),'Baseline requires an exact repository commit'
+            with tempfile.TemporaryDirectory(prefix='camadmiral-baseline-') as directory:
+                archive=subprocess.check_output(['git','archive',application_ref],cwd=ROOT)
+                subprocess.run(['tar','-x','-C',directory],input=archive,check=True)
+                subprocess.run(['docker','build','--build-arg','CHECKPOINT_REVISION='+application_ref,
+                                '-t','camadmiral-e2e:local',directory],check=True)
+        else:
+            application_ref=result['source']
+            run('build','camadmiral')
+        result['application_revision']=application_ref
+        result['application_tree']=subprocess.check_output(['git','rev-parse',application_ref+':camadmiral'],cwd=ROOT,text=True).strip()
         run('up','-d','camera-open','stalled-camera','camadmiral','frigate')
         stage('setup')
         run('run','-d','--name','camadmiral-stall-audio','--entrypoint','python','test-driver',
@@ -183,7 +204,15 @@ def host():
         logs=run('logs','--no-color','camadmiral')
         assert logs.count('"event": "restart_started"')==1,'Recovery reset was missing or repeated'
         assert '"event": "recovery_verified"' in logs,'Recovery was not verified with a decoded frame'
-        result.update(status='passed',before=before,after=after,fault=fault)
+        run('stop','-t','3','stalled-camera')
+        time.sleep(25)
+        stage('verify-unaffected')
+        offline_logs=run('logs','--no-color','camadmiral')
+        assert offline_logs.count('"event": "restart_started"')==1,'An offline camera caused another shared reset'
+        run('start','stalled-camera')
+        stage('verify')
+        assert before['frigate']==state('frigate'),'Offline recovery restarted the recorder'
+        result.update(status='passed',before=before,after=after,fault=fault,offline_camera_did_not_reset_relay=True)
         print('PASS: same-address video stall recovered without container restarts or data changes',flush=True)
     except Exception as exc:
         result.update(status='failed',error=type(exc).__name__+': '+str(exc))

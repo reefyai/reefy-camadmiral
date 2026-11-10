@@ -5,6 +5,6 @@ rtsp:
 webrtc:
   listen: ""
 streams:
-  camera0: "ffmpeg:virtual?video=testsrc2&audio=sine&size=1280x720&rate=15#video=h264#audio=aac"
-  camera1: "ffmpeg:virtual?video=testsrc2&audio=sine&size=640x360&rate=8#video=h264#audio=aac"
-  camera2: "ffmpeg:virtual?video=testsrc2&audio=sine&size=640x360&rate=8#video=h264#audio=aac"
+  camera0: "ffmpeg:virtual?video=testsrc2&size=1280x720&rate=15#video=h264#audio=aac#raw=-re -f lavfi -i sine=frequency=440:sample_rate=16000"
+  camera1: "ffmpeg:virtual?video=testsrc2&size=640x360&rate=8#video=h264#audio=aac#raw=-re -f lavfi -i sine=frequency=440:sample_rate=16000"
+  camera2: "ffmpeg:virtual?video=testsrc2&size=640x360&rate=8#video=h264#audio=aac#raw=-re -f lavfi -i sine=frequency=440:sample_rate=16000"
