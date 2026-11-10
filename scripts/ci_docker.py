@@ -20,6 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_VOLUME = Path('/var/lib/camadmiral-ci-docker')
 
 
+def ensure_docker_tools():
+    checks = [['dockerd', '--version'], ['docker', 'compose', 'version'], ['docker', 'buildx', 'version']]
+    if all(shutil.which(args[0]) for args in checks) and all(
+        subprocess.run(args, capture_output=True, timeout=10).returncode == 0 for args in checks
+    ):
+        print('Reusing installed CI Docker tools; private daemon state still starts empty', flush=True)
+        return
+    if __package__:
+        from .ci_packages import apt_get
+    else:
+        from ci_packages import apt_get
+    apt_get(['update'])
+    apt_get(['install', '-y', '--no-install-recommends', 'docker.io', 'docker-compose-v2', 'docker-buildx'])
+
+
 def owner(environment):
     return ':'.join(environment[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
 
@@ -142,6 +157,11 @@ def start():
     if (os.environ.get('CAMADMIRAL_CI_JOB_CONTAINER') != '1'
             or not Path('/.dockerenv').exists() or os.geteuid() != 0):
         raise RuntimeError('Private Docker requires the declared privileged Actions job container')
+    if __package__:
+        from .ci_tools import validate_prepared
+    else:
+        from ci_tools import validate_prepared
+    validate_prepared()
     artifacts = ROOT / 'e2e-artifacts/docker-lab'
     artifacts.mkdir(parents=True, exist_ok=True)
     root = prepare(os.environ)
@@ -158,10 +178,7 @@ def start():
     if sources.exists():
         sources.write_text(sources.read_text().replace('http://archive.ubuntu.com/', 'https://archive.ubuntu.com/')
                            .replace('http://security.ubuntu.com/', 'https://security.ubuntu.com/'))
-    environment = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
-    subprocess.run(['apt-get', '-o', 'Acquire::Retries=3', 'update'], env=environment, check=True)
-    subprocess.run(['apt-get', '-o', 'Acquire::Retries=3', 'install', '-y', '--no-install-recommends',
-                    'docker.io', 'docker-compose-v2', 'docker-buildx'], env=environment, check=True)
+    ensure_docker_tools()
     enable_cgroup_nesting()
     log = (artifacts / 'dockerd.log').open('w')
     daemon = subprocess.Popen(['dockerd', '--config-file', str(root / 'daemon.json'),

@@ -545,3 +545,46 @@ SQLite lifecycle regression fails on the prior supervisor and verifies concurren
 reads, writer exclusion, clean shutdown and database integrity with the fix.
 The existing real import/history and upgrade scenarios remain the final E2E gate;
 no lock error is treated as a successful import or hidden by retrying assertions.
+
+## Prepared CI tools
+
+Trusted CI jobs use a digest-pinned `ghcr.io/reefyai/camadmiral-ci` image. It
+contains the existing Ubuntu base, Docker clients and daemon, Node, Python 3.13.18,
+the exact runtime and E2E Python requirements, and Playwright WebKit with its
+system dependencies. Every job checks the dependency hashes and installed
+Python/browser files before starting its own empty private Docker daemon.
+The isolation, resource checks, test scenarios and parallel execution stay
+the same. No shared host Docker socket or writable test state is reused.
+
+After changing either requirements file, rebuild with the `Build prepared CI
+tools` workflow, verify `e2e/prepared_tools.py` passes against the resulting
+image, and update the workflow digest pins together with their policy check
+in `tests/test_ci_docker.py`. Qualify the resulting source with the complete
+release gate. Dependency mismatch fails before tests instead of silently
+falling back to network installation.
+
+The image builder uses bounded package acquisition. Only index and package
+downloads are retried after transient transfer failures; package configuration
+runs once. Certificate, signature, authentication and disk failures stop
+immediately. Reproduce the transfer failure boundaries with:
+
+```console
+python -m unittest discover -s tests -p 'test_ci_*.py' -v
+```
+
+The acquisition wrapper also prefetches literal Dockerfile `FROM` images for
+selected Compose build services through the same job-private Docker route and
+bounded image-pull policy. Internal build stages, `scratch` and unresolved build
+arguments stay with BuildKit. The build, application startup and assertions each
+execute once; only external image acquisition can retry.
+
+The real base-layer failure is retained in relay benchmark run 42865738488.
+Test-only baseline `aa4c0f4` reproduces two failures with:
+
+```console
+python -m unittest discover -s tests -p test_ci_image_retry.py -v
+```
+
+The fixed helper passes the same ten checks, including the existing finite
+retry budget, certificate/authentication rejection, cache reuse and private
+endpoint checks. Full release qualification retains the real media scenarios.
