@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      application_ref:
+        description: Exact full application commit that has passed the complete release gate
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -19,66 +24,48 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      source: ${{ steps.gate.outputs.source }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Test exact-source release checks
+        run: node .github/scripts/release-source.test.cjs
       - name: Require a successful release gate for this commit
+        id: gate
         uses: actions/github-script@v7
+        env:
+          APPLICATION_REF: ${{ inputs.application_ref || '' }}
         with:
           script: |
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: "release-gate.yml",
-                status: "success",
-                per_page: 100,
-              },
+            const { releaseSource, successfulGate } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/release-source.cjs`
             );
-            const candidates = runs.filter(run => run.head_sha === context.sha);
-            let match = null;
-            for (const run of candidates) {
-              const jobs = await github.paginate(
-                github.rest.actions.listJobsForWorkflowRun,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id,
-                  filter: "latest",
-                  per_page: 100,
-                },
-              );
-              const passedE2E = jobs.some(job =>
-                (job.steps || []).some(step =>
-                  step.name === "Run isolated E2E lab" && step.conclusion === "success"
-                )
-              );
-              if (passedE2E) {
-                match = run;
-                break;
-              }
-            }
-            if (!match) {
-              core.setFailed(
-                `Commit ${context.sha} has not passed the complete CamAdmiral E2E gate. ` +
-                "Prepare the version on the release commit, then run the gate for that exact commit.",
-              );
-              return;
-            }
-            core.info(`Reusing successful release gate run ${match.id} for ${context.sha}.`);
+            const source = releaseSource(process.env.APPLICATION_REF, context.sha);
+            const match = await successfulGate(github, context.repo.owner, context.repo.repo, source);
+            core.setOutput("source", source);
+            core.info(`Reusing complete release gate ${match.id} for exact application source ${source}.`);
 
   publish:
     name: Publish amd64 image
     needs: verify-release-gate
+    concurrency:
+      group: camadmiral-image-publication
+      cancel-in-progress: false
     runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-release-gate.outputs.source }}
+          path: application
 
       - name: Validate tag and release metadata
         id: release
         shell: bash
+        working-directory: application
         run: |
           python3 scripts/validate-release.py
           VERSION=$(tr -d '\n' < VERSION)
@@ -88,9 +75,29 @@ jobs:
           fi
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
+      - name: Reject a conflicting release tag before publishing
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SOURCE: ${{ needs.verify-release-gate.outputs.source }}
+        with:
+          script: |
+            const { releaseTag } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-source.cjs`);
+            await releaseTag(github, context.repo.owner, context.repo.repo,
+              process.env.RELEASE_VERSION, process.env.RELEASE_SOURCE);
+
+      - name: Retain immutable image versions
+        id: immutable
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SOURCE: ${{ needs.verify-release-gate.outputs.source }}
+        run: python3 scripts/release_image.py
+
       - uses: docker/setup-buildx-action@v3
+        if: steps.immutable.outputs.publish == 'true'
 
       - uses: docker/login-action@v3
+        if: steps.immutable.outputs.publish == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -98,12 +105,31 @@ jobs:
 
       - uses: docker/build-push-action@v6
         id: build
+        if: steps.immutable.outputs.publish == 'true'
         with:
-          context: .
+          context: ./application
           platforms: linux/amd64
           push: true
           tags: |
             ghcr.io/reefyai/reefy-camadmiral:${{ steps.release.outputs.version }}
-            ${{ (github.ref_type == 'tag' || github.ref == 'refs/heads/main') && 'ghcr.io/reefyai/reefy-camadmiral:latest' || '' }}
+            ${{ (github.ref_type == 'tag' || github.ref == 'refs/heads/main' || inputs.application_ref != '') && 'ghcr.io/reefyai/reefy-camadmiral:latest' || '' }}
           sbom: true
           provenance: mode=max
+          build-args: |
+            CHECKPOINT_REVISION=${{ needs.verify-release-gate.outputs.source }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.verify-release-gate.outputs.source }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Retain the exact tested release tag
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SOURCE: ${{ needs.verify-release-gate.outputs.source }}
+        with:
+          script: |
+            const { releaseTag } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-source.cjs`);
+            // The workflow token prevents recursive publication from this tag.
+            await releaseTag(github, context.repo.owner, context.repo.repo,
+              process.env.RELEASE_VERSION, process.env.RELEASE_SOURCE, true);

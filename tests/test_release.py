@@ -39,16 +39,19 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_tag_release_reuses_the_exact_tested_commit(self) -> None:
         publish = (ROOT / ".github" / "workflows" / "release.yml").read_text()
-        gate = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
-
         self.assertIn('tags: ["v*"]', publish)
         self.assertIn("uses: actions/github-script@v7", publish)
-        self.assertIn("run.head_sha === context.sha", publish)
-        self.assertIn('workflow_id: "release-gate.yml"', publish)
-        self.assertIn('status: "success"', publish)
-        self.assertIn("listJobsForWorkflowRun", publish)
-        self.assertIn('step.name === "Run isolated E2E lab"', publish)
-        self.assertIn('step.conclusion === "success"', publish)
+        subprocess.run(['node', '.github/scripts/release-source.test.cjs'], cwd=ROOT, check=True)
+        jobs = yaml.safe_load(publish)['jobs']
+        source = '${{ needs.verify-release-gate.outputs.source }}'
+        steps = jobs['publish']['steps']
+        checkout = next(s for s in steps if s.get('with', {}).get('path') == 'application')
+        self.assertEqual(source, checkout['with']['ref'])
+        build = next(s['with'] for s in steps if s.get('uses', '').startswith('docker/build-push-action@'))
+        self.assertEqual('./application', build['context'])
+        self.assertIn('org.opencontainers.image.revision=' + source, build['labels'])
+        self.assertIn('org.opencontainers.image.version=${{ steps.release.outputs.version }}', build['labels'])
+        self.assertIn('CHECKPOINT_REVISION=' + source, build['build-args'])
         self.assertIn("needs: verify-release-gate", publish)
         self.assertIn("platforms: linux/amd64", publish)
         self.assertNotIn("linux/arm64", publish)
@@ -269,7 +272,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('page.reload(wait_until="domcontentloaded")', browser)
         self.assertIn('data-camera-filter="blocked"', browser)
         self.assertIn('get_by_role("button", name="Unblock")', browser)
-        self.assertIn("python -m playwright install --with-deps webkit", gate)
+        self.assertIn("python -m playwright install webkit", gate)
+        self.assertIn("python3 scripts/ci_tools.py", gate)
+        tools = (ROOT / "ci/tools.Dockerfile").read_text()
+        self.assertIn("playwright install --with-deps webkit", tools)
 
     def test_e2e_covers_direct_rtsp_camera_isolation(self) -> None:
         compose = (ROOT / "e2e" / "compose.yaml").read_text()

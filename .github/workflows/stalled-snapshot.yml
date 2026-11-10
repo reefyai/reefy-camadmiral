@@ -31,7 +31,7 @@ jobs:
     if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -44,10 +44,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - uses: actions/setup-python@v5
@@ -55,7 +55,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: python3 -m pip install -r requirements.txt -r e2e/requirements.txt
-      - run: python3 -m playwright install --with-deps webkit
+      - run: python3 -m playwright install webkit
       - run: python3 e2e/stream_layout_ui.py
       - run: python3 e2e/stream_settings.py
       - uses: actions/upload-artifact@v4
@@ -75,7 +75,7 @@ jobs:
     if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -88,10 +88,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - run: python3 e2e/auth_retry.py
@@ -112,7 +112,7 @@ jobs:
     if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -125,10 +125,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - run: python3 e2e/snapshot_health.py
@@ -149,7 +149,7 @@ jobs:
     if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -162,10 +162,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - run: python3 e2e/stalled_snapshot.py
@@ -189,7 +189,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, big-bird]
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -203,12 +203,12 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify same-address stalled video recovery and recording preservation

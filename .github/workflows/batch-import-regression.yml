@@ -26,7 +26,7 @@ jobs:
         scenario: [batch, recovery]
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -41,12 +41,12 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify grouped handoff and bounded reader recovery
