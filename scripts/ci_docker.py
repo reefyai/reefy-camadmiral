@@ -115,7 +115,7 @@ def client_wrapper(root, binary='/usr/bin/camadmiral-docker-cli'):
     # only the client inside this ephemeral job container to its own daemon.
     return ('#!/bin/sh\n'
             'unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_TLS_CERTDIR DOCKER_API_VERSION\n'
-            'exec ' + shlex.quote(str(binary)) + ' --config ' + shlex.quote(str(root / 'config'))
+            'exec python3 ' + shlex.quote(str(ROOT / 'scripts/ci_image_retry.py')) + ' ' + shlex.quote(str(binary)) + ' --config ' + shlex.quote(str(root / 'config'))
             + ' --host ' + shlex.quote('unix://' + str(root / 'docker.sock')) + ' "$@"\n')
 
 
@@ -180,6 +180,12 @@ def start():
             (root / 'owner.json').write_text(json.dumps(metadata))
             if str(info['CgroupVersion']) != '2' or not info['MemoryLimit'] or not info['PidsLimit']:
                 raise RuntimeError('Docker lab must enforce real cgroup v2 memory and PID limits')
+            if __package__:
+                from .ci_image_retry import pull_image
+            else:
+                from ci_image_retry import pull_image
+            pull_image(['docker', '--config', str(root / 'config'), '--host',
+                        'unix://' + str(root / 'docker.sock')], 'alpine:3.22')
             probe = command(root, 'run', '--rm', '--memory=32m', '--memory-swap=32m', '--pids-limit=32',
                             'alpine:3.22', 'sh', '-c',
                             'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max', timeout=120)
