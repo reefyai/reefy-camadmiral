@@ -1,3 +1,14 @@
+# CamAdmiral v2026.11.10-00
+
+Fix Frigate import readiness for cameras with a single input whose saved roles
+omit Record or Detect. Frigate automatically assigns both roles at runtime;
+CamAdmiral now compares those equivalent configurations correctly. Source URLs,
+credentials, audio roles and multi-input role assignments remain protected.
+Original saved settings and recording history are preserved for restoration.
+
+The established grouped-import and restart/restoration E2E labs cover detect-only
+and record-only single inputs against both Frigate 0.17.2 and 0.18.2.
+
 # CamAdmiral v2026.10.02-00
 
 Brings the Frigate, stream and authentication improvements that were previously only

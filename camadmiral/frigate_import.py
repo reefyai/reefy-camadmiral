@@ -475,7 +475,17 @@ def _temporary_api_error(exc):
 
 def _running_inputs_match(client, key, expected_inputs):
     paths = client.raw_paths().get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs', [])
-    simplify = lambda items: [{'path': i['path'], 'roles': i['roles']} for i in items]
+    def simplify(items):
+        result = []
+        for item in items:
+            roles = set(item.get('roles') or [])
+            # Frigate assigns Record and Detect to its sole input, even when
+            # saved YAML declares only one role. Preserve Audio and unknown
+            # roles so real changes still fail the ownership check.
+            if len(items) == 1:
+                roles.update(('record', 'detect'))
+            result.append({'path': item['path'], 'roles': sorted(roles)})
+        return result
     return simplify(paths) == simplify(expected_inputs)
 
 
