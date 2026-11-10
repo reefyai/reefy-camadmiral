@@ -24,10 +24,10 @@ def driver(stage):
         return json.load(urllib.request.urlopen('http://frigate:5000/api' + path, timeout=10))
     def control(path):
         return urllib.request.urlopen('http://stalled-camera:8080/' + path, timeout=5).read()
-    def decode(uri):
+    def decode(uri, timeout=20):
         p = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-threads', '1',
                             '-rtsp_transport', 'tcp', '-i', uri, '-map', '0:v:0', '-an',
-                            '-frames:v', '1', '-f', 'framemd5', '-'], capture_output=True, timeout=20)
+                            '-frames:v', '1', '-f', 'framemd5', '-'], capture_output=True, timeout=timeout)
         frames = [l for l in p.stdout.splitlines() if l and not l.startswith(b'#')]
         assert p.returncode == 0 and frames, 'Fresh relay video did not decode'
         return len(frames)
@@ -83,12 +83,22 @@ def driver(stage):
     if stage in ('verify','verify-initial'):
         # A reader attached to the old producer cannot recover until CamAdmiral
         # replaces it. No test-side reconnect, resume, rescan or restart is used.
-        wait_for('automatic same-address capture recovery', lambda: all(
-            get('/stats').get('cameras',{}).get(k,{}).get('camera_fps',0)>0 for k in state['keys']),
-            timeout=110, interval=2)
-        for key in state['keys']:
-            for role in ('record','detect'):
-                decode(f'rtsp://frigate:8554/{key}_{role}')
+        deadline = time.monotonic() + 110
+        def decoded_readers_ready():
+            stats = get('/stats').get('cameras', {})
+            if not all(stats.get(k, {}).get('camera_fps', 0) > 0 for k in state['keys']):
+                return False
+            # FPS can still describe frames buffered before the injected fault.
+            # Include fresh decoding in the existing readiness budget instead of
+            # letting one early probe fail while automatic recovery is running.
+            for key in state['keys']:
+                for role in ('record', 'detect'):
+                    remaining = deadline - time.monotonic()
+                    assert remaining > 0, 'Decoded-reader readiness deadline expired'
+                    decode(f'rtsp://frigate:8554/{key}_{role}', timeout=min(20, remaining))
+            return True
+        wait_for('automatic same-address capture recovery with decoded video',
+                 decoded_readers_ready, timeout=110, interval=2)
         current = {c['id']:c for c in consumer_directory()['cameras']}
         for before in state['cameras']:
             after = current[before['id']]

@@ -74,3 +74,11 @@ the proxy confirms dropped video packets and continuing audio on frozen sessions
 Earlier fixture-development runs without confirmed audio are not baseline proof.
 Final fixed validation uses the same committed black-box regression, including
 negative outage, settings preservation and historical/new recording playback.
+
+
+Decoded-reader readiness uses the existing 110-second recovery budget. A positive
+Frigate FPS counter alone is insufficient because it can describe pre-stall
+buffered frames. Every selected role must also yield a fresh decoded frame within
+that budget. Failed probes remain pending readiness, not successful assertions;
+the test never invokes a recovery action. Historical/new recording playback and
+unchanged recorder/container/configuration assertions remain mandatory.
