@@ -15,12 +15,16 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: camadmiral-ci-tools
-  cancel-in-progress: false
+  group: camadmiral-ci-tools-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
+    if: github.repository == 'reefyai/reefy-camadmiral' && github.event_name != 'pull_request'
     runs-on: [self-hosted, Linux, X64, big-bird]
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
     container:
       image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
@@ -100,6 +104,17 @@ jobs:
           mkdir -p e2e-artifacts/ci-tools
           docker run --rm --entrypoint /bin/bash --volume "$GITHUB_WORKSPACE:/workspace:ro" --workdir /workspace camadmiral-ci:qualification -c 'export LD_LIBRARY_PATH=/opt/camadmiral-toolcache/Python/3.13.18/x64/lib; /opt/camadmiral-toolcache/Python/3.13.18/x64/bin/python e2e/prepared_tools.py' > e2e-artifacts/ci-tools/smoke.json
           cat e2e-artifacts/ci-tools/smoke.json
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish verified CI image
+        run: |
+          image="ghcr.io/reefyai/camadmiral-ci:sha-$GITHUB_SHA"
+          docker tag camadmiral-ci:qualification "$image"
+          docker push "$image"
+          docker image inspect "$image" --format '{{json .RepoDigests}}' > e2e-artifacts/ci-tools/repo-digests.json
       - name: Retain prepared image for review
         run: docker save camadmiral-ci:qualification | gzip -1 > e2e-artifacts/ci-tools/prepared-image.tar.gz
       - uses: actions/upload-artifact@v4
