@@ -50,7 +50,7 @@ jobs:
         frigate: ["0.17.2", "0.18.2"]
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -98,7 +98,7 @@ jobs:
         frigate: ["0.17.2", "0.18.2"]
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -145,7 +145,7 @@ jobs:
       cancel-in-progress: false
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -212,7 +212,7 @@ jobs:
     if: needs.classify-changes.outputs.e2e == 'true'
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -263,7 +263,7 @@ jobs:
     if: needs.classify-changes.outputs.e2e == 'true'
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -376,7 +376,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -436,7 +436,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -501,7 +501,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker

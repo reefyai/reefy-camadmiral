@@ -490,3 +490,10 @@ Record alias. `tests/test_import_input_roles.py` also reproduces that conversion
 failure before the fix, including audio preservation. Final validation must use
 the same committed fixtures against the complete fix. Results and Docker image
 provenance are retained in each matrix job's normal artifacts.
+
+
+The isolated jobs also reuse Reefy's existing Google Docker Hub cache policy.
+Their Ubuntu 24.04 job image is pinned to the same manifest digest previously
+pulled from Docker Hub. Only each job's disposable Docker daemon gets the HTTPS
+registry-mirror setting; no runner host daemon configuration changes. This avoids
+Docker Hub throttling while retaining parallelism and the resource-limit gate.

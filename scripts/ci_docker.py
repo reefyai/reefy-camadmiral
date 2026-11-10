@@ -40,7 +40,7 @@ def prepare(environment):
     config.write_text('{"auths":{}}\n')
     config.chmod(0o600)
     (root / 'owner.json').write_text(json.dumps({'owner': owner(environment)}))
-    (root / 'daemon.json').write_text('{}\n')
+    (root / 'daemon.json').write_text(json.dumps({'registry-mirrors': ['https://mirror.gcr.io']}))
     return root
 
 
