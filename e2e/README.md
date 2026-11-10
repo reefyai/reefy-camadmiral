@@ -95,6 +95,28 @@ Fast algorithm, parsing, storage, crypto, adapter, and HTTP-boundary tests stay
 under `tests/`. They may use mocks to isolate a single behavior. Real synthetic
 media and multi-process failure workflows belong here.
 
+### Exact-source image publication
+
+The publisher accepts an optional full `application_ref` commit for manual
+dispatch. Its complete release gate must have succeeded, including the isolated
+E2E job. Workflow-only maintenance does not change the application checkout or
+reuse another application's qualification. Without an override, the workflow
+continues to qualify its own commit.
+
+The application checkout supplies VERSION, manifest validation and Docker build
+context. Image version/revision labels and the runtime revision environment name
+that exact source. Publication checks existing tags before writing an image,
+never moves tags or overwrites existing version images, and creates a missing
+version tag using the workflow token after successful publication. Retrying a
+completed publication verifies matching version/source labels and retains the
+existing image. Registry access, checksum and provenance errors fail closed.
+
+`node .github/scripts/release-source.test.cjs` tests exact-source qualification,
+required E2E evidence, missing tags, conflicting tags and non-404 lookup errors.
+`python3 -m unittest discover -s tests -p test_release_image.py -v` tests immutable
+publication, registry failure boundaries and verified transfer retries. Neither
+test requires registry credentials or mutates a repository.
+
 ## Media memory regression
 
 ### Stalled snapshot cleanup
