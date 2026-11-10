@@ -31,19 +31,25 @@ async function main() {
     { 1: [], 2: [passed] }), "synthetic", "application", source);
   assert.equal(match.id, 2);
   const writes = [];
-  const tags = { rest: { repos: { getCommit: async () => { throw { status: 404 }; } },
-    git: { createRef: async args => writes.push(args) } } };
+  // GitHub's commits endpoint returns 422 for an unknown ref. Tag absence is
+  // instead a 404 from git.getRef; keep the real API boundaries distinct.
+  const tags = { rest: { repos: { getCommit: async () => { throw { status: 422 }; } },
+    git: { getRef: async () => { throw { status: 404 }; }, createRef: async args => writes.push(args) } } };
   await releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source);
   assert.equal(writes.length, 0, "Preflight must never create tags");
   await releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source, true);
   assert.deepEqual(writes, [{ owner: "synthetic", repo: "application", ref: "refs/tags/v2000.01.01-00", sha: source }]);
-  tags.rest.repos.getCommit = async () => ({ data: { sha: source } });
+  tags.rest.git.getRef = async () => ({ data: { object: { type: "commit", sha: source } } });
   await releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source, true);
   assert.equal(writes.length, 1, "An existing correct tag is retained");
-  tags.rest.repos.getCommit = async () => ({ data: { sha: other } });
+  tags.rest.git.getRef = async () => ({ data: { object: { type: "tag", sha: "c".repeat(40) } } });
+  tags.rest.git.getTag = async () => ({ data: { object: { type: "commit", sha: source } } });
+  await releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source, true);
+  assert.equal(writes.length, 1, "Matching annotated tags are retained");
+  tags.rest.git.getRef = async () => ({ data: { object: { type: "commit", sha: other } } });
   await assert.rejects(releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source, true));
   assert.equal(writes.length, 1, "A conflicting tag is never moved");
-  tags.rest.repos.getCommit = async () => { throw { status: 403 }; };
+  tags.rest.git.getRef = async () => { throw { status: 403 }; };
   await assert.rejects(releaseTag(tags, "synthetic", "application", "v2000.01.01-00", source, true));
   assert.equal(writes.length, 1, "Permission and network errors must not create tags");
   await assert.rejects(releaseTag(tags, "synthetic", "application", "latest", source, true));

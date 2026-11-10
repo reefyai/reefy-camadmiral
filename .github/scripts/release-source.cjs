@@ -23,14 +23,21 @@ async function successfulGate(github, owner, repo, source) {
 
 async function releaseTag(github, owner, repo, version, source, create = false) {
   if (!/^v\d{4}\.\d{2}\.\d{2}-\d{2}$/.test(version)) throw new Error("Invalid first-party release version");
+  let existing;
   try {
-    const existing = await github.rest.repos.getCommit({ owner, repo, ref: `tags/${version}` });
-    if (existing.data.sha !== source) throw new Error("Existing release tag belongs to another source; refusing to move it");
-    return;
+    existing = await github.rest.git.getRef({ owner, repo, ref: `tags/${version}` });
   } catch (error) {
     if (error.status !== 404) throw error;
+    if (create) await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${version}`, sha: source });
+    return;
   }
-  if (create) await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${version}`, sha: source });
+  let object = existing.data.object;
+  for (let depth = 0; object.type === "tag" && depth < 5; depth++) {
+    object = (await github.rest.git.getTag({ owner, repo, tag_sha: object.sha })).data.object;
+  }
+  if (object.type !== "commit" || object.sha !== source) {
+    throw new Error("Existing release tag belongs to another source; refusing to move it");
+  }
 }
 
 module.exports = { releaseSource, successfulGate, releaseTag };
