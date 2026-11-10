@@ -571,3 +571,20 @@ immediately. Reproduce the transfer failure boundaries with:
 ```console
 python -m unittest discover -s tests -p 'test_ci_*.py' -v
 ```
+
+The acquisition wrapper also prefetches literal Dockerfile `FROM` images for
+selected Compose build services through the same job-private Docker route and
+bounded image-pull policy. Internal build stages, `scratch` and unresolved build
+arguments stay with BuildKit. The build, application startup and assertions each
+execute once; only external image acquisition can retry.
+
+The real base-layer failure is retained in relay benchmark run 42865738488.
+Test-only baseline `aa4c0f4` reproduces two failures with:
+
+```console
+python -m unittest discover -s tests -p test_ci_image_retry.py -v
+```
+
+The fixed helper passes the same ten checks, including the existing finite
+retry budget, certificate/authentication rejection, cache reuse and private
+endpoint checks. Full release qualification retains the real media scenarios.
