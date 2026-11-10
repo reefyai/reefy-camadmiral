@@ -25,6 +25,11 @@ Original saved settings and recording history are preserved for restoration.
 The established grouped-import and restart/restoration E2E labs cover detect-only
 and record-only single inputs against both Frigate 0.17.2 and 0.18.2.
 
+Reader recovery also requires fresh upstream video before pausing capture or
+using its restart fallback. Unavailable sources now yield so independent address
+or identity correction can restore them. Safe fallback diagnostics record the
+request cause and verification duration without source URLs or credentials.
+
 # CamAdmiral v2026.10.02-00
 
 Brings the Frigate, stream and authentication improvements that were previously only
