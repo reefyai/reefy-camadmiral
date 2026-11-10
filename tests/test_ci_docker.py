@@ -162,22 +162,25 @@ sys.exit(99)
 
     def test_docker_workloads_get_an_isolated_job_container_and_post_cleanup(self):
         repository = Path(__file__).resolve().parents[1]
-        for name in ('release-gate.yml', 'stalled-snapshot.yml', 'memory-pressure.yml', 'relay-latency.yml'):
+        for name in ('release-gate.yml', 'batch-import-regression.yml', 'stalled-snapshot.yml', 'memory-pressure.yml', 'relay-latency.yml'):
             jobs = yaml.safe_load((repository / '.github/workflows' / name).read_text())['jobs']
             for job_id, job in jobs.items():
                 steps = job.get('steps', [])
                 if not any('e2e/' in step.get('run', '') for step in steps):
                     continue
                 with self.subTest(workflow=name, job=job_id):
-                    self.assertEqual(job['container'], {'image': 'mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852', 'options': '--privileged --cgroupns=private',
+                    self.assertEqual(job['container'], {'image': 'ghcr.io/reefyai/camadmiral-ci@sha256:52afc5d826d93d276ec0cc0d1a94763907ab72be9f4d8bffee2854306c337a59', 'options': '--privileged --cgroupns=private',
                                      'volumes': ['/var/lib/camadmiral-ci-docker']})
                     self.assertEqual(job['env']['CAMADMIRAL_CI_JOB_CONTAINER'], '1')
                     self.assertEqual(job['env']['AGENT_TOOLSDIRECTORY'], '/opt/camadmiral-toolcache')
                     self.assertEqual(job['env']['PIP_CACHE_DIR'], '/opt/camadmiral-pipcache')
                     checkout = next(i for i, step in enumerate(steps) if step.get('uses') == 'actions/checkout@v4')
                     setup = next(i for i, step in enumerate(steps) if step.get('uses') == './.github/actions/docker-lab')
+                    verify = next(i for i, step in enumerate(steps) if step.get('run') == 'python3 scripts/ci_tools.py')
                     workload = next(i for i, step in enumerate(steps) if 'e2e/' in step.get('run', ''))
                     self.assertLess(checkout, setup)
+                    self.assertLess(checkout, verify)
+                    self.assertLess(verify, setup)
                     self.assertLess(setup, workload)
         action = yaml.safe_load((repository / '.github/actions/docker-lab/action.yml').read_text())
         self.assertEqual(action['runs']['post'], 'stop.js')
