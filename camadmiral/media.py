@@ -711,6 +711,11 @@ def replace_streams(sources: list[dict[str, str]]) -> None:
         separators=(",", ":"),
     ).encode("utf-8")
     _request("PATCH", "/api/config", body=body)
+    restart_relay()
+
+
+def restart_relay() -> None:
+    """Replace relay sessions without modifying its persisted configuration."""
     try:
         _request("POST", "/api/restart")
     except urllib.error.HTTPError:

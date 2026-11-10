@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import ExitStack
 from typing import TextIO
 
 from .config import SecretConfigurationError, database_path, settings
@@ -121,84 +122,89 @@ def main() -> int:
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
-    configuration = settings()
-    host = configuration.server.listen
-    port = str(configuration.server.port)
-    runtime_go2rtc_config = "/run/camadmiral/go2rtc.yaml"
-    template = open("/etc/camadmiral/go2rtc.yaml", encoding="utf-8").read()
-    repository: CameraRepository | None = None
-    try:
-        repository = CameraRepository(database_path(), load_master_key())
-        repository.migrate()
-        rtsp_password = repository.rtsp_access_password()
-    except SecretConfigurationError:
-        rtsp_password = None
-    runtime_config = render_go2rtc_config(template, rtsp_password)
-    with open(runtime_go2rtc_config, "w", encoding="utf-8") as config_file:
-        config_file.write(runtime_config)
-    os.chmod(runtime_go2rtc_config, 0o600)
-    children = [
-        Child(
-            "go2rtc",
-            ["/usr/local/bin/go2rtc", "-config", runtime_go2rtc_config],
-            restartable=True,
-            redact_logs=True,
-        ),
-        Child("scanner", [sys.executable, "-m", "camadmiral.scanner_worker"]),
-        Child(
-            "control",
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "camadmiral.app:app",
-                "--host",
-                host,
-                "--port",
-                port,
-                "--no-access-log",
-            ],
-        ),
-    ]
+    with ExitStack() as runtime_resources:
+        configuration = settings()
+        host = configuration.server.listen
+        port = str(configuration.server.port)
+        runtime_go2rtc_config = "/run/camadmiral/go2rtc.yaml"
+        template = open("/etc/camadmiral/go2rtc.yaml", encoding="utf-8").read()
+        repository: CameraRepository | None = None
+        try:
+            repository = CameraRepository(database_path(), load_master_key())
+            repository.migrate()
+            # Keep one idle connection for the supervised process lifetime. Short
+            # request connections retain their own transactions, while WAL cleanup
+            # cannot race a new reader after every last-connection close.
+            database_lifetime = runtime_resources.enter_context(repository.connect())
+            database_lifetime.execute('SELECT 1 FROM sqlite_schema LIMIT 1').fetchall()
+            rtsp_password = repository.rtsp_access_password()
+        except SecretConfigurationError:
+            rtsp_password = None
+        runtime_config = render_go2rtc_config(template, rtsp_password)
+        with open(runtime_go2rtc_config, "w", encoding="utf-8") as config_file:
+            config_file.write(runtime_config)
+        os.chmod(runtime_go2rtc_config, 0o600)
+        children = [
+            Child(
+                "go2rtc",
+                ["/usr/local/bin/go2rtc", "-config", runtime_go2rtc_config],
+                restartable=True,
+                redact_logs=True,
+            ),
+            Child("scanner", [sys.executable, "-m", "camadmiral.scanner_worker"]),
+            Child(
+                "control",
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "camadmiral.app:app",
+                    "--host",
+                    host,
+                    "--port",
+                    port,
+                    "--no-access-log",
+                ],
+            ),
+        ]
 
-    for child in children:
-        child.start()
-
-    exit_code = 0
-    try:
-        while not STOP:
+        exit_code = 0
+        try:
             for child in children:
-                process = child.process
-                if process is None or process.poll() is None:
-                    continue
-                if child.restartable and child.restarts < 5:
-                    child.restarts += 1
-                    delay = min(8, 2 ** (child.restarts - 1))
+                child.start()
+            while not STOP:
+                for child in children:
+                    process = child.process
+                    if process is None or process.poll() is None:
+                        continue
+                    if child.restartable and child.restarts < 5:
+                        child.restarts += 1
+                        delay = min(8, 2 ** (child.restarts - 1))
+                        print(
+                            f"supervisor: {child.name} exited; restart "
+                            f"{child.restarts}/5 in {delay}s exit_code={process.returncode}",
+                            flush=True,
+                        )
+                        time.sleep(delay)
+                        child.start()
+                        if child.name == "go2rtc" and repository is not None:
+                            notify_relay_restart(
+                                repository,
+                                reason="unexpected_process_exit",
+                                camera_count=0,
+                            )
+                        continue
                     print(
-                        f"supervisor: {child.name} exited; restart "
-                        f"{child.restarts}/5 in {delay}s",
+                        f"supervisor: required child {child.name} exited "
+                        f"with status {process.returncode}",
                         flush=True,
                     )
-                    time.sleep(delay)
-                    child.start()
-                    if child.name == "go2rtc" and repository is not None:
-                        notify_relay_restart(
-                            repository,
-                            reason="unexpected_process_exit",
-                            camera_count=0,
-                        )
-                    continue
-                print(
-                    f"supervisor: required child {child.name} exited "
-                    f"with status {process.returncode}",
-                    flush=True,
-                )
-                exit_code = process.returncode or 1
-                return exit_code
-            time.sleep(0.25)
-    finally:
-        stop_children(children)
-    return exit_code
+                    exit_code = process.returncode or 1
+                    return exit_code
+                time.sleep(0.25)
+        finally:
+            stop_children(children)
+        return exit_code
 
 
 if __name__ == "__main__":

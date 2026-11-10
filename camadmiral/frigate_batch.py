@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import sqlite3
 import time
 import urllib.parse
 
@@ -14,6 +16,18 @@ MEDIA_VERIFY_SECONDS = 90
 def _runtime_source(value):
     # Frigate accepts both a scalar source and a one-item source list.
     return value if isinstance(value, str) else value[0]
+
+
+def _failure_event(event, phase, exc, row=None):
+    fields = {'event': event, 'at_epoch': time.time(), 'phase': phase,
+              'error_type': type(exc).__name__}
+    if row and row.get('camera_uuid'):
+        fields['camera_uuid'] = row['camera_uuid']
+    if isinstance(exc, sqlite3.Error):
+        fields['sqlite_errorcode'] = getattr(exc, 'sqlite_errorcode', None)
+        fields['sqlite_errorname'] = getattr(exc, 'sqlite_errorname', None)
+    # Never include exception text, input URLs or camera-provided names.
+    print('frigate-import: ' + json.dumps(fields, sort_keys=True), flush=True)
 
 
 class BatchCutover:
@@ -44,6 +58,7 @@ class BatchCutover:
         self.checkpoint()
 
     def failure(self, row, exc):
+        _failure_event('row_failed', row.get('phase') or self.batch.get('phase'), exc, row)
         row.update(status='error', reason=exc.code if isinstance(exc, FrigateApiError) else 'import_failed', phase=None)
         self.remember(row)
 
@@ -353,6 +368,7 @@ class BatchCutover:
         self.finish()
 
     def abort(self, exc):
+        _failure_event('batch_aborted', self.batch.get('phase'), exc)
         self.checkpoint('rollback_all')
         pending = self.restore_rows(self.rows, reason=exc.code if isinstance(exc, FrigateApiError) else 'import_failed')
         self.batch['pending_restore'] = sorted(pending)
