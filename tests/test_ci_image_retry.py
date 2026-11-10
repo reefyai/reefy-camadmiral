@@ -1,5 +1,7 @@
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 from scripts.ci_image_retry import pull_image, prefetch_compose_images, transient_download_failure
@@ -73,6 +75,34 @@ class ImageRetryTests(unittest.TestCase):
     def test_classifier_does_not_retry_unknown_command_failures(self):
         self.assertFalse(transient_download_failure('AssertionError: invalid recording'))
         self.assertTrue(transient_download_failure('unexpected media type text/html'))
+
+    @patch('scripts.ci_image_retry.pull_image')
+    @patch('scripts.ci_image_retry.subprocess.run')
+    def test_build_prefetches_literal_base_images_without_replaying_the_build(self, run, pull):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory,'Dockerfile').write_text('FROM synthetic/base:1 AS compiler\n'
+                'FROM compiler AS reused\nFROM --platform=linux/amd64 synthetic/runtime:2\n')
+            services={'application':{'build':{'context':directory}},
+                      'unused':{'image':'synthetic/unused:1'}}
+            run.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'services':services}),''),
+                             self.result(1),self.result(1)]
+            route=['/synthetic/docker','--config','/synthetic/config','--host','unix:///synthetic-job.sock']
+            command=[*route,'compose','-p','synthetic','build','application']
+            prefetch_compose_images(command)
+            self.assertEqual([(route,'synthetic/base:1'),(route,'synthetic/runtime:2')],
+                             [call.args for call in pull.call_args_list])
+            self.assertFalse(any(call.args[0]==command for call in run.call_args_list),
+                             'Only acquisition is retried; the original build executes once in main')
+
+    @patch('scripts.ci_image_retry.pull_image')
+    @patch('scripts.ci_image_retry.subprocess.run')
+    def test_inline_build_ignores_stages_scratch_and_unresolved_arguments(self, run, pull):
+        services={'application':{'build':{'dockerfile_inline':'FROM scratch AS empty\n'
+            'FROM empty AS alias\nARG BASE\nFROM ${BASE}\nFROM synthetic/base:1\n'}}}
+        run.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'services':services}),''),self.result()]
+        prefetch_compose_images(['docker','compose','up','--build','application'])
+        pull.assert_not_called()
+        self.assertEqual(['docker','image','inspect','synthetic/base:1'],run.call_args_list[-1].args[0])
 
 
 if __name__=='__main__':unittest.main()
