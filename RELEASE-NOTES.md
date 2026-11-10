@@ -26,6 +26,12 @@ using its restart fallback. Unavailable sources now yield so independent address
 or identity correction can restore them. Safe fallback diagnostics record the
 request cause and verification duration without source URLs or credentials.
 
+Keep an idle SQLite connection through the supervised process lifetime so short
+worker operations do not repeatedly trigger last-connection WAL cleanup. Workers
+retain separate transactions and writer exclusion; shutdown closes the connection
+after child processes stop. Unexpected import diagnostics include SQLite error
+codes and phases while keeping credentials and source URLs private.
+
 # CamAdmiral v2026.10.02-00
 
 Brings the Frigate, stream and authentication improvements that were previously only

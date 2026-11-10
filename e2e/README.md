@@ -507,3 +507,19 @@ baseline is retained. Reader preflight now requires fresh upstream video before
 pausing capture or entering restart fallback, leaving its revision pending when
 source video or snapshot capacity is unavailable. Unit coverage verifies deferred
 retry, healthy peers, disabled recording and credential-free fallback diagnostics.
+
+
+## Database lifetime during concurrent requests
+
+The unchanged candidate `7d9e8e9f49efe0c1cbb5c4b571857cd86eb9f43d` failed the
+existing authenticated-import lab in run 42829838994 with a SQLite locked read and
+an import rollback. The repository opens a short connection per operation.
+SQLite documents an exclusive cleanup window when the last WAL connection closes:
+https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
+
+The supervisor now retains one idle connection until all child processes stop.
+Worker transactions remain independent and keep the existing timeout. The real
+SQLite lifecycle regression fails on the prior supervisor and verifies concurrent
+reads, writer exclusion, clean shutdown and database integrity with the fix.
+The existing real import/history and upgrade scenarios remain the final E2E gate;
+no lock error is treated as a successful import or hidden by retrying assertions.
