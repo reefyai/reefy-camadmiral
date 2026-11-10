@@ -371,8 +371,13 @@ def build_managed(repository, row, host):
     inputs = []
     # Keep all original non-source tuning. Split a combined Record/Detect
     # input so later role changes do not require changing capture topology.
-    for inp in managed.get('ffmpeg', {}).get('inputs', []):
-        assigned = inp.get('roles', [])
+    original_inputs = managed.get('ffmpeg', {}).get('inputs', [])
+    for inp in original_inputs:
+        assigned = set(inp.get('roles') or [])
+        if len(original_inputs) == 1:
+            # The saved role list omits Frigate's implicit Record/Detect pair.
+            # Both explicit readers are needed after the input is split.
+            assigned.update(('record', 'detect'))
         for role in ('record', 'detect'):
             if role in assigned:
                 changed = copy.deepcopy(inp)
@@ -475,7 +480,17 @@ def _temporary_api_error(exc):
 
 def _running_inputs_match(client, key, expected_inputs):
     paths = client.raw_paths().get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs', [])
-    simplify = lambda items: [{'path': i['path'], 'roles': i['roles']} for i in items]
+    def simplify(items):
+        result = []
+        for item in items:
+            roles = set(item.get('roles') or [])
+            # Frigate assigns Record and Detect to its sole input, even when
+            # saved YAML declares only one role. Preserve Audio and unknown
+            # roles so real changes still fail the ownership check.
+            if len(items) == 1:
+                roles.update(('record', 'detect'))
+            result.append({'path': item['path'], 'roles': sorted(roles)})
+        return result
     return simplify(paths) == simplify(expected_inputs)
 
 

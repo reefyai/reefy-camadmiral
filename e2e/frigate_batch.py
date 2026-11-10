@@ -58,6 +58,15 @@ def driver(stage):
         assert rows['slow_camera']['status'] == rows['interrupted_camera']['status'] == 'applied', rows
         assert rows['failure_camera']['status'] == 'error' and rows['failure_camera']['reason'] == 'configuration_changed_refresh_preview', rows
         raw = yaml.safe_load(frigate('/config/raw'))
+        # Saved single-input roles are implicit in Frigate, but both readers
+        # must remain active after CamAdmiral splits the capture inputs.
+        for key in ('slow_camera', 'interrupted_camera'):
+            inputs = raw['cameras'][key]['ffmpeg']['inputs']
+            assert [item['roles'] for item in inputs] == [['record'], ['detect']], inputs
+        state['results'][stage]['managed_inputs'] = {
+            key: raw['cameras'][key]['ffmpeg']['inputs']
+            for key in ('slow_camera', 'interrupted_camera')}
+        remember()
         expected = yaml.safe_load(state['saved'])
         expected['cameras']['failure_camera']['detect']['fps'] = 4
         assert raw['cameras']['failure_camera'] == expected['cameras']['failure_camera'], 'Operator edit was overwritten'
