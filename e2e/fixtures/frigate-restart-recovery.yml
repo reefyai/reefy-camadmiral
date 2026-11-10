@@ -33,7 +33,6 @@ cameras:
       - path: rtsp://127.0.0.1:8554/slow_stream
         input_args: preset-rtsp-restream
         roles:
-        - record
         - detect
     detect:
       width: 640
@@ -84,7 +83,6 @@ cameras:
         input_args: preset-rtsp-restream
         roles:
         - record
-        - detect
     detect:
       width: 640
       height: 360

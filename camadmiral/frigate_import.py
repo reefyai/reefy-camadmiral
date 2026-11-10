@@ -371,8 +371,13 @@ def build_managed(repository, row, host):
     inputs = []
     # Keep all original non-source tuning. Split a combined Record/Detect
     # input so later role changes do not require changing capture topology.
-    for inp in managed.get('ffmpeg', {}).get('inputs', []):
-        assigned = inp.get('roles', [])
+    original_inputs = managed.get('ffmpeg', {}).get('inputs', [])
+    for inp in original_inputs:
+        assigned = set(inp.get('roles') or [])
+        if len(original_inputs) == 1:
+            # The saved role list omits Frigate's implicit Record/Detect pair.
+            # Both explicit readers are needed after the input is split.
+            assigned.update(('record', 'detect'))
         for role in ('record', 'detect'):
             if role in assigned:
                 changed = copy.deepcopy(inp)
@@ -475,7 +480,17 @@ def _temporary_api_error(exc):
 
 def _running_inputs_match(client, key, expected_inputs):
     paths = client.raw_paths().get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs', [])
-    simplify = lambda items: [{'path': i['path'], 'roles': i['roles']} for i in items]
+    def simplify(items):
+        result = []
+        for item in items:
+            roles = set(item.get('roles') or [])
+            # Frigate assigns Record and Detect to its sole input, even when
+            # saved YAML declares only one role. Preserve Audio and unknown
+            # roles so real changes still fail the ownership check.
+            if len(items) == 1:
+                roles.update(('record', 'detect'))
+            result.append({'path': item['path'], 'roles': sorted(roles)})
+        return result
     return simplify(paths) == simplify(expected_inputs)
 
 
@@ -1002,7 +1017,8 @@ def _guard_restart_runtime_controls(raw, live, links):
                 raise FrigateApiError("import_source_conflict")
 
 
-def _restart_imported_target(repository, target, client, links, trigger):
+def _restart_imported_target(repository, target, client, links, trigger, *, reason="targeted_recovery_failed"):
+    started = time.monotonic()
     store = ImportStore(repository)
     pending = trigger.get("target_restart")
     raw = client.raw_config()
@@ -1024,6 +1040,10 @@ def _restart_imported_target(repository, target, client, links, trigger):
         # Save before dispatch: an uncertain reply must never cause a restart loop.
         trigger["target_restart"] = pending
         store.save_link(target.target_id, trigger["key"], trigger)
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'restart_requested', 'at_epoch': time.time(),
+            'camera_uuid': trigger['camera_uuid'], 'reason': reason,
+            'active_camera_count': len(pending['active_keys'])}, sort_keys=True), flush=True)
         _request_restart(client)
     if digest(raw) != pending["raw_hash"]:
         raise FrigateApiError("import_source_conflict")
@@ -1072,6 +1092,10 @@ def _restart_imported_target(repository, target, client, links, trigger):
     trigger.pop("capture_resume_pending", None)
     trigger.pop('source_recovery_pending', None)
     store.save_link(target.target_id, trigger["key"], trigger)
+    print('frigate-reader-recovery: ' + json.dumps({
+        'event': 'restart_verified', 'at_epoch': time.time(),
+        'camera_uuid': trigger['camera_uuid'],
+        'verification_seconds': round(time.monotonic() - started, 3)}, sort_keys=True), flush=True)
 
 
 def _refresh_capture(repository, target, client, links, row):
@@ -1082,7 +1106,7 @@ def _refresh_capture(repository, target, client, links, row):
         client.set_runtime_camera_enabled(row["key"], False)
     except FrigateApiError:
         try:
-            _restart_imported_target(repository, target, client, links, row)
+            _restart_imported_target(repository, target, client, links, row, reason='runtime_pause_failed')
         except FrigateApiError:
             if not row.get("target_restart"):
                 # A safety guard rejected global restart before dispatch.
@@ -1099,13 +1123,13 @@ def _refresh_capture(repository, target, client, links, row):
     try:
         client.set_runtime_camera_enabled(row["key"], True)
     except FrigateApiError:
-        _restart_imported_target(repository, target, client, links, row)
+        _restart_imported_target(repository, target, client, links, row, reason='runtime_resume_failed')
         return True
     row.pop("capture_resume_pending", None)
     store.save_link(target.target_id, row["key"], row)
     if error is not None:
         if _missing_runtime_yaml(error):
-            _restart_imported_target(repository, target, client, links, row)
+            _restart_imported_target(repository, target, client, links, row, reason='runtime_alias_missing')
             return True
         raise error
     return False
@@ -1120,6 +1144,26 @@ def _camera_source_revisions(client, row, camera, revisions):
     if not required or not required <= revisions.keys():
         return None
     return {key: revisions[key] for key in required}
+
+
+def _relay_video_ready(repository, client, row, camera):
+    # Do not pause downstream readers or wait for a recorder restart while the
+    # upstream is unavailable. That would hold the media lock and prevent an
+    # independent address/identity correction from restoring the source.
+    record = client.config().get('cameras', {}).get(row['key'], {}).get('record', {}).get('enabled', True)
+    roles = {'record', 'detect'} if record else {'detect'}
+    streams = {stream['stream_uuid']: stream for stream in camera['streams']
+               if stream.get('enabled', True) and roles & set(stream.get('roles', []))}
+    if not streams:
+        return False
+    password = repository.rtsp_access_password()
+    for stream in streams.values():
+        try:
+            snapshot_frame(stream['stream_key'], rtsp_password=password, width=320)
+        except SnapshotError:
+            print('frigate: reader recovery waiting for source video camera=' + row['camera_uuid'], flush=True)
+            return False
+    return True
 
 
 def _reader_media_ready(client, row):
@@ -1180,7 +1224,7 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                     try:
                         client.set_runtime_camera_enabled(key, True)
                     except FrigateApiError:
-                        _restart_imported_target(repository, target, client, links, row)
+                        _restart_imported_target(repository, target, client, links, row, reason='pending_runtime_resume_failed')
                         break
                 row.pop("capture_resume_pending", None)
                 store.save_link(target.target_id, key, row)
@@ -1216,8 +1260,9 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                     store.save_link(target.target_id, key, row)
                     repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
                 elif (time.monotonic() - pending['started'] >= 90
-                      and not _known_offline_required_roles(camera)):
-                    _restart_imported_target(repository, target, client, links, row)
+                      and not _known_offline_required_roles(camera)
+                      and _relay_video_ready(repository, client, row, camera)):
+                    _restart_imported_target(repository, target, client, links, row, reason='reader_verification_timeout')
                     break
                 # Let healthy peers recover while this camera initializes.
                 continue
@@ -1227,6 +1272,8 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                     # Leave the revision pending until ordinary health recovers.
                     continue
                 if not client.config().get("cameras", {}).get(key, {}).get("enabled", True):
+                    continue
+                if not _relay_video_ready(repository, client, row, camera):
                     continue
                 # Runtime pause stops both record and detect FFmpeg consumers.
                 # Replacing go2rtc aliases alone leaves active consumers orphaned.

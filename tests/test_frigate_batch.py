@@ -270,3 +270,22 @@ class FrigateBatchTests(unittest.TestCase):
              patch.object(self.client, 'restart', side_effect=persistent_runtime_restart):
             fixtures.restore(self.repo, self.target, 'second_camera', self.client, lambda: True)
         self.assertEqual(implicit, self.client.raw_config()['cameras']['second_camera'])
+
+
+class FailureDiagnosticsTests(unittest.TestCase):
+    def test_database_error_codes_are_logged_without_exception_secrets(self):
+        import contextlib
+        import io
+        import sqlite3
+        from camadmiral.frigate_batch import _failure_event
+        exc = sqlite3.OperationalError('rtsp://operator:synthetic-secret@192.0.2.90/live')
+        exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        exc.sqlite_errorname = 'SQLITE_BUSY'
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _failure_event('row_failed', 'saving', exc, {'camera_uuid': 'synthetic-camera'})
+        value = output.getvalue()
+        self.assertIn('"sqlite_errorcode": 5', value)
+        self.assertIn('"sqlite_errorname": "SQLITE_BUSY"', value)
+        self.assertNotIn('synthetic-secret', value)
+        self.assertNotIn('rtsp://', value)

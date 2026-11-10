@@ -20,6 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_VOLUME = Path('/var/lib/camadmiral-ci-docker')
 
 
+def ensure_docker_tools():
+    checks = [['dockerd', '--version'], ['docker', 'compose', 'version'], ['docker', 'buildx', 'version']]
+    if all(shutil.which(args[0]) for args in checks) and all(
+        subprocess.run(args, capture_output=True, timeout=10).returncode == 0 for args in checks
+    ):
+        print('Reusing installed CI Docker tools; private daemon state still starts empty', flush=True)
+        return
+    if __package__:
+        from .ci_packages import apt_get
+    else:
+        from ci_packages import apt_get
+    apt_get(['update'])
+    apt_get(['install', '-y', '--no-install-recommends', 'docker.io', 'docker-compose-v2', 'docker-buildx'])
+
+
 def owner(environment):
     return ':'.join(environment[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
 
@@ -40,7 +55,7 @@ def prepare(environment):
     config.write_text('{"auths":{}}\n')
     config.chmod(0o600)
     (root / 'owner.json').write_text(json.dumps({'owner': owner(environment)}))
-    (root / 'daemon.json').write_text('{}\n')
+    (root / 'daemon.json').write_text(json.dumps({'registry-mirrors': ['https://mirror.gcr.io']}))
     return root
 
 
@@ -115,7 +130,7 @@ def client_wrapper(root, binary='/usr/bin/camadmiral-docker-cli'):
     # only the client inside this ephemeral job container to its own daemon.
     return ('#!/bin/sh\n'
             'unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_TLS_CERTDIR DOCKER_API_VERSION\n'
-            'exec ' + shlex.quote(str(binary)) + ' --config ' + shlex.quote(str(root / 'config'))
+            'exec python3 ' + shlex.quote(str(ROOT / 'scripts/ci_image_retry.py')) + ' ' + shlex.quote(str(binary)) + ' --config ' + shlex.quote(str(root / 'config'))
             + ' --host ' + shlex.quote('unix://' + str(root / 'docker.sock')) + ' "$@"\n')
 
 
@@ -142,6 +157,11 @@ def start():
     if (os.environ.get('CAMADMIRAL_CI_JOB_CONTAINER') != '1'
             or not Path('/.dockerenv').exists() or os.geteuid() != 0):
         raise RuntimeError('Private Docker requires the declared privileged Actions job container')
+    if __package__:
+        from .ci_tools import validate_prepared
+    else:
+        from ci_tools import validate_prepared
+    validate_prepared()
     artifacts = ROOT / 'e2e-artifacts/docker-lab'
     artifacts.mkdir(parents=True, exist_ok=True)
     root = prepare(os.environ)
@@ -158,10 +178,7 @@ def start():
     if sources.exists():
         sources.write_text(sources.read_text().replace('http://archive.ubuntu.com/', 'https://archive.ubuntu.com/')
                            .replace('http://security.ubuntu.com/', 'https://security.ubuntu.com/'))
-    environment = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
-    subprocess.run(['apt-get', '-o', 'Acquire::Retries=3', 'update'], env=environment, check=True)
-    subprocess.run(['apt-get', '-o', 'Acquire::Retries=3', 'install', '-y', '--no-install-recommends',
-                    'docker.io', 'docker-compose-v2', 'docker-buildx'], env=environment, check=True)
+    ensure_docker_tools()
     enable_cgroup_nesting()
     log = (artifacts / 'dockerd.log').open('w')
     daemon = subprocess.Popen(['dockerd', '--config-file', str(root / 'daemon.json'),
@@ -180,6 +197,12 @@ def start():
             (root / 'owner.json').write_text(json.dumps(metadata))
             if str(info['CgroupVersion']) != '2' or not info['MemoryLimit'] or not info['PidsLimit']:
                 raise RuntimeError('Docker lab must enforce real cgroup v2 memory and PID limits')
+            if __package__:
+                from .ci_image_retry import pull_image
+            else:
+                from ci_image_retry import pull_image
+            pull_image(['docker', '--config', str(root / 'config'), '--host',
+                        'unix://' + str(root / 'docker.sock')], 'alpine:3.22')
             probe = command(root, 'run', '--rm', '--memory=32m', '--memory-swap=32m', '--pids-limit=32',
                             'alpine:3.22', 'sh', '-c',
                             'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max', timeout=120)

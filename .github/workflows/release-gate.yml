@@ -50,7 +50,7 @@ jobs:
         frigate: ["0.17.2", "0.18.2"]
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -64,12 +64,12 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify slow handoff and interrupted restoration
@@ -98,7 +98,7 @@ jobs:
         frigate: ["0.17.2", "0.18.2"]
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -112,12 +112,12 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify authenticated direct-input import and history
@@ -145,7 +145,7 @@ jobs:
       cancel-in-progress: false
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -158,10 +158,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - uses: actions/setup-python@v5
@@ -171,7 +171,7 @@ jobs:
       - name: Install browser dependencies
         run: |
           python -m pip install -r e2e/requirements.txt
-          python -m playwright install --with-deps webkit
+          python -m playwright install webkit
       - name: Verify imported physical identity and DHCP recovery
         run: python3 e2e/frigate_identity.py
       - uses: actions/upload-artifact@v4
@@ -212,7 +212,7 @@ jobs:
     if: needs.classify-changes.outputs.e2e == 'true'
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -225,12 +225,12 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify baseline failure and fixed video with microphone audio
@@ -263,7 +263,7 @@ jobs:
     if: needs.classify-changes.outputs.e2e == 'true'
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -276,10 +276,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - name: Verify concurrent media workload without OOM or retained-memory growth
@@ -376,7 +376,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -389,10 +389,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         if: needs.classify-changes.outputs.e2e == 'true'
         uses: ./.github/actions/docker-lab
@@ -436,7 +436,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -449,10 +449,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         if: needs.classify-changes.outputs.e2e == 'true'
         uses: ./.github/actions/docker-lab
@@ -470,7 +470,7 @@ jobs:
 
       - name: Install browser for UI E2E
         if: needs.classify-changes.outputs.e2e == 'true'
-        run: python -m playwright install --with-deps webkit
+        run: python -m playwright install webkit
 
       - name: Verify Frigate import and camera history preservation
         if: needs.classify-changes.outputs.e2e == 'true'
@@ -501,7 +501,7 @@ jobs:
     # caches between release-gate runs.
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -514,10 +514,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         if: needs.classify-changes.outputs.e2e == 'true'
         uses: ./.github/actions/docker-lab
@@ -538,7 +538,7 @@ jobs:
 
       - name: Install browser for UI E2E
         if: needs.classify-changes.outputs.e2e == 'true'
-        run: python -m playwright install --with-deps webkit
+        run: python -m playwright install webkit
 
       - name: Run isolated E2E lab
         if: needs.classify-changes.outputs.e2e == 'true'

@@ -10,7 +10,7 @@ jobs:
   memory:
     runs-on: [self-hosted, Linux, X64, big-bird]
     container:
-      image: ubuntu:24.04
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private
       volumes:
         - /var/lib/camadmiral-ci-docker
@@ -23,10 +23,10 @@ jobs:
       - name: Bootstrap job container
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 lsb-release python3 python3-venv
           git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
       - run: python3 e2e/memory_pressure.py
