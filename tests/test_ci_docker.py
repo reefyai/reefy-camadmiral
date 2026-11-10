@@ -33,6 +33,8 @@ class PrivateDockerTests(unittest.TestCase):
         self.assertEqual(json.loads((root / 'config/config.json').read_text()), {'auths': {}})
         self.assertEqual((root / 'config/config.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(json.loads((root / 'daemon.json').read_text()),
+                         {'registry-mirrors': ['https://mirror.gcr.io']})
         self.assertEqual(owned_root(str(root), self.environment), root)
 
     def test_different_jobs_get_distinct_daemon_state(self):
@@ -167,7 +169,7 @@ sys.exit(99)
                 if not any('e2e/' in step.get('run', '') for step in steps):
                     continue
                 with self.subTest(workflow=name, job=job_id):
-                    self.assertEqual(job['container'], {'image': 'ubuntu:24.04', 'options': '--privileged --cgroupns=private',
+                    self.assertEqual(job['container'], {'image': 'mirror.gcr.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852', 'options': '--privileged --cgroupns=private',
                                      'volumes': ['/var/lib/camadmiral-ci-docker']})
                     self.assertEqual(job['env']['CAMADMIRAL_CI_JOB_CONTAINER'], '1')
                     self.assertEqual(job['env']['AGENT_TOOLSDIRECTORY'], '/opt/camadmiral-toolcache')

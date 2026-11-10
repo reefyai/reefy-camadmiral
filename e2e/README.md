@@ -470,3 +470,9 @@ Only image acquisition is retried; lab startup and assertions still execute once
 The wrapper retains the job's private daemon and credential route and never
 uses the shared host engine. Synthetic retry regressions are registered in
 `tests/test_ci_image_retry.py`.
+
+The isolated jobs also reuse Reefy's existing Google Docker Hub cache policy.
+Their Ubuntu 24.04 job image is pinned to the same manifest digest previously
+pulled from Docker Hub. Only each job's disposable Docker daemon gets the HTTPS
+registry-mirror setting; no runner host daemon configuration changes. This avoids
+Docker Hub throttling while retaining parallelism and the resource-limit gate.
