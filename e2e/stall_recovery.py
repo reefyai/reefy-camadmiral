@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = Path('/state/stall-recovery.json')
@@ -56,11 +57,28 @@ def driver(stage):
         print('PASS: two synthetic cameras processing actual video', flush=True)
         return
     state = json.loads(STATE.read_text())
+    if stage == 'hold-audio':
+        processes=[]
+        try:
+            for stream in state['cameras'][0]['streams']:
+                target=stream['downstream']
+                u=urllib.parse.urlsplit(target['url'])
+                auth=target['authentication']
+                netloc=urllib.parse.quote(auth['username'],safe='')+':'+urllib.parse.quote(auth['password'],safe='')+'@'+u.netloc
+                uri=urllib.parse.urlunsplit(u._replace(netloc=netloc))
+                processes.append(subprocess.Popen(['ffmpeg','-v','error','-nostdin','-rtsp_transport','tcp',
+                    '-allowed_media_types','audio','-i',uri,'-map','0:a:0','-c','copy','-f','null','-'],
+                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+            while all(p.poll() is None for p in processes):time.sleep(1)
+            raise AssertionError('Synthetic audio reader stopped unexpectedly')
+        finally:
+            for process in processes:
+                process.terminate();process.wait(timeout=5)
     if stage == 'arm':
         control('freeze-current-video')
         print('Video frozen only on existing sessions; audio and RTSP control remain live', flush=True)
         return
-    if stage == 'verify':
+    if stage in ('verify','verify-initial'):
         # A reader attached to the old producer cannot recover until CamAdmiral
         # replaces it. No test-side reconnect, resume, rescan or restart is used.
         wait_for('automatic same-address capture recovery', lambda: all(
@@ -86,8 +104,9 @@ def driver(stage):
                 sample = recording_for_playback(values,key,since=when)
                 assert sample, 'Complete recording missing: '+label
                 data = urllib.request.urlopen(recording_playback_url(sample,values),timeout=30).read()
-                p = subprocess.run(['ffmpeg','-v','error','-threads','1','-i','pipe:0','-an',
-                                    '-frames:v','1','-f','framemd5','-'],input=data,capture_output=True,timeout=30)
+                clip=Path('/state/stall-playback.mp4');clip.write_bytes(data)
+                p = subprocess.run(['ffmpeg','-v','error','-threads','1','-i',str(clip),'-an',
+                                    '-frames:v','1','-f','framemd5','-'],capture_output=True,timeout=30)
                 assert p.returncode == 0 and any(l and not l.startswith(b'#') for l in p.stdout.splitlines()), 'Recording did not decode'
         print('PASS: historical and fresh recordings decode for affected and unrelated cameras', flush=True)
         return
@@ -124,6 +143,10 @@ def host():
         run('build','camadmiral')
         run('up','-d','camera-open','stalled-camera','camadmiral','frigate')
         stage('setup')
+        run('run','-d','--name','camadmiral-stall-audio','--entrypoint','python','test-driver',
+            '/e2e/stall_recovery.py','hold-audio')
+        time.sleep(10)
+        stage('verify-initial')
         deadline=time.monotonic()+100
         while True:
             rows=recordings('stall-before.json')
@@ -139,8 +162,11 @@ def host():
         # producer alive; the application watchdog must observe video itself.
         time.sleep(12)
         fault=json.loads(run('exec','-T','stalled-camera','python','-c',
-            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stream-stats').read().decode())"))
+            "import urllib.request
+import urllib.parse; print(urllib.request.urlopen('http://127.0.0.1:8080/stream-stats').read().decode())"))
+        assert fault['forwarded_audio_packets']>0,'No audio flowed during the video stall'
         assert fault['frozen_video_packets']>0,'Video fault never activated'
+        assert fault['frozen_video_sessions']>0,'Frozen sessions reconnected before watchdog recovery'
         stage('verify')
         deadline=time.monotonic()+100
         while True:
@@ -152,7 +178,13 @@ def host():
         after={'camadmiral':state('camadmiral'),'frigate':state('frigate'),'relay_pid':pid()}
         assert before['camadmiral']==after['camadmiral'],'CamAdmiral container restarted'
         assert before['frigate']==after['frigate'],'Frigate container restarted'
-        assert before['relay_pid']!=after['relay_pid'],'Stuck producer was never replaced'
+        proxy=json.loads(run('exec','-T','stalled-camera','python','-c',
+            "import urllib.request
+import urllib.parse; print(urllib.request.urlopen('http://127.0.0.1:8080/stream-stats').read().decode())"))
+        assert proxy['frozen_video_sessions']==0,'Old stuck sessions survived recovery'
+        logs=run('logs','--no-color','camadmiral')
+        assert logs.count('"event": "restart_started"')==1,'Recovery reset was missing or repeated'
+        assert '"event": "recovery_verified"' in logs,'Recovery was not verified with a decoded frame'
         result.update(status='passed',before=before,after=after,fault=fault)
         print('PASS: same-address video stall recovered without container restarts or data changes',flush=True)
     except Exception as exc:

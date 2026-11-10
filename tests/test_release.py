@@ -65,6 +65,10 @@ class ReleaseMetadataTests(unittest.TestCase):
                     continue
                 with self.subTest(workflow=workflow, job=job_id):
                     selector = job["runs-on"]
+                    if workflow == 'stalled-snapshot.yml' and job_id == 'stall-recovery':
+                        self.assertEqual(selector, ['self-hosted', 'Linux', 'X64', 'big-bird'])
+                        self.assertIn('head.repo.full_name == github.repository', job['if'])
+                        continue
                     self.assertIsInstance(selector, str)
                     self.assertIn('"self-hosted","Linux","X64","big-bird"', selector)
                     self.assertNotIn('"large"', selector)

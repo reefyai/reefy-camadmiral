@@ -3,8 +3,16 @@ on:
   push:
     branches: ["fix-snapshot-health", "fix-auth-retry"]
   workflow_dispatch:
+    inputs:
+      watchdog_only:
+        description: Run only the focused stalled-video regression
+        type: boolean
+        default: false
   workflow_call:
     inputs:
+      watchdog_only:
+        type: boolean
+        default: false
       github_hosted:
         type: boolean
         default: false
@@ -16,6 +24,7 @@ concurrency:
 
 jobs:
   stream-settings:
+    if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ubuntu:24.04
@@ -59,6 +68,7 @@ jobs:
           if-no-files-found: ignore
 
   auth-retry:
+    if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ubuntu:24.04
@@ -95,6 +105,7 @@ jobs:
           if-no-files-found: ignore
 
   snapshot-health:
+    if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ubuntu:24.04
@@ -131,6 +142,7 @@ jobs:
           if-no-files-found: ignore
 
   stalled-snapshot:
+    if: ${{ !inputs.watchdog_only }}
     runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ubuntu:24.04
