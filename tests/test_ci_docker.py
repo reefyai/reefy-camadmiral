@@ -169,7 +169,7 @@ sys.exit(99)
                 if not any('e2e/' in step.get('run', '') for step in steps):
                     continue
                 with self.subTest(workflow=name, job=job_id):
-                    self.assertEqual(job['container'], {'image': 'ghcr.io/reefyai/camadmiral-ci@sha256:52afc5d826d93d276ec0cc0d1a94763907ab72be9f4d8bffee2854306c337a59', 'options': '--privileged --cgroupns=private',
+                    self.assertEqual(job['container'], {'image': 'ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67', 'options': '--privileged --cgroupns=private',
                                      'volumes': ['/var/lib/camadmiral-ci-docker']})
                     self.assertEqual(job['env']['CAMADMIRAL_CI_JOB_CONTAINER'], '1')
                     self.assertEqual(job['env']['AGENT_TOOLSDIRECTORY'], '/opt/camadmiral-toolcache')
