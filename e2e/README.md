@@ -608,3 +608,11 @@ packets, reproducing the empty-track source condition. Audio packets are enabled
 only for the preservation check, then suppressed again. Other scenarios using the
 same proxy retain their normal audio. The saved policy is rechecked after an app
 restart; no recorder restart is allowed during policy changes.
+
+The empty-audio fixture identifies the synthetic PCMU microphone by RTP payload
+type, independent of interleaved channel allocation. Its focused regression
+covers both audio/video track orders, marker bits and non-media packets:
+`python -m unittest tests.test_e2e_audio_fixture -v`. The former channel-number
+predicate incorrectly muted H.264 when audio was assigned the first channel pair.
+The real-media scenario retains all existing capture, decode and preservation
+checks and readiness limits.

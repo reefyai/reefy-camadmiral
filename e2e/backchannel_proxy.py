@@ -55,6 +55,13 @@ def advertise_broken_backchannel(data):
     return header + b"\r\n\r\n" + body
 
 
+def is_microphone_packet(data):
+    # The synthetic microphone is PCMU (RTP payload type 0). Track/channel
+    # order can vary, so a channel number must not decide which media to mute.
+    return (len(data) >= 16 and data[0] == 36 and data[4] >> 6 == 2
+            and data[5] & 0x7f == 0)
+
+
 async def relay(reader, writer):
     upstream = None
     task = None
@@ -102,9 +109,10 @@ async def relay(reader, writer):
         while True:
             data = await message(source)
             if data.startswith(b"$"):
-                if stalled or (empty_audio and data[1] >= 2):
+                muted_microphone = empty_audio and is_microphone_packet(data)
+                if stalled or muted_microphone:
                     stats["dropped_packets"] += 1
-                    stats["dropped_audio_packets"] += int(empty_audio and data[1] >= 2)
+                    stats["dropped_audio_packets"] += int(muted_microphone)
                     continue
             else:
                 method, backchannel, faulty = await pending.get()
