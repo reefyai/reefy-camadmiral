@@ -1,0 +1,23 @@
+services:
+  camadmiral:
+    image: ${AUDIO_TEST_IMAGE:-camadmiral-e2e:local}
+  camera-open:
+    volumes:
+      - ./fixtures/camera-passive.yaml:/e2e/camera-open.yaml:ro
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:${FRIGATE_TEST_VERSION:-0.18.2}
+    volumes:
+      - ./fixtures/frigate-audio.yml:/e2e/frigate.yml:ro
+  backchannel-camera:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/backchannel_proxy.py]
+    environment:
+      EMPTY_AUDIO_TRACK: "1"
+    volumes:
+      - ./backchannel_proxy.py:/e2e/backchannel_proxy.py:ro
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: true

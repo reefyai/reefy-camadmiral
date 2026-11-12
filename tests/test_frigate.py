@@ -563,6 +563,7 @@ class FrigateReconciliationTests(unittest.TestCase):
             self.target.target_id,
             self.target.name,
             self.target.api_url,
+            audio_mode="preserve",
         )
         self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
         self.client = FakeFrigateClient(self.target)

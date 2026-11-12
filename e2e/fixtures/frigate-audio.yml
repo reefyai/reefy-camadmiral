@@ -1,0 +1,26 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detect:
+  enabled: false
+record:
+  enabled: false
+go2rtc:
+  streams:
+    legacy_live: rtsp://backchannel-camera:8554/healthy
+cameras:
+  synthetic_entrance:
+    friendly_name: Synthetic entrance
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/legacy_live
+          roles: [record, detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+    live:
+      streams:
+        Main: legacy_live
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1

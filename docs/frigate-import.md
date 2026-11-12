@@ -114,3 +114,24 @@ Validation lives in the established GitHub Actions release gate. See
 [the E2E lab](../e2e/README.md#frigate-import-and-takeover-regression) for the
 committed fixtures, repeatable command, artifacts, and assertions. No live fleet
 data is used in tests, screenshots, examples, or validation notes.
+
+## Frigate audio policy
+
+Each Frigate integration has an **Audio** setting in its add/edit dialog.
+New integrations default to **Video only**. Existing integrations migrate to
+**Preserve camera audio** without changing their streams. Choose preservation
+when listening, recording audio or using Frigate audio detection. An update that
+omits the setting retains its saved value.
+
+The integration API accepts and returns `audio_mode`, either `video_only` or
+`preserve`. Video-only exports append the native go2rtc `?video` selector to
+CamAdmiral relay URLs. This prevents empty advertised audio tracks from stalling
+live playback. The shared camera source, other consumers and integrations that
+preserve audio keep their audio. Imported live aliases follow the same policy;
+explicit audio conversion options are omitted only in video-only mode.
+
+Changing the policy updates owned saved and runtime aliases without restarting
+Frigate. Reopen existing live views to reconnect with the new tracks. Camera IDs,
+history, detection tuning, recording policy and rollback snapshots stay intact.
+Conflicting external source edits still require review. A manually configured
+second recorder needs the corresponding URL changes separately.

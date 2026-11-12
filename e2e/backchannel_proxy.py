@@ -1,12 +1,14 @@
 """Synthetic camera: ordinary A/V works, advertised talkback SETUP is malformed."""
 import asyncio
 import json
+import os
 import re
 from urllib.parse import urlsplit, urlunsplit
 
 stats = {"describes": 0, "backchannel_requests": 0, "broken_setups": 0,
-         "plays": 0, "active": 0, "max_active": 0, "dropped_packets": 0}
+         "plays": 0, "active": 0, "max_active": 0, "dropped_packets": 0, "dropped_audio_packets": 0}
 stalled = False
+empty_audio = os.environ.get("EMPTY_AUDIO_TRACK") == "1"
 
 
 async def message(reader):
@@ -20,13 +22,17 @@ async def message(reader):
 
 
 async def control(reader, writer):
-    global stalled
+    global stalled, empty_audio
     path = (await reader.readline()).split()[1]
     if path == b"/stall":
         stalled = True
     elif path == b"/resume":
         stalled = False
-    body = json.dumps(dict(stats, stalled=stalled)).encode()
+    elif path == b"/audio/stall":
+        empty_audio = True
+    elif path == b"/audio/resume":
+        empty_audio = False
+    body = json.dumps(dict(stats, stalled=stalled, empty_audio=empty_audio)).encode()
     writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: "
                  + str(len(body)).encode() + b"\r\n\r\n" + body)
     await writer.drain()
@@ -96,8 +102,9 @@ async def relay(reader, writer):
         while True:
             data = await message(source)
             if data.startswith(b"$"):
-                if stalled:
+                if stalled or (empty_audio and data[1] >= 2):
                     stats["dropped_packets"] += 1
+                    stats["dropped_audio_packets"] += int(empty_audio and data[1] >= 2)
                     continue
             else:
                 method, backchannel, faulty = await pending.get()

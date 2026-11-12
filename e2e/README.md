@@ -588,3 +588,23 @@ python -m unittest discover -s tests -p test_ci_image_retry.py -v
 The fixed helper passes the same ten checks, including the existing finite
 retry budget, certificate/authentication rejection, cache reuse and private
 endpoint checks. Full release qualification retains the real media scenarios.
+
+### Frigate audio policy regression
+
+Run `python3 e2e/frigate_audio.py` in the normal isolated Docker lab. The release
+gate runs it in parallel with the existing scenarios against Frigate 0.17.2 and
+0.18.2. It imports a synthetic H264/PCMU source on the pinned unmodified baseline
+and candidate, checks the baseline retains unwanted audio, and requires the
+candidate's default export to contain only video. It decodes frames, switches
+back to preservation and reads actual microphone samples, then restores video
+only without restarting Frigate or changing camera IDs, URLs, masks or tuning.
+Invalid settings and configuration preview are checked too. Native logs,
+application/image provenance and machine-readable results remain under
+`e2e-artifacts/frigate-audio/`. Existing live browser sessions must reconnect;
+real browser playback is a separate dev acceptance check.
+
+The audio-policy fixture advertises a PCMU microphone while suppressing its RTP
+packets, reproducing the empty-track source condition. Audio packets are enabled
+only for the preservation check, then suppressed again. Other scenarios using the
+same proxy retain their normal audio. The saved policy is rechecked after an app
+restart; no recorder restart is allowed during policy changes.

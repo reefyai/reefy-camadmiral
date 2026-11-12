@@ -488,6 +488,8 @@ SCHEMA_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("frigate_camera_selections", "detect_width", "INTEGER"),
     ("frigate_camera_selections", "detect_height", "INTEGER"),
     ("frigate_camera_selections", "sync_error", "TEXT"),
+    ("frigate_targets", "audio_mode",
+     "TEXT NOT NULL DEFAULT 'preserve' CHECK(audio_mode IN ('preserve', 'video_only'))"),
 )
 
 
@@ -1934,7 +1936,7 @@ class CameraRepository:
             rows = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
-                "t.address_mode, "
+                "t.address_mode, t.audio_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
@@ -1951,15 +1953,23 @@ class CameraRepository:
         target_id: str,
         name: str,
         api_url: str,
+        *,
+        audio_mode: str | None = None,
     ) -> None:
+        if audio_mode is not None and audio_mode not in {"preserve", "video_only"}:
+            raise ValueError("Frigate audio mode is invalid")
         timestamp = _now()
         with self.connect() as connection:
+            current = connection.execute(
+                "SELECT audio_mode FROM frigate_targets WHERE target_id=?", (target_id,)
+            ).fetchone()
+            mode = audio_mode if audio_mode is not None else current["audio_mode"] if current else "video_only"
             connection.execute(
                 "INSERT INTO frigate_targets(target_id, name, api_url, sync_cameras, "
-                "connection_status, created_at, updated_at) "
-                "VALUES (?, ?, ?, 0, 'pending', ?, ?) "
+                "connection_status, created_at, updated_at, audio_mode) "
+                "VALUES (?, ?, ?, 0, 'pending', ?, ?, ?) "
                 "ON CONFLICT(target_id) DO UPDATE SET name=excluded.name, "
-                "api_url=excluded.api_url, "
+                "api_url=excluded.api_url, audio_mode=excluded.audio_mode, "
                 "connection_status=CASE WHEN frigate_targets.api_url != excluded.api_url "
                 "THEN 'pending' ELSE frigate_targets.connection_status END, "
                 "last_error_code=CASE WHEN frigate_targets.api_url != excluded.api_url "
@@ -1969,7 +1979,7 @@ class CameraRepository:
                 "restart_recommended=CASE WHEN frigate_targets.api_url != excluded.api_url "
                 "THEN 0 ELSE frigate_targets.restart_recommended END, "
                 "updated_at=excluded.updated_at",
-                (target_id, name, api_url, timestamp, timestamp),
+                (target_id, name, api_url, timestamp, timestamp, mode),
             )
             connection.commit()
 
@@ -1978,7 +1988,7 @@ class CameraRepository:
             row = connection.execute(
                 "SELECT t.target_id, t.name, t.api_url, t.connection_status, "
                 "t.last_error_code, t.last_checked_at, t.restart_recommended, "
-                "t.address_mode, "
+                "t.address_mode, t.audio_mode, "
                 "t.created_at, t.updated_at, "
                 "COUNT(s.camera_uuid) AS selected_cameras "
                 "FROM frigate_targets t LEFT JOIN frigate_camera_selections s "
