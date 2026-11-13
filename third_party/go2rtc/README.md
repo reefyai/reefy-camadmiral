@@ -10,7 +10,7 @@ The patch limits simultaneous consumer setup to 16 per stream, including
 cleanup, while leaving established readers unrestricted. Failed initial dials
 share a one-second cooldown. Queued abandoned callers therefore reuse a failed
 attempt instead of each performing another slow dial; further callers cannot
-accumulate without bound. A changed source clears its previous failure. Normal
+accumulate without bound. The failure cache is keyed to the source, so a changed address bypasses it. Normal
 RTSP network deadlines and existing connected-reader reconnection remain intact.
 The first admitted setup can run until its existing network deadline; this is
 bounded admission and shared failure, not disconnect-aware network cancellation.

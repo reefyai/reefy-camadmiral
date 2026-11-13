@@ -28,47 +28,32 @@ index 7400ce6..d1abf26 100644
  	consN := s.pending.Add(1) - 1
  
 diff --git a/internal/streams/producer.go b/internal/streams/producer.go
-index 09e2dcc..0872a95 100644
+index 09e2dcc..10f9d81 100644
 --- a/internal/streams/producer.go
 +++ b/internal/streams/producer.go
-@@ -34,6 +34,8 @@ type Producer struct {
+@@ -34,6 +34,9 @@ type Producer struct {
  	state    state
  	mu       sync.Mutex
  	workerID int
 +	dialErr error
++	dialSource string
 +	retryAfter time.Time
  }
  
  const SourceTemplate = "{input}"
-@@ -47,6 +49,16 @@ func NewProducer(source string) *Producer {
- }
- 
- func (p *Producer) SetSource(s string) {
-+	p.mu.Lock()
-+	defer p.mu.Unlock()
-+	previous := p.url
-+	defer func() {
-+		if previous != p.url {
-+			p.dialErr = nil
-+			p.retryAfter = time.Time{}
-+		}
-+	}()
-+
- 	if p.template == "" {
- 		p.url = s
- 	} else {
-@@ -59,11 +71,22 @@ func (p *Producer) Dial() error {
+@@ -59,11 +62,23 @@ func (p *Producer) Dial() error {
  	defer p.mu.Unlock()
  
  	if p.state == stateNone {
 +		// Share failure/backoff with queued and subsequent callers. Otherwise
 +		// every abandoned request performs another slow serial network dial.
-+		if p.dialErr != nil && time.Now().Before(p.retryAfter) {
++		if p.dialErr != nil && p.dialSource == p.url && time.Now().Before(p.retryAfter) {
 +			return p.dialErr
 +		}
  		conn, err := GetProducer(p.url)
  		if err != nil {
 +			p.dialErr = err
++			p.dialSource = p.url
 +			p.retryAfter = time.Now().Add(time.Second)
 +			log.Warn().Err(err).Dur("retry_in", time.Second).
 +				Msg("[streams] upstream setup failed; retry deferred")
