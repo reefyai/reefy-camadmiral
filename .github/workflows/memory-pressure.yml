@@ -1,13 +1,21 @@
 name: Media memory regression
 on:
   workflow_dispatch:
+    inputs:
+      retention_only:
+        description: Run only the offline-source retention regression
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
   group: camadmiral-memory-regression
   cancel-in-progress: false
 jobs:
+  rtsp-retention:
+    uses: ./.github/workflows/rtsp-retention.yml
   memory:
+    if: ${{ !inputs.retention_only }}
     runs-on: [self-hosted, Linux, X64, big-bird]
     container:
       image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67

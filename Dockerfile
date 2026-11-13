@@ -1,21 +1,30 @@
-FROM alpine:3.22 AS go2rtc
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS go2rtc
 
+ARG TARGETOS=linux
 ARG TARGETARCH
 ARG GO2RTC_VERSION=1.9.14
-ARG GO2RTC_AMD64_SHA256=32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6
-ARG GO2RTC_ARM64_SHA256=359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50
+ARG GO2RTC_SOURCE=b5948cfb25404cc5cb37b166ecaa2dca20b11d4b
+ARG GO2RTC_SOURCE_SHA256=78aa79bcedec8f155e4060a379613979b0b3ee48ff62ee5164bafc0ac6532386
 
-RUN apk add --no-cache ca-certificates curl \
-    && case "${TARGETARCH}" in \
-         amd64) asset=go2rtc_linux_amd64; expected="${GO2RTC_AMD64_SHA256}" ;; \
-         arm64) asset=go2rtc_linux_arm64; expected="${GO2RTC_ARM64_SHA256}" ;; \
-         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL \
-         "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/${asset}" \
-         -o /go2rtc \
-    && echo "${expected}  /go2rtc" | sha256sum -c - \
-    && chmod 0755 /go2rtc
+RUN apk add --no-cache ca-certificates curl patch gcc musl-dev
+WORKDIR /src
+RUN curl --retry 5 --retry-all-errors -fsSL \
+      "https://codeload.github.com/AlexxIT/go2rtc/tar.gz/${GO2RTC_SOURCE}" -o /source.tar.gz \
+    && echo "${GO2RTC_SOURCE_SHA256}  /source.tar.gz" | sha256sum -c - \
+    && tar -xzf /source.tar.gz --strip-components=1 -C /src \
+    && rm /source.tar.gz
+COPY third_party/go2rtc/bounded-setup.patch /tmp/bounded-setup.patch
+COPY third_party/go2rtc/retention_test.go internal/streams/retention_test.go
+RUN patch --batch --fuzz=0 -p1 < /tmp/bounded-setup.patch \
+    && gofmt -w internal/streams/producer.go internal/streams/stream.go \
+      internal/streams/add_consumer.go internal/streams/retention_test.go internal/streams/stream_test.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go test -race ./internal/streams
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags "-s -w" -o /go2rtc .
 
 FROM python:3.13-alpine3.22
 

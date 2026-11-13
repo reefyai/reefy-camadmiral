@@ -1,0 +1,9 @@
+api:
+  listen: "0.0.0.0:1984"
+rtsp:
+  listen: "0.0.0.0:18554"
+webrtc:
+  listen: ""
+streams:
+  healthy: rtsp://camera-open:8554/main
+  unavailable: rtsp://172.28.0.250:8554/main

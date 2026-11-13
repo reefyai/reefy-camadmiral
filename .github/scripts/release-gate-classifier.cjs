@@ -29,7 +29,7 @@ function classifyReleaseGate(files, complete = true) {
   const importChanged = complete && files.some(file =>
     [file.filename, file.previous_filename].some(path =>
       path === "camadmiral/frigate_import.py" || path === "camadmiral/frigate_batch.py" || path === "e2e/frigate_batch.py" || path === "camadmiral/camera_identity.py" ||
-      path === "camadmiral/watchdog.py" || path === "e2e/stall_recovery.py" || path === "camadmiral/recovery.py" || path === "e2e/frigate_import.py" || path === "e2e/frigate_direct_auth.py" || path === "e2e/frigate_restart_recovery.py" ||
+      path === "camadmiral/watchdog.py" || path === "e2e/stall_recovery.py" || path === "camadmiral/recovery.py" || path === "e2e/frigate_import.py" || path === "e2e/rtsp_retention.py" || (path || "").startsWith("e2e/rtsp-retention") || (path || "").startsWith("e2e/fixtures/rtsp-retention") || path === "e2e/frigate_direct_auth.py" || path === "e2e/frigate_restart_recovery.py" ||
       (path || "").startsWith("e2e/frigate-restart-recovery") || path === "e2e/frigate_restart_proxy.py" ||
       (path || "").startsWith("e2e/frigate-direct-auth") ||
       (path || "").startsWith("e2e/frigate-identity") || path === "e2e/frigate_identity.py"
@@ -39,7 +39,7 @@ function classifyReleaseGate(files, complete = true) {
     [file.filename, file.previous_filename].some(path =>
       path === "scripts/ci_docker.py" ||
       (path || "").startsWith(".github/actions/docker-lab/") ||
-      ["batch-import-regression.yml", "release-gate.yml", "stalled-snapshot.yml", "memory-pressure.yml", "relay-latency.yml"]
+      ["batch-import-regression.yml", "release-gate.yml", "stalled-snapshot.yml", "memory-pressure.yml", "relay-latency.yml", "rtsp-retention.yml"]
         .some(name => path === `.github/workflows/${name}`)
     )
   );
