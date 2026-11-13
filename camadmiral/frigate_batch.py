@@ -318,7 +318,7 @@ class BatchCutover:
                     connection.execute('UPDATE onvif_profiles SET width=?,height=?,encoding=?,fps=? WHERE camera_uuid=? AND profile_uuid=(SELECT profile_uuid FROM managed_streams WHERE stream_uuid=?)',
                                        (result.width or 0, result.height or 0, result.video_codec, result.fps or 0, row['camera_uuid'], stream['stream_uuid']))
                     connection.commit()
-        row['managed_camera'], row['managed_streams'] = imp.build_managed(self.repository, row, host)
+        row['managed_camera'], row['managed_streams'] = imp.build_managed(self.repository, row, host, (self.repository.frigate_target(self.target.target_id) or {}).get('audio_mode', 'preserve'))
         # Clear the durable runtime OFF override created by our own pause.
         # Frigate 0.18 otherwise keeps implicitly enabled entries disabled.
         row['managed_camera'].setdefault('enabled', True)

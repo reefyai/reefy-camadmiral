@@ -1,3 +1,20 @@
+# CamAdmiral v2026.11.12-00
+
+New Frigate integrations default to video-only relay feeds to avoid live-view
+stalls caused by empty advertised audio tracks. The integration editor offers
+Preserve camera audio for listening and audio analysis. Existing integrations
+retain their audio policy on upgrade until explicitly changed.
+
+Policy changes update all owned imported and native stream aliases, including
+legacy live aliases and audio conversion wrappers, without restarting Frigate.
+Camera identities, history, masks, tuning and original rollback sources remain
+intact. Reopen existing live views after changing the policy.
+
+The normal self-hosted release gate covers both supported Frigate versions with
+real synthetic A/V, pinned baseline reproduction, decoded video, retained audio
+samples, invalid settings and policy round trips. Unit coverage includes schema
+migration, compatibility defaults and conflicting operator source edits.
+
 # CamAdmiral v2026.11.10-00
 
 Recover video that stops advancing while its relay transport remains active.

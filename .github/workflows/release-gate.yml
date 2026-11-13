@@ -136,6 +136,55 @@ jobs:
           path: e2e-artifacts/docker-lab/
           if-no-files-found: ignore
 
+  frigate-audio:
+    name: Frigate audio policy / ${{ matrix.frigate }}
+    needs: classify-changes
+    if: needs.classify-changes.outputs.e2e == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        frigate: ["0.17.2", "0.18.2"]
+    runs-on: [self-hosted, Linux, X64, big-bird]
+    container:
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
+      FRIGATE_TEST_VERSION: ${{ matrix.frigate }}
+    timeout-minutes: 20
+    steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: |
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
+      - name: Verify baseline and video-only policy with real A/V
+        run: python3 e2e/frigate_audio.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frigate-audio-${{ matrix.frigate }}
+          path: e2e-artifacts/frigate-audio/
+          if-no-files-found: error
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-frigate-audio-${{ matrix.frigate }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore
+
+
   frigate-identity:
     name: Imported camera address recovery
     needs: classify-changes

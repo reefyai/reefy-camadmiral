@@ -68,7 +68,7 @@ class ReleaseMetadataTests(unittest.TestCase):
                     continue
                 with self.subTest(workflow=workflow, job=job_id):
                     selector = job["runs-on"]
-                    if workflow == 'stalled-snapshot.yml' and job_id == 'stall-recovery':
+                    if (workflow == 'stalled-snapshot.yml' and job_id == 'stall-recovery') or (workflow == 'release-gate.yml' and job_id == 'frigate-audio'):
                         self.assertEqual(selector, ['self-hosted', 'Linux', 'X64', 'big-bird'])
                         self.assertIn('head.repo.full_name == github.repository', job['if'])
                         continue

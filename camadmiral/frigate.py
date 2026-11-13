@@ -968,7 +968,11 @@ def desired_camera(
     camera: dict[str, Any],
     password: str,
     media_host: str = "127.0.0.1",
+    *,
+    audio_mode: str = "preserve",
 ) -> dict[str, Any] | None:
+    if audio_mode not in {"preserve", "video_only"}:
+        raise ValueError("Frigate audio mode is invalid")
     record = _stream_for_role(camera, "record")
     detect = _stream_for_role(camera, "detect")
     if record is None or detect is None:
@@ -1000,6 +1004,7 @@ def desired_camera(
         return (
             f"rtsp://{CAMADMIRAL_RTSP_USERNAME}:{credentials}@{source_host}:"
             f"{CAMADMIRAL_RTSP_PORT}/{stream['stream_key']}"
+            + ("?video" if audio_mode == "video_only" else "")
         )
 
     ffmpeg_inputs = [
@@ -1037,6 +1042,8 @@ def desired_camera(
         "camera_config": camera_config,
         "stream_keys": sorted(streams),
     }
+    if audio_mode != "preserve":
+        secret_free["audio_mode"] = audio_mode
     desired_hash = hashlib.sha256(
         json.dumps(secret_free, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1059,7 +1066,7 @@ def frigate_camera_configuration(
     imported = next((row for row in ImportStore(repository).links(target.target_id).values()
                      if row["camera_uuid"] == camera_uuid and row.get("state") == "active"), None)
     if imported is not None:
-        managed, streams = build_managed(repository, imported, media_host)
+        managed, streams = build_managed(repository, imported, media_host, (repository.frigate_target(target.target_id) or {}).get("audio_mode", "preserve"))
         configuration = yaml.safe_dump({"cameras": {imported["key"]: {"ffmpeg": managed["ffmpeg"]}},
                                         "go2rtc": {"streams": streams}}, sort_keys=False).strip()
         password = urllib.parse.quote(repository.rtsp_access_password(), safe="")
@@ -1080,7 +1087,7 @@ def frigate_camera_configuration(
     camera = {**camera, "frigate_detect_width": selection.get("detect_width"),
               "frigate_detect_height": selection.get("detect_height")}
     password = repository.rtsp_access_password()
-    desired = desired_camera(camera, password, media_host)
+    desired = desired_camera(camera, password, media_host, audio_mode=(repository.frigate_target(target.target_id) or {}).get("audio_mode", "preserve"))
     if desired is None:
         raise FrigateApiError("streams_unavailable")
     payload = {
@@ -1322,7 +1329,7 @@ def reconcile_frigate(
             else media_host
         )
         try:
-            desired = desired_camera(camera, password, camera_media_host)
+            desired = desired_camera(camera, password, camera_media_host, audio_mode=(repository.frigate_target(target.target_id) or {}).get("audio_mode", "preserve"))
         except FrigateApiError as exc:
             repository.set_frigate_selection_error(target.target_id, camera["camera_uuid"], exc.code)
             pending += 1

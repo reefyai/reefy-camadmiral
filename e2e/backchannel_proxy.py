@@ -1,12 +1,14 @@
 """Synthetic camera: ordinary A/V works, advertised talkback SETUP is malformed."""
 import asyncio
 import json
+import os
 import re
 from urllib.parse import urlsplit, urlunsplit
 
 stats = {"describes": 0, "backchannel_requests": 0, "broken_setups": 0,
-         "plays": 0, "active": 0, "max_active": 0, "dropped_packets": 0}
+         "plays": 0, "active": 0, "max_active": 0, "dropped_packets": 0, "dropped_audio_packets": 0}
 stalled = False
+empty_audio = os.environ.get("EMPTY_AUDIO_TRACK") == "1"
 
 
 async def message(reader):
@@ -20,13 +22,17 @@ async def message(reader):
 
 
 async def control(reader, writer):
-    global stalled
+    global stalled, empty_audio
     path = (await reader.readline()).split()[1]
     if path == b"/stall":
         stalled = True
     elif path == b"/resume":
         stalled = False
-    body = json.dumps(dict(stats, stalled=stalled)).encode()
+    elif path == b"/audio/stall":
+        empty_audio = True
+    elif path == b"/audio/resume":
+        empty_audio = False
+    body = json.dumps(dict(stats, stalled=stalled, empty_audio=empty_audio)).encode()
     writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: "
                  + str(len(body)).encode() + b"\r\n\r\n" + body)
     await writer.drain()
@@ -49,10 +55,32 @@ def advertise_broken_backchannel(data):
     return header + b"\r\n\r\n" + body
 
 
+def audio_track_controls(data):
+    if not data.startswith(b"RTSP/1.0 200") or b"\r\n\r\n" not in data:
+        return set()
+    body = data.split(b"\r\n\r\n", 1)[1]
+    return {urlsplit(control.decode()).path.rsplit("/", 1)[-1]
+            for section in re.split(rb"(?m)(?=^m=)", body)
+            if section.startswith(b"m=audio ")
+            for control in re.findall(rb"(?m)^a=control:([^\r\n]+)", section)}
+
+
+def audio_setup_channels(uri, response, controls):
+    # SDP identifies the audio track; SETUP identifies its actual RTP/RTCP
+    # channels. Neither track order nor RTP payload numbers are fixed.
+    if (not response.startswith(b"RTSP/1.0 200")
+            or urlsplit(uri).path.rsplit("/", 1)[-1] not in controls):
+        return set()
+    match = re.search(rb"(?im)^Transport:[^\r\n]*interleaved=(\d+)-(\d+)", response)
+    return {int(channel) for channel in match.groups()} if match else set()
+
+
 async def relay(reader, writer):
     upstream = None
     task = None
     pending = asyncio.Queue()
+    audio_controls = set()
+    audio_channels = set()
     counted = False
     try:
         source, upstream = await asyncio.open_connection("camera-open", 8554)
@@ -87,7 +115,7 @@ async def relay(reader, writer):
                     stats["max_active"] = max(stats["max_active"], stats["active"])
                 path = re.sub(r"^/(?:healthy|faulty)", "/main", parsed.path)
                 rewritten = urlunsplit(parsed._replace(netloc="camera-open:8554", path=path))
-                await pending.put((method, backchannel, parsed.path.startswith("/faulty")))
+                await pending.put((method, backchannel, parsed.path.startswith("/faulty"), uri.decode()))
                 upstream.write(method + b" " + rewritten.encode() + b" " + version + b"\r\n" + rest)
                 await upstream.drain()
 
@@ -96,11 +124,17 @@ async def relay(reader, writer):
         while True:
             data = await message(source)
             if data.startswith(b"$"):
-                if stalled:
+                muted_microphone = empty_audio and data[1] in audio_channels
+                if stalled or muted_microphone:
                     stats["dropped_packets"] += 1
+                    stats["dropped_audio_packets"] += int(muted_microphone)
                     continue
             else:
-                method, backchannel, faulty = await pending.get()
+                method, backchannel, faulty, uri = await pending.get()
+                if method == b"DESCRIBE":
+                    audio_controls = audio_track_controls(data)
+                elif method == b"SETUP":
+                    audio_channels.update(audio_setup_channels(uri, data, audio_controls))
                 if method == b"DESCRIBE" and backchannel and faulty and data.startswith(b"RTSP/1.0 200"):
                     data = advertise_broken_backchannel(data)
             writer.write(data)

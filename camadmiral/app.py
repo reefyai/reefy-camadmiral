@@ -234,11 +234,13 @@ class NotificationSettingsRequest(BaseModel):
 class FrigateTargetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     api_url: str = Field(min_length=1, max_length=512)
+    audio_mode: Literal["preserve", "video_only"] = "video_only"
 
 
 class FrigateTargetUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     api_url: str | None = Field(default=None, min_length=1, max_length=512)
+    audio_mode: Literal["preserve", "video_only"] | None = None
 
 
 class FrigateCameraSyncRequest(BaseModel):
@@ -1589,6 +1591,7 @@ def add_frigate_target(
         target_id,
         target.name,
         api_url,
+        audio_mode=request.audio_mode,
     )
     repository.record_frigate_target_check(target_id, status="connected")
     _queue_frigate_reconciliation()
@@ -1639,6 +1642,7 @@ def update_frigate_target(
         target_id,
         name,
         api_url,
+        audio_mode=request.audio_mode,
     )
     if should_check:
         repository.record_frigate_target_check(target_id, status="connected")

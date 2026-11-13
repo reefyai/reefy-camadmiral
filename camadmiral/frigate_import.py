@@ -320,10 +320,13 @@ def _role_streams(camera):
     return {role: s for s in camera['streams'] for role in s['roles']}
 
 
-def relay_url(repository, host, stream):
+def relay_url(repository, host, stream, audio_mode='preserve'):
     authority = '[' + host + ']' if ':' in host else host
     password = urllib.parse.quote(repository.rtsp_access_password(), safe='')
-    return f"rtsp://camadmiral:{password}@{authority}:18554/{stream['stream_key']}"
+    if audio_mode not in {'preserve', 'video_only'}:
+        raise ValueError('Frigate audio mode is invalid')
+    selector = '?video' if audio_mode == 'video_only' else ''
+    return f"rtsp://camadmiral:{password}@{authority}:18554/{stream['stream_key']}{selector}"
 
 
 def _profile(src, result, sid):
@@ -337,7 +340,15 @@ def _target_host(repository, target, inventory):
     return media_host_for_mode(inventory, (saved or {}).get('address_mode') or 'lan')
 
 
-def build_managed(repository, row, host):
+def _live_source(url, wrapper, audio_mode):
+    # Conversion wrappers can explicitly request audio even after filtering SDP.
+    # Keep video conversion options and the original encrypted rollback source.
+    if audio_mode == 'video_only':
+        wrapper = ''.join('#' + option for option in wrapper.split('#') if option and not option.startswith('audio='))
+    return 'ffmpeg:' + url + wrapper if wrapper else url
+
+
+def build_managed(repository, row, host, audio_mode='preserve'):
     camera = _camera(repository, row['camera_uuid'])
     role_streams = _role_streams(camera)
     if not camera['enabled'] or set(role_streams) != {'record', 'detect'}:
@@ -346,15 +357,15 @@ def build_managed(repository, row, host):
     aliases = row['aliases']
     streams = {}
     for role in ('record', 'detect'):
-        streams[aliases[role]] = [relay_url(repository, host, role_streams[role])]
+        streams[aliases[role]] = [relay_url(repository, host, role_streams[role], audio_mode)]
     for alias, spec in row['live'].items():
         sid = spec['source_id']
         role = next((r for r, source_id in row['roles'].items() if source_id == sid), None)
         stream = role_streams[role] if role else streams_by_id.get(row['stream_map'][sid])
         if stream is None:
             raise FrigateApiError('live_stream_disabled')
-        source = relay_url(repository, host, stream)
-        streams[alias] = [('ffmpeg:' + source + spec['wrapper']) if spec['wrapper'] else source]
+        source = relay_url(repository, host, stream, audio_mode)
+        streams[alias] = [_live_source(source, spec['wrapper'], audio_mode)]
     originals = {**row.get('released_streams', {}), **row['original_streams']}
     for alias in row.get('released_streams', {}):
         if alias in streams:
@@ -365,8 +376,8 @@ def build_managed(repository, row, host):
         stream = role_streams[role] if role else streams_by_id.get(row['stream_map'].get(sid))
         if stream is None:
             raise FrigateApiError('stream_roles_missing')
-        url = relay_url(repository, host, stream)
-        streams[alias] = [('ffmpeg:' + url + source['wrapper']) if source['wrapper'] else url]
+        url = relay_url(repository, host, stream, audio_mode)
+        streams[alias] = [_live_source(url, source['wrapper'], audio_mode)]
     managed = copy.deepcopy(row['original'])
     inputs = []
     # Keep all original non-source tuning. Split a combined Record/Detect
@@ -835,7 +846,7 @@ def execute(repository, target, job_id, selected, keep_existing, inventory, reco
                     _release_reader(repository, target, row, client, progress)
             row['aliases'] = {role: 'camadmiral_' + row['camera_uuid'].replace('-', '_') + '_import_' + role
                               for role in ('record', 'detect')}
-            managed, streams = build_managed(repository, row, host)
+            managed, streams = build_managed(repository, row, host, (repository.frigate_target(target.target_id) or {}).get('audio_mode', 'preserve'))
             row.update(state='applying', configuration_status='restore_required', managed_camera=managed, managed_streams=streams)
             store.save_link(target.target_id, row['key'], row)
             # Recheck immediately before writing; Frigate has no CAS endpoint.
@@ -1212,7 +1223,7 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             saved_target = repository.frigate_target(target.target_id) or {}
             mode = saved_target.get('address_mode') or 'lan'
             host = host_resolver(mode) if host_resolver else _target_host(repository, target, inventory)
-            _, desired_streams = build_managed(repository, row, host)
+            _, desired_streams = build_managed(repository, row, host, saved_target.get('audio_mode', 'preserve'))
             raw = client.raw_config()
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
