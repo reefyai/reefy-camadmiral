@@ -77,3 +77,53 @@ index 984c73e..e671309 100644
  }
  
  func NewStream(source any) *Stream {
+diff --git a/internal/streams/stream_test.go b/internal/streams/stream_test.go
+index 99fa922..f7aa0aa 100644
+--- a/internal/streams/stream_test.go
++++ b/internal/streams/stream_test.go
+@@ -9,14 +9,21 @@ import (
+ )
+ 
+ func TestRecursion(t *testing.T) {
++	previous := streams
++	streams = map[string]*Stream{}
++	defer func() { streams = previous }()
++	HandleFunc("synthetic", func(string) (core.Producer, error) { return nil, nil })
++	defer delete(handlers, "synthetic")
+ 	// create stream with some source
+-	stream1 := New("from_yaml", "does_not_matter")
++	stream1, err := New("from_yaml", "synthetic:source")
++	require.NoError(t, err)
+ 	require.Len(t, streams, 1)
+ 
+ 	// ask another unnamed stream that links go2rtc
+ 	query, err := url.ParseQuery("src=rtsp://localhost:8554/from_yaml?video")
+ 	require.Nil(t, err)
+-	stream2 := GetOrPatch(query)
++	stream2, err := GetOrPatch(query)
++	require.NoError(t, err)
+ 
+ 	// check stream is same
+ 	require.Equal(t, stream1, stream2)
+@@ -26,12 +33,19 @@ func TestRecursion(t *testing.T) {
+ }
+ 
+ func TestTempate(t *testing.T) {
++	previous := streams
++	streams = map[string]*Stream{}
++	defer func() { streams = previous }()
++	HandleFunc("ffmpeg", func(string) (core.Producer, error) { return nil, nil })
++	defer delete(handlers, "ffmpeg")
+ 	HandleFunc("rtsp", func(url string) (core.Producer, error) { return nil, nil }) // bypass HasProducer
+ 
+ 	// config from yaml
+-	stream1 := New("camera.from_hass", "ffmpeg:{input}#video=copy")
++	stream1, err := New("camera.from_hass", "ffmpeg:{input}#video=copy")
++	require.NoError(t, err)
+ 	// request from hass
+-	stream2 := Patch("camera.from_hass", "rtsp://example.com")
++	stream2, err := Patch("camera.from_hass", "rtsp://example.com")
++	require.NoError(t, err)
+ 
+ 	require.Equal(t, stream1, stream2)
+ 	require.Equal(t, "ffmpeg:rtsp://example.com#video=copy", stream1.producers[0].url)

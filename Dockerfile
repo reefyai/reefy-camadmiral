@@ -17,10 +17,10 @@ COPY third_party/go2rtc/bounded-setup.patch /tmp/bounded-setup.patch
 COPY third_party/go2rtc/retention_test.go internal/streams/retention_test.go
 RUN patch --batch --fuzz=0 -p1 < /tmp/bounded-setup.patch \
     && gofmt -w internal/streams/producer.go internal/streams/stream.go \
-      internal/streams/add_consumer.go internal/streams/retention_test.go
+      internal/streams/add_consumer.go internal/streams/retention_test.go internal/streams/stream_test.go
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go test -race ./internal/streams -run 'TestRetainedSetup|TestFailedDial'
+    go test -race ./internal/streams
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

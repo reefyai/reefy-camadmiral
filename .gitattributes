@@ -1,0 +1,2 @@
+# Patch context preserves upstream whitespace, including blank context lines.
+third_party/go2rtc/*.patch -whitespace

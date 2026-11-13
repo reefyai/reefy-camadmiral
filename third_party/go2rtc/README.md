@@ -19,3 +19,9 @@ bounded admission and shared failure, not disconnect-aware network cancellation.
 and source changes. `e2e/rtsp_retention.py` verifies the shipped binary against
 real short-lived RTSP clients, unavailable network addresses, healthy video and
 recovery video. Existing snapshot-memory and full integration gates still run.
+
+The pinned upstream stream tests still call older single-result New/Patch APIs.
+The patch updates those test calls to handle and assert errors, registers their
+synthetic source handlers, and isolates their global stream maps. This allows
+the complete stream package, including our concurrency cases, to compile and
+run with the race detector. No upstream test or assertion is skipped.
