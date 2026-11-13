@@ -82,7 +82,7 @@ def host():
         result = run('run', '--rm', 'test-driver', 'driver', name)
         return json.loads(result.stdout.splitlines()[-1])
     def resources():
-        code = "import json,os;from pathlib import Path;print(json.dumps({'fds':len(list(Path('/proc/1/fd').iterdir())),'memory_bytes':int(Path('/sys/fs/cgroup/memory.current').read_text()),'oom_events':Path('/sys/fs/cgroup/memory.events').read_text()}))"
+        code = "import json,os;from pathlib import Path;print(json.dumps({'fds':len(list(Path('/proc/1/fd').iterdir())),'start_ticks':Path('/proc/1/stat').read_text().rsplit(')',1)[1].split()[19],'memory_bytes':int(Path('/sys/fs/cgroup/memory.current').read_text()),'oom_events':Path('/sys/fs/cgroup/memory.events').read_text()}))"
         return json.loads(run('exec', '-T', 'relay', 'python', '-c', code).stdout)
     try:
         run('down', '--volumes', '--remove-orphans')
@@ -148,6 +148,8 @@ def host():
         assert evidence['relay_container']['State'] == 'running', 'Relay stopped during retries'
         assert 'oom_kill 0' in evidence['repeat_resources']['oom_events']
         assert run('exec', '-T', 'relay', 'sha256sum', '/e2e/relay.yaml').stdout.split()[0] == evidence['relay_config_sha256'], 'Configuration changed during retry/recovery'
+        assert all(sample['resources']['start_ticks'] == evidence['healthy_resources']['start_ticks'] for sample in evidence['offline_waves']), 'Relay replaced during retries'
+        assert evidence['repeat_resources']['start_ticks'] == evidence['healthy_resources']['start_ticks'], 'Relay replaced during recovery'
         evidence['scenario_complete'] = True
         print('RTSP_RETENTION_REGRESSION ' + json.dumps(evidence), flush=True)
         assert evidence['bounded_resource_assertion_passed'], 'Disconnected offline-source clients retained unbounded goroutines/descriptors'

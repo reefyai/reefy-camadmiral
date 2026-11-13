@@ -84,6 +84,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         for workflow in ("memory-pressure.yml", "relay-latency.yml"):
             jobs = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text())["jobs"]
             for job_id, job in jobs.items():
+                if "uses" in job:
+                    self.assertEqual(job["uses"], "./.github/workflows/rtsp-retention.yml")
+                    continue
                 with self.subTest(workflow=workflow, job=job_id):
                     self.assertEqual(job["runs-on"], ["self-hosted", "Linux", "X64", "big-bird"])
 
@@ -111,18 +114,18 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("multi-commit PR requires full E2E", classifier_test)
         self.assertNotIn("paths-ignore:", gate)
 
-    def test_stock_go2rtc_restart_recovery_is_pinned_and_exercised(self) -> None:
+    def test_patched_go2rtc_restart_recovery_is_pinned_and_exercised(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
         media = (ROOT / "camadmiral" / "media.py").read_text()
         runner = (ROOT / "e2e" / "run.py").read_text()
         scenarios = (ROOT / "e2e" / "scenarios.py").read_text()
 
         self.assertIn("GO2RTC_VERSION=1.9.14", dockerfile)
-        self.assertIn("GO2RTC_AMD64_SHA256=32d616af", dockerfile)
-        self.assertIn("GO2RTC_ARM64_SHA256=359fabade", dockerfile)
+        self.assertIn("GO2RTC_SOURCE=b5948cfb25404cc5cb37b166ecaa2dca20b11d4b", dockerfile)
+        self.assertIn("GO2RTC_SOURCE_SHA256=78aa79bc", dockerfile)
         self.assertIn("COPY third_party/go2rtc/LICENSE", dockerfile)
-        self.assertNotIn("patch --batch", dockerfile)
-        self.assertNotIn("golang:", dockerfile)
+        self.assertIn("patch --batch --fuzz=0", dockerfile)
+        self.assertIn("go test -race ./internal/streams", dockerfile)
         self.assertTrue((ROOT / "third_party" / "go2rtc" / "LICENSE").is_file())
         self.assertIn('_request("PATCH", "/api/config", body=body)', media)
         self.assertIn('_request("POST", "/api/restart")', media)

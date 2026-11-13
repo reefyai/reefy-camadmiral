@@ -16,6 +16,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
+    healthcheck:
+      disable: true
   camera-open:
     image: camadmiral-e2e:local
     entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/camera.yaml]
@@ -28,6 +30,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
+    healthcheck:
+      disable: true
   camera-recovered:
     extends: camera-open
     profiles: [recovery]
@@ -44,6 +48,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
+    healthcheck:
+      disable: true
 networks:
   lab:
     internal: true

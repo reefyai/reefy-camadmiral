@@ -1,0 +1,105 @@
+diff --git a/internal/streams/add_consumer.go b/internal/streams/add_consumer.go
+index 7400ce6..d1abf26 100644
+--- a/internal/streams/add_consumer.go
++++ b/internal/streams/add_consumer.go
+@@ -7,7 +7,24 @@ import (
+ 	"github.com/AlexxIT/go2rtc/pkg/core"
+ )
+ 
++// Limit setup work, not established readers. Keep admission until all cleanup
++// returns: pending can reach zero before stopProducers acquires a busy producer.
++const maxConsumerSetups = 16
++
++var errSetupBusy = errors.New("streams: upstream setup busy; retry later")
++
+ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
++	for {
++		n := s.setups.Load()
++		if n >= maxConsumerSetups {
++			return errSetupBusy
++		}
++		if s.setups.CompareAndSwap(n, n+1) {
++			break
++		}
++	}
++	defer s.setups.Add(-1)
++
+ 	// support for multiple simultaneous pending from different consumers
+ 	consN := s.pending.Add(1) - 1
+ 
+diff --git a/internal/streams/producer.go b/internal/streams/producer.go
+index 09e2dcc..8276781 100644
+--- a/internal/streams/producer.go
++++ b/internal/streams/producer.go
+@@ -34,6 +34,8 @@ type Producer struct {
+ 	state    state
+ 	mu       sync.Mutex
+ 	workerID int
++	dialErr error
++	retryAfter time.Time
+ }
+ 
+ const SourceTemplate = "{input}"
+@@ -47,6 +49,16 @@ func NewProducer(source string) *Producer {
+ }
+ 
+ func (p *Producer) SetSource(s string) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	previous := p.url
++	defer func() {
++		if previous != p.url {
++			p.dialErr = nil
++			p.retryAfter = time.Time{}
++		}
++	}()
++
+ 	if p.template == "" {
+ 		p.url = s
+ 	} else {
+@@ -59,11 +71,22 @@ func (p *Producer) Dial() error {
+ 	defer p.mu.Unlock()
+ 
+ 	if p.state == stateNone {
++		// Share failure/backoff with queued and subsequent callers. Otherwise
++		// every abandoned request performs another slow serial network dial.
++		if p.dialErr != nil && time.Now().Before(p.retryAfter) {
++			return p.dialErr
++		}
+ 		conn, err := GetProducer(p.url)
+ 		if err != nil {
++			p.dialErr = err
++			p.retryAfter = time.Now().Add(time.Second)
++			log.Warn().Err(err).Dur("retry_in", time.Second).
++				Msg("[streams] upstream setup failed; retry deferred")
+ 			return err
+ 		}
+ 
++		p.dialErr = nil
++		p.retryAfter = time.Time{}
+ 		p.conn = conn
+ 		p.state = stateMedias
+ 	}
+@@ -157,7 +180,9 @@ func (p *Producer) start() {
+ 	go p.worker(p.conn, p.workerID)
+ }
+ 
+-func (p *Producer) worker(conn core.Producer, workerID int) {
++func (p *Producer) worker(conn core.Producer, workerID int
++	dialErr error
++	retryAfter time.Time) {
+ 	if err := conn.Start(); err != nil {
+ 		p.mu.Lock()
+ 		closed := p.workerID != workerID
+diff --git a/internal/streams/stream.go b/internal/streams/stream.go
+index 984c73e..e671309 100644
+--- a/internal/streams/stream.go
++++ b/internal/streams/stream.go
+@@ -13,6 +13,7 @@ type Stream struct {
+ 	consumers []core.Consumer
+ 	mu        sync.Mutex
+ 	pending   atomic.Int32
++	setups    atomic.Int32
+ }
+ 
+ func NewStream(source any) *Stream {

@@ -620,44 +620,58 @@ payload-number shortcut was also rejected because the relay may remap PCMU.
 The real-media scenario retains all capture, decode and preservation checks
 and readiness limits.
 
-## Abandoned RTSP connection diagnostic
+## Offline-source retained connection regression
 
-`python3 e2e/rtsp_retention.py` uses the pinned stock relay and synthetic media
-in an isolated Docker network. Compare 120 successful healthy-source DESCRIBEs
-with 120 short-lived requests to an unused synthetic network address. Record
-retained goroutines, file descriptors, memory, invisible pending consumers,
-continued healthy-source decoding, and queue drain after source recovery.
-A final disposable-relay SIGQUIT retains complete stacks in normal artifacts.
-The diagnostic expects the stock retention symptom and records the desired
-bounded-resource assertion separately; a green diagnostic is not a fixed-release
-acceptance claim. No live device or fleet data is used. The diagnostic branch
-routes the existing manually dispatched memory workflow to this scenario.
+Run `python3 e2e/rtsp_retention.py` in the normal isolated Docker lab, or dispatch
+`memory-pressure.yml` with `retention_only=true` for the focused regression.
+The reusable `rtsp-retention.yml` runs alongside all existing full-release E2E
+jobs. The ordinary standalone snapshot-memory job remains available and runs
+by default. The real packaged relay is tested, using synthetic network addresses
+and generated media only. No live device or fleet data is used.
 
-Diagnostic evidence from Actions run
-[43421810312](https://github.com/reefyai/reefy-camadmiral/actions/runs/43421810312)
-at source `f2441a15f0e946412abecad32989214745bcfb4d` uses the unchanged
-stock relay at `b5948cfb25404cc5cb37b166ecaa2dca20b11d4b`:
+The test completes 120 healthy RTSP requests, then three waves of 120 clients
+that disconnect after 150 ms while an upstream address stays unreachable. Each
+wave allows ten seconds idle, requires healthy companion video to decode, and
+records goroutines, descriptors, cgroup memory, OOM counters and active readers.
+Each offline sample must stay less than 32 goroutines/descriptors above the
+healthy baseline. The source must then recover and decode five actual frames
+without a relay restart or configuration change, followed by another outage.
+The final assertion covers the repeated outage too. The scenario preserves
+configuration hashes and process start identity, and requires zero OOM kills.
+Normal artifacts contain machine-readable evidence and workload/container logs.
 
-| Phase | Goroutines | Relay descriptors | Active unavailable-source consumers |
-| --- | ---: | ---: | ---: |
-| 120 completed healthy requests | 6 | 7 | 0 |
-| 120 timed-out clients, followed by ten seconds idle | 121 | 122 | 0 |
-| Address reachable again, queued attempts drained | 6 | 7 | 0 |
+The regular regression against the unchanged v1.9.14 binary failed as intended:
+[baseline run 43428717446](https://github.com/reefyai/reefy-camadmiral/actions/runs/43428717446),
+test source `57e9704bf3a12f84941092c3a3f8e0c862976695`, upstream source
+`b5948cfb25404cc5cb37b166ecaa2dca20b11d4b`, binary SHA-256
+`32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6`.
 
-The offline phase retained 115 additional goroutines and descriptors after
-clients disconnected. A repeat-phase complete Go stack dump captured 114
-handlers waiting in `Producer.Dial` and one handler holding that producer
-mutex while performing a network dial. Healthy companion video continued to
-decode in each workload phase. Reachability restoration made connection
-attempts complete quickly and drained the abandoned queue. This demonstrates
-slow serialized connection attempts and missing cancellation/admission bounds,
-not a mutex that stays permanently locked. Pending attempts are not represented
-as active consumers by the stream API.
+| Phase | Goroutines | Descriptors |
+| --- | ---: | ---: |
+| Healthy requests | 6 | 7 |
+| Offline wave 1 | 121 | 122 |
+| Offline wave 2 | 234 | 235 |
+| Offline wave 3 | 347 | 348 |
+| Address recovered | 6 | 7 |
+| Repeated outage | 124 | 125 |
 
-The diagnostic workflow succeeded because it confirmed the stock symptom and
-its healthy/reachable controls. The desired bounded-resource assertion was
-**false**. No application fix or deployment is implied. A future fix must make
-the same measurements remain bounded while the source stays unavailable, not
-only after it becomes reachable. Preserve the normal snapshot-memory workflow
-when preparing a fix for merge; this investigative branch changes its manual
-execution path only to obtain focused diagnostic evidence.
+All 120 clients in each offline wave had already timed out. Active consumers
+reported zero, despite hundreds of retained handlers. Both the healthy companion
+and the recovered source decoded video. The desired bounded-resource assertion
+was false, and the regular test exited with failure. Earlier stack diagnosis
+([run 43421810312](https://github.com/reefyai/reefy-camadmiral/actions/runs/43421810312))
+identified callers serialized behind a slow network dial, rather than a mutex
+permanently locked. A stock stack dump was obtained only in that disposable lab.
+
+The source-pinned patch in `third_party/go2rtc/` adds bounded setup admission,
+including cleanup, and shares failed initial dials with a short cooldown.
+It does not add per-request waiting goroutines, background timers, public API
+fields or configuration migration. See its README for exact build inputs and
+limitations. Race-enabled Go tests exercise concurrent admission, failed-request
+cleanup, retry expiry and source changes. Full existing CamAdmiral E2E gates
+continue to cover persistent identities, recorder history and recovery behavior.
+
+Fixed-run provenance and deployment evidence are recorded in the PR validation
+notes after qualification. A passing synthetic test establishes bounded resources
+for this reproduced failure mode; live long-term monitoring remains necessary
+for other possible growth mechanisms.
