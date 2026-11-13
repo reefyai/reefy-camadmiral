@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE = Path('/state/runtime-resume.json')
 
 def driver(stage):
+    sys.path.insert(0, "/opt/camadmiral")
     import yaml
     from scenarios import request_json, wait_for, wait_for_health, consumer_directory
     from camadmiral.frigate import FrigateClient, FrigateTarget
