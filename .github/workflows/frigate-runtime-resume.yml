@@ -1,0 +1,48 @@
+name: Owned runtime-pause recovery
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  runtime-resume:
+    strategy:
+      fail-fast: false
+      matrix:
+        frigate: ["0.17.2", "0.18.2"]
+    name: Runtime pause recovery / ${{ matrix.frigate }}
+    runs-on: [self-hosted, Linux, X64, big-bird]
+    container:
+      image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
+      options: --privileged --cgroupns=private
+      volumes:
+        - /var/lib/camadmiral-ci-docker
+    env:
+      FRIGATE_TEST_VERSION: ${{ matrix.frigate }}
+      CAMADMIRAL_CI_JOB_CONTAINER: "1"
+      AGENT_TOOLSDIRECTORY: /opt/camadmiral-toolcache
+      PIP_CACHE_DIR: /opt/camadmiral-pipcache
+    timeout-minutes: 20
+    steps:
+      - name: Bootstrap job container
+        shell: bash
+        run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+      - name: Verify prepared CI inputs
+        run: python3 scripts/ci_tools.py
+      - name: Start private Docker lab
+        uses: ./.github/actions/docker-lab
+      - name: Verify owned resume, operator controls and interrupted recovery
+        run: python3 e2e/frigate_runtime_resume.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-resume-${{ matrix.frigate }}
+          path: e2e-artifacts/frigate-runtime-resume/
+          if-no-files-found: error
+      - name: Retain Docker lab readiness
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-lab-runtime-resume-${{ matrix.frigate }}
+          path: e2e-artifacts/docker-lab/
+          if-no-files-found: ignore

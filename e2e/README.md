@@ -675,3 +675,48 @@ Fixed-run provenance and deployment evidence are recorded in the PR validation
 notes after qualification. A passing synthetic test establishes bounded resources
 for this reproduced failure mode; live long-term monitoring remains necessary
 for other possible growth mechanisms.
+
+## Owned runtime-pause recovery after a native restart
+
+`python3 e2e/frigate_runtime_resume.py` runs in the regular isolated Docker lab
+against real Frigate. `FRIGATE_TEST_VERSION` selects 0.17.2 or 0.18.2; the full
+release gate runs both in parallel. A focused Actions diagnosis uses
+`release-gate.yml` with `resume_only=true`; it cannot satisfy release publication
+because the full isolated UI gate is skipped. Normal supervisor behavior,
+background health checks, parallelism and readiness limits remain enabled.
+
+The mounted E2E-only control module loses an acknowledgement after the server
+accepts an owned runtime pause. It then allows the existing native restart
+fallback and leaves that owned camera OFF. Frigate 0.18 must retain the override
+natively; the compatibility fixture reapplies the same condition on versions
+that discard it. No production route, configuration flag or schema is added.
+The faulty application waits for capture before resuming this owned pause.
+
+The unchanged recovery source at
+`880c4636e528ad5677e3eb503b7944cbde2edb47` reproduced the problem in
+[baseline run 43436605200](https://github.com/reefyai/reefy-camadmiral/actions/runs/43436605200).
+The 0.18.2 job failed with `OWNED_RUNTIME_PAUSE_NOT_RESUMED`: exactly one
+native restart, runtime enabled=false, zero capture FPS, unchanged saved config,
+and both resume/restart journals still pending. The operator-pause negative
+control passed. Separate codified unit cases reproduce both first-call and
+already-restarted journal recovery failures; a saved operator disable stays
+protected. Exact source, phases, journals and logs are retained as normal
+machine-readable Actions artifacts.
+
+Fixed acceptance requires owned capture to resume before verification, only
+one Frigate restart, cleared journals after capture/record-reader verification,
+unchanged saved configuration and persistent camera/stream identities. It also
+terminates the disposable control process after the accepted native restart,
+restarts the existing app with its original volume, and requires automatic
+resume without a second Frigate restart. An intentionally paused operator peer
+must block global restart and remain paused. A saved-disabled peer stays OFF.
+Historical and fresh recordings must retain their rows and decode real frames.
+
+Upstream 0.18 runtime overrides are intentionally persisted separately from YAML:
+[Frigate runtime state implementation](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/comms/runtime_state.py).
+The fix resumes only owned, selected, enabled camera pauses recorded in the
+existing recovery journal, after checking source ownership and configuration
+hashes. Uncertain ON acknowledgements keep the journal for verification/retry,
+without dispatching another restart. Completion still requires the existing
+capture and record-reader checks. Runtime pause/restore diagnostics omit source
+URLs and credentials.

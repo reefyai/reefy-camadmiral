@@ -929,6 +929,104 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual(self.repo.latest_camera_address_revision(uid), ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
 
+    def test_sticky_runtime_pause_is_resumed_after_native_restart(self):
+        self.execute(self.preview())
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.repo.record_address_change(row['camera_uuid'], '192.0.2.10', '192.0.2.11', 'onvif_identity')
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        enable, restart = self.client.set_runtime_camera_enabled, self.client.restart
+        clock = [0.0]
+        def sleep(seconds): clock[0] += seconds
+        def set_enabled(key, enabled):
+            enable(key, enabled)
+            self.client.current_stats[key] = {'camera_fps': 5 if enabled else 0}
+            if not enabled: raise FrigateApiError('target_unavailable')
+        def sticky_restart():
+            disabled = [k for k,v in self.client.config()['cameras'].items() if not v.get('enabled', True)]
+            restart()
+            for key in disabled:
+                self.client.current_config['cameras'][key]['enabled'] = False
+                self.client.current_stats[key] = {'camera_fps': 0}
+        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=set_enabled), \
+             patch.object(self.client, 'restart', side_effect=sticky_restart), \
+             patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda:clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep', side_effect=sleep):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode:'192.0.2.20')
+        self.assertTrue(self.client.config()['cameras']['legacy_entrance']['enabled'])
+        self.assertGreater(self.client.stats()['legacy_entrance']['camera_fps'], 0)
+        self.assertEqual(restarts + 1, self.client.restart_calls)
+        self.assertEqual(before, self.client.raw_config())
+        saved = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.assertNotIn('capture_resume_pending', saved)
+        self.assertNotIn('target_restart', saved)
+
+    def _pending_sticky_restart(self):
+        from camadmiral.frigate_import import digest, _relay_runtime_revision
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['capture_resume_pending'] = True
+        row['target_restart'] = {'started_before':self.client.service_started_at()-100,
+            'raw_hash':digest(self.client.raw_config()),'active_keys':['legacy_entrance'],
+            'runtime_revision':_relay_runtime_revision(self.repo),'address_revisions':{row['camera_uuid']:None}}
+        store.save_link(self.target.target_id,row['key'],row)
+        self.client.current_config['cameras']['legacy_entrance']['enabled'] = False
+        self.client.current_stats['legacy_entrance'] = {'camera_fps':0}
+        return store
+
+    def test_existing_restart_journal_resumes_sticky_pause_without_second_restart(self):
+        store = self._pending_sticky_restart()
+        restarts, before = self.client.restart_calls, self.client.raw_config()
+        enable = self.client.set_runtime_camera_enabled
+        def resume(key, enabled):
+            enable(key, enabled)
+            self.client.current_stats[key] = {'camera_fps':5 if enabled else 0}
+        clock = [0.0]
+        def sleep(seconds): clock[0] += seconds
+        with patch.object(self.client,'set_runtime_camera_enabled',side_effect=resume), \
+             patch('camadmiral.frigate_import.time.monotonic',side_effect=lambda:clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep',side_effect=sleep):
+            sync_imported(self.repo,self.target,client=self.client,host_resolver=lambda mode:'192.0.2.20')
+        self.assertTrue(self.client.config()['cameras']['legacy_entrance']['enabled'])
+        self.assertEqual(restarts,self.client.restart_calls)
+        self.assertEqual(before,self.client.raw_config())
+        saved = store.links(self.target.target_id)['legacy_entrance']
+        self.assertNotIn('capture_resume_pending',saved)
+        self.assertNotIn('target_restart',saved)
+
+    def test_uncertain_resume_reply_keeps_journal_then_verifies_without_restart(self):
+        store = self._pending_sticky_restart()
+        restarts = self.client.restart_calls
+        enable = self.client.set_runtime_camera_enabled
+        calls = []
+        def accepted_reply_lost(key, enabled):
+            calls.append((key,enabled))
+            enable(key,enabled)
+            self.client.current_stats[key] = {'camera_fps':5 if enabled else 0}
+            raise FrigateApiError('target_unavailable')
+        clock = [0.0]
+        def sleep(seconds):clock[0]+=seconds
+        with patch.object(self.client,'set_runtime_camera_enabled',side_effect=accepted_reply_lost), \
+             patch('camadmiral.frigate_import.time.monotonic',side_effect=lambda:clock[0]), \
+             patch('camadmiral.frigate_import.time.sleep',side_effect=sleep):
+            sync_imported(self.repo,self.target,client=self.client,host_resolver=lambda mode:'192.0.2.20')
+        self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['capture_resume_pending'])
+        sync_imported(self.repo,self.target,client=self.client,host_resolver=lambda mode:'192.0.2.20')
+        self.assertEqual([('legacy_entrance',True)],calls)
+        self.assertTrue(self.client.config()['cameras']['legacy_entrance']['enabled'])
+        self.assertEqual(restarts,self.client.restart_calls)
+        self.assertNotIn('target_restart',store.links(self.target.target_id)['legacy_entrance'])
+
+    def test_pending_resume_preserves_operator_saved_disable_after_restart(self):
+        store = self._pending_sticky_restart()
+        self.client.current_raw_config['cameras']['legacy_entrance']['enabled'] = False
+        self.client.operations.clear()
+        sync_imported(self.repo,self.target,client=self.client,host_resolver=lambda mode:'192.0.2.20')
+        self.assertFalse(self.client.config()['cameras']['legacy_entrance']['enabled'])
+        self.assertFalse(self.client.raw_config()['cameras']['legacy_entrance']['enabled'])
+        self.assertEqual([],self.client.operations)
+        self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['capture_resume_pending'])
+
     def test_failed_targeted_pause_restarts_target_once_and_preserves_configuration(self):
         job = self.execute(self.preview())
         uid = job["cameras"][0]["camera_uuid"]
