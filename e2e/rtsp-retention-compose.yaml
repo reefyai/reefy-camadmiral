@@ -4,8 +4,6 @@ services:
       context: ..
     image: camadmiral-e2e:local
     entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/relay.yaml]
-    environment:
-      GOTRACEBACK: all
     volumes:
       - ./fixtures/rtsp-retention-relay.yaml:/e2e/relay.yaml:ro
     networks:
