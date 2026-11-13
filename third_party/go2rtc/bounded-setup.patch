@@ -28,7 +28,7 @@ index 7400ce6..d1abf26 100644
  	consN := s.pending.Add(1) - 1
  
 diff --git a/internal/streams/producer.go b/internal/streams/producer.go
-index 09e2dcc..8276781 100644
+index 09e2dcc..0872a95 100644
 --- a/internal/streams/producer.go
 +++ b/internal/streams/producer.go
 @@ -34,6 +34,8 @@ type Producer struct {
@@ -80,17 +80,6 @@ index 09e2dcc..8276781 100644
  		p.conn = conn
  		p.state = stateMedias
  	}
-@@ -157,7 +180,9 @@ func (p *Producer) start() {
- 	go p.worker(p.conn, p.workerID)
- }
- 
--func (p *Producer) worker(conn core.Producer, workerID int) {
-+func (p *Producer) worker(conn core.Producer, workerID int
-+	dialErr error
-+	retryAfter time.Time) {
- 	if err := conn.Start(); err != nil {
- 		p.mu.Lock()
- 		closed := p.workerID != workerID
 diff --git a/internal/streams/stream.go b/internal/streams/stream.go
 index 984c73e..e671309 100644
 --- a/internal/streams/stream.go
