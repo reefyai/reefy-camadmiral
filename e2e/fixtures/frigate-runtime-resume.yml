@@ -1,0 +1,95 @@
+version: 0.17-0
+mqtt:
+  enabled: false
+detectors:
+  synthetic_cpu:
+    type: cpu
+detect:
+  enabled: false
+record:
+  enabled: true
+  continuous:
+    days: 1
+go2rtc:
+  streams:
+    managed_camera_live: rtsp://camera-open:8554/sub
+    healthy_peer_live: rtsp://camera-open:8554/sub
+    operator_peer_live: rtsp://camera-open:8554/sub
+    saved_disabled_live: rtsp://camera-open:8554/sub
+cameras:
+  managed_camera:
+    enabled: true
+    friendly_name: Synthetic managed_camera
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/managed_camera_live
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: managed_camera_live
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+  healthy_peer:
+    enabled: true
+    friendly_name: Synthetic healthy_peer
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/healthy_peer_live
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: healthy_peer_live
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+  operator_peer:
+    enabled: true
+    friendly_name: Synthetic operator_peer
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/operator_peer_live
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: operator_peer_live
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1
+  saved_disabled:
+    enabled: false
+    friendly_name: Synthetic saved_disabled
+    ffmpeg:
+      inputs:
+      - path: rtsp://127.0.0.1:8554/saved_disabled_live
+        input_args: preset-rtsp-restream
+        roles:
+        - record
+        - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 3
+    live:
+      streams:
+        Main: saved_disabled_live
+    motion:
+      mask: 0,0,0.1,0,0.1,0.1

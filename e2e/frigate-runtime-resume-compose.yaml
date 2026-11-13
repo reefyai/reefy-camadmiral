@@ -1,0 +1,12 @@
+services:
+  camadmiral:
+    entrypoint: [python, /e2e/runtime_resume_supervisor.py]
+    environment:
+      PYTHONPATH: /e2e:/opt/camadmiral
+    volumes:
+      - ./runtime_resume_supervisor.py:/e2e/runtime_resume_supervisor.py:ro
+      - ./runtime_resume_control.py:/e2e/runtime_resume_control.py:ro
+  frigate:
+    image: ${FRIGATE_TEST_IMAGE:-ghcr.io/blakeblackshear/frigate:0.18.2}
+    volumes:
+      - ./fixtures/frigate-runtime-resume.yml:/e2e/frigate.yml:ro
