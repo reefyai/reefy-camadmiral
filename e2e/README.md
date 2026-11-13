@@ -632,3 +632,32 @@ The diagnostic expects the stock retention symptom and records the desired
 bounded-resource assertion separately; a green diagnostic is not a fixed-release
 acceptance claim. No live device or fleet data is used. The diagnostic branch
 routes the existing manually dispatched memory workflow to this scenario.
+
+Diagnostic evidence from Actions run
+[43421810312](https://github.com/reefyai/reefy-camadmiral/actions/runs/43421810312)
+at source `f2441a15f0e946412abecad32989214745bcfb4d` uses the unchanged
+stock relay at `b5948cfb25404cc5cb37b166ecaa2dca20b11d4b`:
+
+| Phase | Goroutines | Relay descriptors | Active unavailable-source consumers |
+| --- | ---: | ---: | ---: |
+| 120 completed healthy requests | 6 | 7 | 0 |
+| 120 timed-out clients, followed by ten seconds idle | 121 | 122 | 0 |
+| Address reachable again, queued attempts drained | 6 | 7 | 0 |
+
+The offline phase retained 115 additional goroutines and descriptors after
+clients disconnected. A repeat-phase complete Go stack dump captured 114
+handlers waiting in `Producer.Dial` and one handler holding that producer
+mutex while performing a network dial. Healthy companion video continued to
+decode in each workload phase. Reachability restoration made connection
+attempts complete quickly and drained the abandoned queue. This demonstrates
+slow serialized connection attempts and missing cancellation/admission bounds,
+not a mutex that stays permanently locked. Pending attempts are not represented
+as active consumers by the stream API.
+
+The diagnostic workflow succeeded because it confirmed the stock symptom and
+its healthy/reachable controls. The desired bounded-resource assertion was
+**false**. No application fix or deployment is implied. A future fix must make
+the same measurements remain bounded while the source stays unavailable, not
+only after it becomes reachable. Preserve the normal snapshot-memory workflow
+when preparing a fix for merge; this investigative branch changes its manual
+execution path only to obtain focused diagnostic evidence.
