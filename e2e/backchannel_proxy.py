@@ -55,17 +55,32 @@ def advertise_broken_backchannel(data):
     return header + b"\r\n\r\n" + body
 
 
-def is_microphone_packet(data):
-    # The synthetic microphone is PCMU (RTP payload type 0). Track/channel
-    # order can vary, so a channel number must not decide which media to mute.
-    return (len(data) >= 16 and data[0] == 36 and data[4] >> 6 == 2
-            and data[5] & 0x7f == 0)
+def audio_track_controls(data):
+    if not data.startswith(b"RTSP/1.0 200") or b"\r\n\r\n" not in data:
+        return set()
+    body = data.split(b"\r\n\r\n", 1)[1]
+    return {urlsplit(control.decode()).path.rsplit("/", 1)[-1]
+            for section in re.split(rb"(?m)(?=^m=)", body)
+            if section.startswith(b"m=audio ")
+            for control in re.findall(rb"(?m)^a=control:([^\r\n]+)", section)}
+
+
+def audio_setup_channels(uri, response, controls):
+    # SDP identifies the audio track; SETUP identifies its actual RTP/RTCP
+    # channels. Neither track order nor RTP payload numbers are fixed.
+    if (not response.startswith(b"RTSP/1.0 200")
+            or urlsplit(uri).path.rsplit("/", 1)[-1] not in controls):
+        return set()
+    match = re.search(rb"(?im)^Transport:[^\r\n]*interleaved=(\d+)-(\d+)", response)
+    return {int(channel) for channel in match.groups()} if match else set()
 
 
 async def relay(reader, writer):
     upstream = None
     task = None
     pending = asyncio.Queue()
+    audio_controls = set()
+    audio_channels = set()
     counted = False
     try:
         source, upstream = await asyncio.open_connection("camera-open", 8554)
@@ -100,7 +115,7 @@ async def relay(reader, writer):
                     stats["max_active"] = max(stats["max_active"], stats["active"])
                 path = re.sub(r"^/(?:healthy|faulty)", "/main", parsed.path)
                 rewritten = urlunsplit(parsed._replace(netloc="camera-open:8554", path=path))
-                await pending.put((method, backchannel, parsed.path.startswith("/faulty")))
+                await pending.put((method, backchannel, parsed.path.startswith("/faulty"), uri.decode()))
                 upstream.write(method + b" " + rewritten.encode() + b" " + version + b"\r\n" + rest)
                 await upstream.drain()
 
@@ -109,13 +124,17 @@ async def relay(reader, writer):
         while True:
             data = await message(source)
             if data.startswith(b"$"):
-                muted_microphone = empty_audio and is_microphone_packet(data)
+                muted_microphone = empty_audio and data[1] in audio_channels
                 if stalled or muted_microphone:
                     stats["dropped_packets"] += 1
                     stats["dropped_audio_packets"] += int(muted_microphone)
                     continue
             else:
-                method, backchannel, faulty = await pending.get()
+                method, backchannel, faulty, uri = await pending.get()
+                if method == b"DESCRIBE":
+                    audio_controls = audio_track_controls(data)
+                elif method == b"SETUP":
+                    audio_channels.update(audio_setup_channels(uri, data, audio_controls))
                 if method == b"DESCRIBE" and backchannel and faulty and data.startswith(b"RTSP/1.0 200"):
                     data = advertise_broken_backchannel(data)
             writer.write(data)

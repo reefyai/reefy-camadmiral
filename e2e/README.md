@@ -609,10 +609,13 @@ only for the preservation check, then suppressed again. Other scenarios using th
 same proxy retain their normal audio. The saved policy is rechecked after an app
 restart; no recorder restart is allowed during policy changes.
 
-The empty-audio fixture identifies the synthetic PCMU microphone by RTP payload
-type, independent of interleaved channel allocation. Its focused regression
-covers both audio/video track orders, marker bits and non-media packets:
+The empty-audio fixture reads audio track identities from SDP and their actual
+RTP/RTCP channel pairs from successful SETUP responses. It assumes neither
+track order nor RTP payload numbers. Its focused regression covers both media
+orders, static/dynamic microphone payloads, relative/absolute track controls,
+channel allocation, failed SETUP and UDP responses:
 `python -m unittest tests.test_e2e_audio_fixture -v`. The former channel-number
-predicate incorrectly muted H.264 when audio was assigned the first channel pair.
-The real-media scenario retains all existing capture, decode and preservation
-checks and readiness limits.
+predicate could mute H.264 when audio received the first channel pair. A
+payload-number shortcut was also rejected because the relay may remap PCMU.
+The real-media scenario retains all capture, decode and preservation checks
+and readiness limits.
