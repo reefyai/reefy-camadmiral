@@ -29,19 +29,18 @@ jobs:
         run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
         uses: ./.github/actions/docker-lab
-      - run: python3 e2e/memory_pressure.py
-        env:
-          CAMADMIRAL_MEMORY_CYCLES: "60"
+      - name: Trace abandoned RTSP client retention
+        run: python3 e2e/rtsp_retention.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: media-memory-evidence
-          path: e2e-artifacts/memory-pressure/
+          name: rtsp-retention-evidence
+          path: e2e-artifacts/rtsp-retention/
       - name: Remove memory regression resources
         if: always()
         run: >-
-          docker compose -p camadmiral-memory-e2e
-          -f e2e/compose.yaml -f e2e/memory-compose.yaml
+          docker compose -p camadmiral-retention-diagnostic
+          -f e2e/rtsp-retention-compose.yaml
           down --volumes --remove-orphans
       - name: Retain Docker lab readiness
         uses: actions/upload-artifact@v4

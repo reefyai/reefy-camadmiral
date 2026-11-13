@@ -1,0 +1,8 @@
+api:
+  listen: "0.0.0.0:1984"
+rtsp:
+  listen: "0.0.0.0:8554"
+webrtc:
+  listen: ""
+streams:
+  main: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=640x360:rate=10 -c:v libx264 -threads:v 1 -preset ultrafast -tune zerolatency -g 10 -f rtsp -rtsp_transport tcp {output}"

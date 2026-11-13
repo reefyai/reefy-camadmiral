@@ -619,3 +619,16 @@ predicate could mute H.264 when audio received the first channel pair. A
 payload-number shortcut was also rejected because the relay may remap PCMU.
 The real-media scenario retains all capture, decode and preservation checks
 and readiness limits.
+
+## Abandoned RTSP connection diagnostic
+
+`python3 e2e/rtsp_retention.py` uses the pinned stock relay and synthetic media
+in an isolated Docker network. Compare 120 successful healthy-source DESCRIBEs
+with 120 short-lived requests to an unused synthetic network address. Record
+retained goroutines, file descriptors, memory, invisible pending consumers,
+continued healthy-source decoding, and queue drain after source recovery.
+A final disposable-relay SIGQUIT retains complete stacks in normal artifacts.
+The diagnostic expects the stock retention symptom and records the desired
+bounded-resource assertion separately; a green diagnostic is not a fixed-release
+acceptance claim. No live device or fleet data is used. The diagnostic branch
+routes the existing manually dispatched memory workflow to this scenario.

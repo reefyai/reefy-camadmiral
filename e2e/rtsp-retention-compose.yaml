@@ -1,0 +1,54 @@
+services:
+  relay:
+    build:
+      context: ..
+    image: camadmiral-e2e:local
+    entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/relay.yaml]
+    environment:
+      GOTRACEBACK: all
+    volumes:
+      - ./fixtures/rtsp-retention-relay.yaml:/e2e/relay.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.28.0.20
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 192
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+  camera-open:
+    image: camadmiral-e2e:local
+    entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/camera.yaml]
+    volumes:
+      - ./fixtures/rtsp-retention-camera.yaml:/e2e/camera.yaml:ro
+    networks:
+      lab:
+        ipv4_address: 172.28.0.10
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+  camera-recovered:
+    extends: camera-open
+    profiles: [recovery]
+    networks:
+      lab:
+        ipv4_address: 172.28.0.250
+  test-driver:
+    image: camadmiral-e2e:local
+    entrypoint: [python, /e2e/rtsp_retention.py]
+    volumes:
+      - ./:/e2e:ro
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+networks:
+  lab:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
