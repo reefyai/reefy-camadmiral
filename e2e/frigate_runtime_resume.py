@@ -96,6 +96,7 @@ def driver(stage):
             frames=sum(bool(l.strip()) and not l.startswith(b'#') for l in p.stdout.splitlines())
             assert p.returncode==0 and frames>=5,'Old/fresh recorded video did not decode'
             decoded[label]=frames
+        assert abs(client.service_started_at()-state['results']['after-interrupt']['frigate_started'])<2,'Recovery repeated a Frigate restart during recording verification'
         state['results'][stage]=decoded;save()
     else: raise ValueError(stage)
 

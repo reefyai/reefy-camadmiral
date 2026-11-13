@@ -3,6 +3,7 @@ services:
     entrypoint: [python, /e2e/runtime_resume_supervisor.py]
     environment:
       PYTHONPATH: /e2e:/opt/camadmiral
+      FRIGATE_TEST_VERSION: ${FRIGATE_TEST_VERSION:-0.18.2}
     volumes:
       - ./runtime_resume_supervisor.py:/e2e/runtime_resume_supervisor.py:ro
       - ./runtime_resume_control.py:/e2e/runtime_resume_control.py:ro

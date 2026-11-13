@@ -51,7 +51,10 @@ def exercise(options: dict, x_camadmiral_action: str | None = Header(default=Non
                 # Retain the real runtime override across versions. Some server
                 # versions already persist it; reapply only when the server
                 # discarded it. Neither saved YAML nor readiness budgets change.
-                if self.config()['cameras']['managed_camera']['enabled']:
+                result['off_persisted_natively'] = not self.config()['cameras']['managed_camera']['enabled']
+                if os.environ.get('FRIGATE_TEST_VERSION') == '0.18.2' and not result['off_persisted_natively']:
+                    raise AssertionError('Real Frigate did not retain its runtime OFF override')
+                if not result['off_persisted_natively']:
                     FrigateClient.set_runtime_camera_enabled(self, 'managed_camera', False)
                 result['off_after_restart'] = not self.config()['cameras']['managed_camera']['enabled']
                 if options.get('interrupt'):

@@ -1028,6 +1028,39 @@ def _guard_restart_runtime_controls(raw, live, links):
                 raise FrigateApiError("import_source_conflict")
 
 
+def _resume_owned_capture_pauses(repository, target, client, links, pending):
+    # Runtime overrides can survive a native Frigate restart independently of
+    # saved YAML. Resume only our journaled pauses before waiting for frames.
+    raw = client.raw_config()
+    if digest(raw) != pending['raw_hash']:
+        raise FrigateApiError('import_source_conflict')
+    selected = set(repository.selected_frigate_camera_uuids(target.target_id))
+    live = client.config().get('cameras', {})
+    for key, row in links.items():
+        if (not row.get('capture_resume_pending') or row.get('state') != 'active'
+                or row['camera_uuid'] not in selected):
+            continue
+        camera = _camera(repository, row['camera_uuid'])
+        saved = raw.get('cameras', {}).get(key, {})
+        if not camera['enabled'] or not saved.get('enabled', True):
+            continue
+        configured = raw.get('go2rtc', {}).get('streams', {})
+        if (saved.get('ffmpeg', {}).get('inputs') != row['managed_camera'].get('ffmpeg', {}).get('inputs')
+                or any(configured.get(alias) != value for alias, value in row['managed_streams'].items())):
+            raise FrigateApiError('import_source_conflict')
+        if live.get(key, {}).get('enabled', True):
+            continue
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'owned_pause_resume_requested', 'at_epoch': time.time(),
+            'camera_uuid': row['camera_uuid']}, sort_keys=True), flush=True)
+        # Keep both journals until all capture/record readers verify. An
+        # uncertain ON reply is retried without dispatching another restart.
+        client.set_runtime_camera_enabled(key, True)
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'owned_pause_resumed', 'at_epoch': time.time(),
+            'camera_uuid': row['camera_uuid']}, sort_keys=True), flush=True)
+
+
 def _restart_imported_target(repository, target, client, links, trigger, *, reason="targeted_recovery_failed"):
     started = time.monotonic()
     store = ImportStore(repository)
@@ -1068,6 +1101,7 @@ def _restart_imported_target(repository, target, client, links, trigger, *, reas
         time.sleep(0.5)
     else:
         raise FrigateApiError("capture_verification_failed")
+    _resume_owned_capture_pauses(repository, target, client, links, pending)
     _wait_capture(client, pending["active_keys"])
     if digest(client.raw_config()) != pending["raw_hash"]:
         raise FrigateApiError("import_source_conflict")
