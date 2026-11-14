@@ -127,7 +127,7 @@ answering RTSP control requests. After adoption, six batches of four concurrent
 HTTP snapshots must fail within the deadline without retaining relay consumers,
 decoder processes, or growing relay memory. Normal background health checks stay
 enabled. Resuming media must produce a decodable JPEG at the same stream URL,
-without restarting go2rtc. The lab uses the production 512 MiB / 192 PID limits.
+without restarting go2rtc. The lab uses the production 1 GiB / 192 PID limits.
 
 This runs as a separate parallel job in the full release gate. Its artifacts in
 `e2e-artifacts/stalled-snapshot/` include consumer IDs, process counts, relay RSS,
@@ -139,9 +139,9 @@ workload below, it catches server-side snapshot work surviving client timeouts.
 Run `python3 e2e/memory_pressure.py` on a disposable Docker host. It adopts eight
 synthetic 1080p RTSP cameras through the real HTTP API, then requests eight
 concurrent JPEG snapshots per batch while ordinary health and thumbnail work stays
-enabled. The separate `camadmiral-memory-e2e` lab applies the shipped 512 MiB RAM
-and 192 PID limits, with no swap allowance. No allocation mocks or forced kills
-are used. The full release gate runs this alongside the existing E2E job.
+enabled. The separate `camadmiral-memory-e2e` lab retains a stricter 512 MiB RAM cap
+and the shipped 192 PID limit, with no swap allowance. No allocation mocks or
+forced kills are used. The full release gate runs this alongside the existing E2E job.
 
 The default 12 batches must return 96 actual JPEG frames without OOM events or
 container restarts. Samples record cgroup memory throughout the run, including

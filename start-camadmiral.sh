@@ -107,8 +107,8 @@ docker run -d \
     --read-only \
     --cap-drop ALL \
     --security-opt no-new-privileges:true \
-    --memory 512m \
-    --memory-swap 512m \
+    --memory 1g \
+    --memory-swap 1g \
     --pids-limit 192 \
     --env "CAMADMIRAL_CONFIG_FILE=$CONFIG_FILE" \
     --volume "$VOLUME:/var/lib/camadmiral" \

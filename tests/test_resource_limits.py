@@ -19,13 +19,16 @@ class ResourceLimitTests(unittest.TestCase):
 
     def test_shipped_and_e2e_memory_limits_match(self):
         manifest = json.loads((ROOT / 'reefy/app.json').read_text())
-        self.assertEqual(manifest['mem_limit'], '512m')
+        self.assertEqual(manifest['mem_limit'], '1g')
         for path in ('compose.yaml', 'e2e/compose.yaml'):
             service = yaml.safe_load((ROOT / path).read_text())['services']['camadmiral']
             self.assertEqual(service['mem_limit'], manifest['mem_limit'], path)
+            self.assertEqual(service['memswap_limit'], manifest['mem_limit'], path)
             self.assertEqual(service['pids_limit'], manifest['pids_limit'], path)
         launcher = (ROOT / 'start-camadmiral.sh').read_text()
         self.assertEqual(re.search(r'--memory\s+(\S+)', launcher).group(1), manifest['mem_limit'])
+        self.assertEqual(re.search(r'--memory-swap\s+(\S+)', launcher).group(1), manifest['mem_limit'])
+        # Keep the lower-memory stress envelope as additional regression coverage.
         regression = yaml.safe_load((ROOT / 'e2e/memory-compose.yaml').read_text())
         self.assertEqual(regression['services']['camadmiral']['mem_limit'],
                          '${CAMADMIRAL_E2E_MEMORY_LIMIT:-512m}')
