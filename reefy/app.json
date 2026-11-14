@@ -1,11 +1,15 @@
 {
   "slug": "camadmiral",
-  "version": "v2026.11.13-00",
+  "version": "v2026.11.14-00",
   "name": "CamAdmiral",
   "icon": "icon.png",
   "description": "Discover, adopt, monitor, and restream ONVIF and RTSP cameras",
-  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.11.13-00",
+  "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.11.14-00",
   "releases": [
+    {
+      "version": "v2026.11.14-00",
+      "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.11.14-00"
+    },
     {
       "version": "v2026.11.13-00",
       "image": "ghcr.io/reefyai/reefy-camadmiral:v2026.11.13-00"
@@ -294,7 +298,7 @@
       ]
     }
   },
-  "mem_limit": "512m",
+  "mem_limit": "1g",
   "pids_limit": 192,
   "needs_llm": false,
   "tags": [

@@ -151,7 +151,7 @@ starts one hardened container. It never replaces existing secrets or persistent 
 URL, admin credentials, and consumer API token are printed after startup. Secrets remain
 inside the `camadmiral-data` volume.
 
-The default container memory limit is 512 MiB, allowing room for concurrent video
+The default container memory limit is 1 GiB, allowing room for concurrent video
 snapshots and background thumbnails. This is a ceiling, not memory reserved at startup;
 larger camera fleets or heavier media workloads may need a higher limit.
 Snapshot conversion uses bounded FFmpeg thread counts so concurrent conversions do

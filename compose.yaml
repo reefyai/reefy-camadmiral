@@ -3,14 +3,14 @@ name: camadmiral
 services:
   camadmiral:
     build: .
-    image: ghcr.io/reefyai/reefy-camadmiral:v2026.11.13-00
+    image: ghcr.io/reefyai/reefy-camadmiral:v2026.11.14-00
     network_mode: host
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 1g
+    memswap_limit: 1g
     pids_limit: 192
     volumes:
       - camadmiral-data:/var/lib/camadmiral
