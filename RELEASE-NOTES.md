@@ -1,3 +1,19 @@
+# CamAdmiral v2026.11.17-00
+
+Keep all owned Frigate relay links current when the host address changes, even
+while an earlier camera has a pending recovery. Endpoint maintenance is separate
+from reader recovery, per-camera failures are isolated, and recovery attempts
+rotate across passes. Accepted recorder-wide restarts remain serialized.
+
+Exact configuration write intents preserve restart ownership checks through
+lost replies. Operator edits, audio policy, camera identities, settings,
+credentials, rollback sources and recording history are retained. Regression
+coverage includes delayed recovery, host changes, partial runtime failures,
+interrupted saves and decoded old/new recordings on Frigate 0.17.2 and 0.18.2.
+
+Private Docker lab readiness now retries a slow info probe inside the existing
+90-second window while preserving cgroup and resource-enforcement checks.
+
 # CamAdmiral v2026.11.12-00
 
 New Frigate integrations default to video-only relay feeds to avoid live-view

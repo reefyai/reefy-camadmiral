@@ -153,6 +153,28 @@ def private_mountpoints(root, data, mountinfo):
     return sorted(paths, key=lambda path: len(path.parts), reverse=True)
 
 
+def wait_for_daemon(root, daemon, timeout=90):
+    deadline = time.monotonic() + timeout
+    while daemon.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = command(root, 'info', '--format', '{{json .}}',
+                             check=False, timeout=min(5, remaining))
+        except subprocess.TimeoutExpired:
+            # A slow info probe is not a failed readiness window. Keep the
+            # original overall deadline and all resource-enforcement checks.
+            pass
+        else:
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(1, remaining))
+    raise RuntimeError('Private Docker did not become ready; see the retained daemon log')
+
+
 def start():
     if (os.environ.get('CAMADMIRAL_CI_JOB_CONTAINER') != '1'
             or not Path('/.dockerenv').exists() or os.geteuid() != 0):
@@ -188,41 +210,34 @@ def start():
         env=private_environment(root, os.environ), stdout=log, stderr=subprocess.STDOUT)
     metadata = {'owner': owner(os.environ), 'pid': daemon.pid}
     (root / 'owner.json').write_text(json.dumps(metadata))
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline and daemon.poll() is None:
-        result = command(root, 'info', '--format', '{{json .}}', check=False, timeout=5)
-        if result.returncode == 0:
-            info = json.loads(result.stdout)
-            metadata['daemon'] = fingerprint(info)
-            (root / 'owner.json').write_text(json.dumps(metadata))
-            if str(info['CgroupVersion']) != '2' or not info['MemoryLimit'] or not info['PidsLimit']:
-                raise RuntimeError('Docker lab must enforce real cgroup v2 memory and PID limits')
-            if __package__:
-                from .ci_image_retry import pull_image
-            else:
-                from ci_image_retry import pull_image
-            pull_image(['docker', '--config', str(root / 'config'), '--host',
-                        'unix://' + str(root / 'docker.sock')], 'alpine:3.22')
-            probe = command(root, 'run', '--rm', '--memory=32m', '--memory-swap=32m', '--pids-limit=32',
-                            'alpine:3.22', 'sh', '-c',
-                            'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max', timeout=120)
-            limits = verified_limits(probe.stdout)
-            client = Path('/usr/bin/docker')
-            client.rename('/usr/bin/camadmiral-docker-cli')
-            client.write_text(client_wrapper(root))
-            client.chmod(0o755)
-            revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-            (artifacts / 'readiness.json').write_text(json.dumps({
-                'status': 'ready', 'revision': revision, 'daemon_fingerprint': metadata['daemon'],
-                'cgroup_version': info['CgroupVersion'], 'memory_limit': info['MemoryLimit'],
-                'pid_limit': info['PidsLimit'], 'storage_driver': info['Driver'],
-                'server_version': info['ServerVersion'], 'private_credentials': True,
-                'enforced_limits': limits,
-            }, indent=2) + '\n')
-            print('Private Docker ready with cgroup v2 memory and PID enforcement', flush=True)
-            return
-        time.sleep(1)
-    raise RuntimeError('Private Docker did not become ready; see the retained daemon log')
+    info = wait_for_daemon(root, daemon)
+    metadata['daemon'] = fingerprint(info)
+    (root / 'owner.json').write_text(json.dumps(metadata))
+    if str(info['CgroupVersion']) != '2' or not info['MemoryLimit'] or not info['PidsLimit']:
+        raise RuntimeError('Docker lab must enforce real cgroup v2 memory and PID limits')
+    if __package__:
+        from .ci_image_retry import pull_image
+    else:
+        from ci_image_retry import pull_image
+    pull_image(['docker', '--config', str(root / 'config'), '--host',
+                'unix://' + str(root / 'docker.sock')], 'alpine:3.22')
+    probe = command(root, 'run', '--rm', '--memory=32m', '--memory-swap=32m', '--pids-limit=32',
+                    'alpine:3.22', 'sh', '-c',
+                    'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max', timeout=120)
+    limits = verified_limits(probe.stdout)
+    client = Path('/usr/bin/docker')
+    client.rename('/usr/bin/camadmiral-docker-cli')
+    client.write_text(client_wrapper(root))
+    client.chmod(0o755)
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    (artifacts / 'readiness.json').write_text(json.dumps({
+        'status': 'ready', 'revision': revision, 'daemon_fingerprint': metadata['daemon'],
+        'cgroup_version': info['CgroupVersion'], 'memory_limit': info['MemoryLimit'],
+        'pid_limit': info['PidsLimit'], 'storage_driver': info['Driver'],
+        'server_version': info['ServerVersion'], 'private_credentials': True,
+        'enforced_limits': limits,
+    }, indent=2) + '\n')
+    print('Private Docker ready with cgroup v2 memory and PID enforcement', flush=True)
 
 
 def stop():

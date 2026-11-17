@@ -1114,6 +1114,134 @@ class FrigateImportTests(unittest.TestCase):
         self.assertNotIn("target_restart", store.links(self.target.target_id)["legacy_entrance"])
         self.assertEqual(self.repo.latest_camera_address_revision(uid), store.links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
 
+    def host_change_imports(self):
+        for index in range(5):
+            camera = copy.deepcopy(self.camera)
+            camera['ffmpeg']['inputs'][0]['path'] = f'rtsp://operator:synthetic-password@192.0.2.{30 + index}/main'
+            camera['onvif']['host'] = f'192.0.2.{30 + index}'
+            self.client.seed(f'peer_{index}', camera)
+        keys = ['legacy_entrance', *[f'peer_{i}' for i in range(5)]]
+        self.execute(self.preview(), selected=keys)
+        return ImportStore(self.repo), keys
+
+    def test_host_change_updates_all_peers_before_pending_restart_recovery(self):
+        store, keys = self.host_change_imports()
+        trigger = store.links(self.target.target_id)[keys[0]]
+        from camadmiral.frigate_import import digest
+        trigger['target_restart'] = {'raw_hash': digest(self.client.raw_config())}
+        store.save_link(self.target.target_id, keys[0], trigger)
+        before = copy.deepcopy(self.client.raw_config()['cameras'])
+        def pending(*args, **kwargs):
+            links = store.links(self.target.target_id)
+            for key in keys:
+                for alias, sources in links[key]['managed_streams'].items():
+                    self.assertTrue(all('192.0.2.21' in source for source in sources), key)
+                    self.assertEqual(sources, self.client.raw_config()['go2rtc']['streams'][alias])
+            self.assertEqual(digest(self.client.raw_config()), links[keys[0]]['target_restart']['raw_hash'])
+            raise FrigateApiError('capture_verification_failed')
+        with patch('camadmiral.frigate_import._restart_imported_target', side_effect=pending):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        self.assertEqual(before, self.client.raw_config()['cameras'])
+        self.assertIn('target_restart', store.links(self.target.target_id)[keys[0]])
+
+    def test_host_change_preserves_operator_source_conflict_and_other_settings(self):
+        store, keys = self.host_change_imports()
+        conflict = store.links(self.target.target_id)['peer_0']
+        alias = next(iter(conflict['managed_streams']))
+        self.client.current_raw_config['go2rtc']['streams'][alias] = ['rtsp://192.0.2.99/operator']
+        self.client.current_raw_config['cameras']['peer_1']['detect']['fps'] = 9
+        before = copy.deepcopy(self.client.raw_config()['cameras'])
+        with patch('camadmiral.frigate_import._refresh_capture', return_value=True):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        self.assertEqual(before, self.client.raw_config()['cameras'])
+        self.assertEqual(['rtsp://192.0.2.99/operator'], self.client.raw_config()['go2rtc']['streams'][alias])
+        self.assertEqual(conflict['managed_streams'], store.links(self.target.target_id)['peer_0']['managed_streams'])
+        for key in keys[2:]:
+            self.assertTrue(all('192.0.2.21' in u for sources in store.links(self.target.target_id)[key]['managed_streams'].values() for u in sources))
+
+    def test_host_change_retries_lost_save_reply_without_weakening_restart_guard(self):
+        from camadmiral.frigate_import import digest
+        store, keys = self.host_change_imports()
+        trigger = store.links(self.target.target_id)[keys[0]]
+        original_hash = digest(self.client.raw_config())
+        trigger['target_restart'] = {'raw_hash': original_hash}
+        store.save_link(self.target.target_id, keys[0], trigger)
+        save = self.client.set_config
+        def lost_reply(*args, **kwargs):
+            save(*args, **kwargs)
+            raise FrigateApiError('target_unavailable')
+        with patch.object(self.client, 'set_config', side_effect=lost_reply):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        pending = store.links(self.target.target_id)[keys[0]]['target_restart']
+        self.assertEqual(original_hash, pending['raw_hash'])
+        self.assertEqual(digest(self.client.raw_config()), pending['source_update_hash'])
+        with patch('camadmiral.frigate_import._restart_imported_target', side_effect=FrigateApiError('capture_verification_failed')):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        pending = store.links(self.target.target_id)[keys[0]]['target_restart']
+        self.assertEqual(digest(self.client.raw_config()), pending['raw_hash'])
+        self.assertNotIn('source_update_hash', pending)
+        self.assertTrue(all('192.0.2.21' in u for r in store.links(self.target.target_id).values() for v in r['managed_streams'].values() for u in v))
+
+    def test_host_change_does_not_acknowledge_unrelated_pending_restart_drift(self):
+        from camadmiral.frigate_import import digest
+        store, keys = self.host_change_imports()
+        trigger = store.links(self.target.target_id)[keys[0]]
+        original_hash = digest(self.client.raw_config())
+        trigger['target_restart'] = {'raw_hash': original_hash}
+        store.save_link(self.target.target_id, keys[0], trigger)
+        self.client.current_raw_config['cameras']['peer_0']['detect']['fps'] = 9
+        with patch('camadmiral.frigate_import._restart_imported_target', side_effect=FrigateApiError('import_source_conflict')):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        pending = store.links(self.target.target_id)[keys[0]]['target_restart']
+        self.assertEqual(original_hash, pending['raw_hash'])
+        self.assertNotIn('source_update_hash', pending)
+        self.assertEqual(9, self.client.raw_config()['cameras']['peer_0']['detect']['fps'])
+
+    def test_host_change_skips_deselected_peers_and_retries_partial_runtime_updates(self):
+        store, keys = self.host_change_imports()
+        skipped = store.links(self.target.target_id)['peer_4']
+        self.repo.deselect_frigate_camera(self.target.target_id, skipped['camera_uuid'])
+        original = copy.deepcopy(self.client.raw_config())
+        set_stream = self.client.set_runtime_stream
+        def unavailable(alias, url):
+            if alias in store.links(self.target.target_id)['peer_0']['managed_streams']:
+                raise FrigateApiError('target_unavailable')
+            return set_stream(alias, url)
+        with patch.object(self.client, 'set_runtime_stream', side_effect=unavailable), patch('camadmiral.frigate_import._refresh_capture', return_value=True):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        for alias in skipped['managed_streams']:
+            self.assertEqual(original['go2rtc']['streams'][alias], self.client.raw_config()['go2rtc']['streams'][alias])
+        self.assertTrue(all('192.0.2.21' in u for v in store.links(self.target.target_id)['peer_3']['managed_streams'].values() for u in v))
+        with patch('camadmiral.frigate_import._refresh_capture', return_value=True):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        self.assertTrue(all('192.0.2.21' in u for v in store.links(self.target.target_id)['peer_0']['managed_streams'].values() for u in v))
+
+    def test_recovery_rotates_past_a_repeatedly_blocking_camera(self):
+        store, keys = self.host_change_imports()
+        for key, row in store.links(self.target.target_id).items():
+            row['relay_runtime_revision'] = 'synthetic-old-runtime'
+            store.save_link(self.target.target_id, key, row)
+        visited = []
+        def blocked(repository, target, client, links, row):
+            visited.append(row['key'])
+            return True
+        with patch('camadmiral.frigate_import._refresh_capture', side_effect=blocked):
+            for _ in keys:
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
+        self.assertCountEqual(keys, visited)
+
+    def test_pending_shared_restart_does_not_dispatch_other_camera_recovery(self):
+        from camadmiral.frigate_import import digest
+        store, keys = self.host_change_imports()
+        row = store.links(self.target.target_id)[keys[0]]
+        row['target_restart'] = {'raw_hash': digest(self.client.raw_config())}
+        store.save_link(self.target.target_id, keys[0], row)
+        with patch('camadmiral.frigate_import._restart_imported_target', side_effect=FrigateApiError('capture_verification_failed')), patch('camadmiral.frigate_import._refresh_capture') as refresh:
+            for _ in range(2):
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
+        refresh.assert_not_called()
+        self.assertTrue(all('192.0.2.21' in u for r in store.links(self.target.target_id).values() for v in r['managed_streams'].values() for u in v))
+
     def test_global_restart_refreshes_both_owned_channels_once(self):
         second = copy.deepcopy(self.camera)
         second["ffmpeg"]["inputs"][0]["path"] = "rtsp://operator:synthetic-password@192.0.2.12/main"
