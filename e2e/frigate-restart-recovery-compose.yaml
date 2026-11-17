@@ -1,4 +1,7 @@
 services:
+  camadmiral:
+    volumes:
+      - ./frigate_host_recovery.py:/e2e/frigate_host_recovery.py:ro
   # Keep fault state and network reachability independent of the process under
   # interruption. Sharing its network namespace invalidates localhost on restart.
   import-api-proxy:

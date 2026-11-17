@@ -73,6 +73,11 @@ def driver(stage):
         assert raw['cameras']['untouched_camera'] == expected['cameras']['untouched_camera'], 'Unselected camera changed'
         assert raw['camera_groups'] == expected['camera_groups'], 'Camera groups changed'
         assert fault()['restart_requests'] == 1, 'BATCH_RESTARTS_NOT_COMBINED: ' + json.dumps(fault())
+    elif stage == 'host-change-verify':
+        for key in ('slow_camera', 'interrupted_camera'):
+            wait_for('fresh video after relay host refresh: ' + key,
+                lambda: frigate('/stats')['cameras'].get(key, {}).get('camera_fps', 0) > 0, timeout=180)
+        state['results'][stage] = {'fresh_video': True}; remember()
     elif stage == 'batch-interrupt-start':
         fault({'mode': 'ack', 'restart_delays': [20]})
         state['interrupt_job'] = start(['failure_camera', 'untouched_camera'])
@@ -205,7 +210,11 @@ with sqlite3.connect('/config/frigate.db') as d:
         run('exec', '-T', 'frigate', 'python3', '-c', seed)
         history = json.loads(run('exec', '-T', 'frigate', 'python3', '-c', history_read)); assert history['events'] and history['reviews']
         if case == 'batch':
-            stage('batch-normal'); stage('batch-interrupt-start'); run('restart', 'camadmiral'); stage('batch-interrupt-finish')
+            stage('batch-normal')
+            output = run('exec', '-T', 'camadmiral', 'python', '/e2e/frigate_host_recovery.py')
+            result['host_recovery'] = json.loads(output.splitlines()[-1])
+            stage('host-change-verify')
+            stage('batch-interrupt-start'); run('restart', 'camadmiral'); stage('batch-interrupt-finish')
         else:
             stage('recovery-import'); reconnect_and_verify('after'); reconnect_and_verify('before')
         since = time.time()
