@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import yaml
 
-from scripts.ci_docker import client_wrapper, owned_data, owned_root, prepare, prepare_data, private_environment, private_mountpoints, stop, verified_limits
+from scripts.ci_docker import client_wrapper, owned_data, owned_root, prepare, prepare_data, private_environment, private_mountpoints, stop, verified_limits, wait_for_daemon
 
 
 class PrivateDockerTests(unittest.TestCase):
@@ -140,6 +140,32 @@ sys.exit(99)
         with self.assertRaises(ValueError):
             owned_data(root, storage, dict(self.environment, GITHUB_JOB='different-job'))
         self.assertTrue((storage / 'owner.json').exists())
+
+    def test_readiness_retries_timed_out_probe_within_original_deadline(self):
+        clock = [0.0]
+        daemon = SimpleNamespace(poll=lambda: None)
+        def probe(*args, **kwargs):
+            clock[0] += kwargs['timeout']
+            if clock[0] <= 5:
+                raise subprocess.TimeoutExpired(['docker', 'info'], kwargs['timeout'])
+            return SimpleNamespace(returncode=0, stdout='{"ID":"synthetic-daemon"}')
+        with patch('scripts.ci_docker.time.monotonic', side_effect=lambda: clock[0]), patch('scripts.ci_docker.time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)), patch('scripts.ci_docker.command', side_effect=probe) as command:
+            self.assertEqual({'ID': 'synthetic-daemon'}, wait_for_daemon(self.root, daemon))
+        self.assertEqual(2, command.call_count)
+        self.assertLess(clock[0], 90)
+
+    def test_readiness_timeouts_remain_bounded_and_dead_daemon_is_rejected(self):
+        clock = [0.0]
+        def probe(*args, **kwargs):
+            clock[0] += kwargs['timeout']
+            raise subprocess.TimeoutExpired(['docker', 'info'], kwargs['timeout'])
+        with patch('scripts.ci_docker.time.monotonic', side_effect=lambda: clock[0]), patch('scripts.ci_docker.time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)), patch('scripts.ci_docker.command', side_effect=probe):
+            with self.assertRaises(RuntimeError):
+                wait_for_daemon(self.root, SimpleNamespace(poll=lambda: None))
+        self.assertEqual(90, clock[0])
+        with patch('scripts.ci_docker.command') as command, self.assertRaises(RuntimeError):
+            wait_for_daemon(self.root, SimpleNamespace(poll=lambda: 1))
+        command.assert_not_called()
 
     def test_readiness_rejects_missing_or_weaker_resource_limits(self):
         self.assertEqual(verified_limits('33554432\n32\n'), {'memory_max': 33554432, 'pids_max': 32})
