@@ -1239,6 +1239,87 @@ def _relay_runtime_revision(repository):
     return RELAY_RUNTIME_REVISION + ":" + (repository.latest_relay_runtime_revision() or "initial")
 
 
+def _sync_imported_endpoints(repository, target, client, links, selected, inventory, host_resolver):
+    """Refresh owned endpoints for every peer before any blocking reader recovery."""
+    store = ImportStore(repository)
+    raw = client.raw_config()
+    raw_hash = digest(raw)
+    # A source save may have completed before the process lost its reply. Only
+    # the exact journaled result of our own edit can advance a restart guard.
+    for key, row in links.items():
+        pending = row.get('target_restart')
+        if pending and pending.get('source_update_hash') == raw_hash:
+            pending['raw_hash'] = raw_hash
+            pending.pop('source_update_hash', None)
+            store.save_link(target.target_id, key, row)
+    planned = {}
+    updates = {}
+    for key, row in links.items():
+        if row.get('state') != 'active' or row['camera_uuid'] not in selected:
+            continue
+        try:
+            camera = _camera(repository, row['camera_uuid'])
+            if not camera['enabled']:
+                continue
+            saved_target = repository.frigate_target(target.target_id) or {}
+            mode = saved_target.get('address_mode') or 'lan'
+            host = host_resolver(mode) if host_resolver else _target_host(repository, target, inventory)
+            _, desired = build_managed(repository, row, host, saved_target.get('audio_mode', 'preserve'))
+        except FrigateApiError as exc:
+            repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], exc.code)
+            continue
+        if desired == row['managed_streams']:
+            continue
+        if (raw.get('cameras', {}).get(key, {}).get('ffmpeg', {}).get('inputs')
+                != row['managed_camera'].get('ffmpeg', {}).get('inputs')
+                or any(raw.get('go2rtc', {}).get('streams', {}).get(alias) not in (old, desired.get(alias))
+                       for alias, old in row['managed_streams'].items())):
+            repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], 'import_source_conflict')
+            continue
+        planned[key] = desired
+        updates.update(desired)
+    if not updates:
+        return
+    expected = copy.deepcopy(raw)
+    expected.setdefault('go2rtc', {}).setdefault('streams', {}).update(updates)
+    expected_hash = digest(expected)
+    # Persist a narrow write intent before changing disk config. Existing
+    # unrelated drift must never be folded into a restart's ownership guard.
+    for key, row in links.items():
+        pending = row.get('target_restart')
+        if pending and pending['raw_hash'] == raw_hash:
+            pending['source_update_hash'] = expected_hash
+            store.save_link(target.target_id, key, row)
+    if expected != raw:
+        client.set_config({'go2rtc': {'streams': updates}})
+    if digest(client.raw_config()) != expected_hash:
+        raise FrigateApiError('import_source_conflict')
+    for key, row in links.items():
+        pending = row.get('target_restart')
+        if pending and pending.get('source_update_hash') == expected_hash:
+            pending['raw_hash'] = expected_hash
+            pending.pop('source_update_hash', None)
+            store.save_link(target.target_id, key, row)
+    for key, desired in planned.items():
+        row = links[key]
+        try:
+            for alias, values in desired.items():
+                client.set_runtime_stream(alias, values[0])
+        except FrigateApiError as exc:
+            # Keep old ownership metadata so the next cycle retries every
+            # runtime alias, even when the disk save already succeeded.
+            repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], exc.code)
+            continue
+        old_hosts = {urllib.parse.urlsplit(u.removeprefix('ffmpeg:')).hostname
+                     for values in row['managed_streams'].values() for u in values}
+        new_hosts = {urllib.parse.urlsplit(u.removeprefix('ffmpeg:')).hostname
+                     for values in desired.values() for u in values}
+        row['managed_streams'] = desired
+        if old_hosts != new_hosts:
+            row.pop('relay_runtime_revision', None)
+        store.save_link(target.target_id, key, row)
+
+
 def sync_imported(repository, target, inventory=None, client=None, host_resolver=None):
     """Reconcile only managed source fields; never regenerate operator settings."""
     client = client or FrigateClient(target)
@@ -1247,7 +1328,27 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
     store = ImportStore(repository)
     selected = set(repository.selected_frigate_camera_uuids(target.target_id))
     links = store.links(target.target_id)
-    for key, row in links.items():
+    try:
+        _sync_imported_endpoints(repository, target, client, links, selected, inventory, host_resolver)
+    except FrigateApiError as exc:
+        for row in links.values():
+            if row.get('state') == 'active' and row['camera_uuid'] in selected:
+                repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], exc.code)
+        return {row['camera_uuid'] for row in links.values()}
+    cursors = getattr(repository, '_import_recovery_after', {})
+    repository._import_recovery_after = cursors
+    ordered = list(links.items())
+    previous = cursors.get(target.target_id)
+    if previous in links:
+        offset = list(links).index(previous) + 1
+        ordered = ordered[offset:] + ordered[:offset]
+    # A recorder-wide restart is shared state. Finish accepted restarts before
+    # allowing any new camera recovery to dispatch another one. Endpoint work
+    # above remains independent, including while restart verification fails.
+    restarting = {key for key, row in links.items() if row.get('target_restart')}
+    for key, row in ordered:
+        if restarting and key not in restarting:
+            continue
         if row.get('state') != 'active' or row['camera_uuid'] not in selected:
             continue
         try:
@@ -1283,11 +1384,10 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], 'import_source_conflict')
                 continue
             if desired_streams != row['managed_streams']:
-                client.set_config({'go2rtc': {'streams': desired_streams}})
-                for alias, values in desired_streams.items():
-                    client.set_runtime_stream(alias, values[0])
-                row['managed_streams'] = desired_streams
-                store.save_link(target.target_id, key, row)
+                # Endpoint maintenance already attempted this peer. Leave a
+                # failed runtime update pending instead of retrying it inline
+                # and coupling it back to reader recovery.
+                continue
             revision = repository.latest_camera_address_revision(row["camera_uuid"])
             source_revision = _camera_source_revisions(client, row, camera, source_revisions)
             previous_sources = row.get('relay_source_revisions')
@@ -1340,4 +1440,6 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             repository.set_frigate_selection_error(target.target_id, row["camera_uuid"], exc.code)
             if row.get("target_restart"):
                 break
+        finally:
+            cursors[target.target_id] = key
     return {row['camera_uuid'] for row in links.values()}
