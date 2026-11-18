@@ -88,6 +88,9 @@ class FakeFrigateClient:
     def runtime_streams(self):
         return self.current_runtime
 
+    def recordings_since(self, key, since):
+        return [{'start_time': since, 'end_time': since + 3, 'segment_size': 1}]
+
     def stats(self):
         return self.current_stats
 
@@ -326,6 +329,21 @@ class FrigateTargetTests(unittest.TestCase):
 
         self.assertIn("camadmiral_saved", config["cameras"])
         self.assertIn("camadmiral_saved_record", config["go2rtc"]["streams"])
+
+    def test_recording_metadata_query_encodes_camera_and_supplies_current_time_bounds(self):
+        client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate.example.test'))
+        rows = [{'start_time': 1000, 'end_time': 1003, 'segment_size': 1}]
+        with patch.object(client, '_request', return_value=rows) as request, \
+             patch('camadmiral.frigate.time.time', return_value=1010):
+            self.assertEqual(rows, client.recordings_since('camera/with space', 1000))
+        request.assert_called_once_with('GET', '/api/camera%2Fwith%20space/recordings?after=1000&before=1010')
+
+    def test_recording_metadata_rejects_non_list_and_non_object_rows(self):
+        client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate.example.test'))
+        for value in ({}, [None], ['invalid']):
+            with patch.object(client, '_request', return_value=value):
+                with self.assertRaises(FrigateApiError):
+                    client.recordings_since('synthetic', 1000)
 
     def test_service_start_identity_is_validated_for_restart_confirmation(self):
         client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))

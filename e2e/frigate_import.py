@@ -269,6 +269,12 @@ def driver(stage):
             from camadmiral.frigate import FrigateClient, FrigateTarget
             FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
                 'http://frigate:5000')).set_runtime_camera_enabled('authenticated_camera', True)
+        service = frigate('/stats')['service']
+        state['role_service_started'] = service['last_updated'] - service['uptime']
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            state['role_restart_requests'] = json.load(response)['restart_requests']
+        state['manual_recovery_count'] = state.get('manual_recovery_count', 0) + 1
+        STATE.write_text(json.dumps(state))
         return
     if stage == 'roles':
         service = frigate('/stats')['service']
@@ -440,8 +446,10 @@ for target in repository.frigate_targets():
  row=ImportStore(repository).links(target['target_id']).get('authenticated_camera')
  if row:
   saved=row.get('relay_source_revisions') or {}
+  with repository.connect() as connection:
+   selection=connection.execute('SELECT sync_error FROM frigate_camera_selections WHERE target_id=? AND camera_uuid=?',(target['target_id'],row['camera_uuid'])).fetchone()
   result.update(saved=saved,live={key:live[key] for key in saved if key in live},
-                manual_restart_required=bool(row.get('reader_recovery',{}).get('blocked')))
+                manual_restart_required=bool(selection and selection['sync_error'] in ('manual_restart_required','reader_recovery_cooldown')))
   if READ_DIAGNOSTICS:
    from camadmiral.frigate import FrigateClient,FrigateTarget
    from camadmiral.frigate_import import _running_inputs_match
@@ -622,11 +630,14 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         run('stop', 'camera-auth')
         run('rm', '--force', 'camera-auth')
         run('up', '-d', 'camera-auth-import-moved')
-        stage('dns-after')
         if source_before['supported']:
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 source_after = source_generations()
+                if source_after.get('manual_restart_required') and not result.get('dns_move_manual_recovery'):
+                    stage('reader-manual-recovery')
+                    result['dns_move_manual_recovery'] = True
+                    deadline = time.monotonic() + 90
                 if (source_after['saved'] and source_after['saved'] == source_after['live']
                         and source_after['saved'] != source_before['saved']):
                     break
@@ -634,6 +645,7 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
             else:
                 raise AssertionError('Recovered media did not acknowledge its new upstream connections')
             result['dns_source_generations_after'] = source_after
+        stage('dns-after')
         result['address_recovery_decoded'] = True
         switched = time.time()
         deadline = time.monotonic() + 150

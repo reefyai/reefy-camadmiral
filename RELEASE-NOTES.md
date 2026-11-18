@@ -3,6 +3,7 @@
 - Background imported-camera recovery no longer requests whole-Frigate restarts. Explicit import/restore operations keep their existing restart confirmation.
 - Healthy readers acknowledge source and relay revisions without a camera OFF/ON cycle.
 - Camera reconnect attempts are limited to two with a five-minute cooldown, persisted across CamAdmiral restarts and source changes. Failed pause/resume recovery asks for operator action; resume-only retries are bounded too.
+- Verify fresh recording output after relay revisions; healthy camera FPS alone must not mask stalled recording. Quiet motion-only cameras wait without an automatic pause.
 - Explain manual recovery, retained camera OFF state, and cooldowns in the UI. Periodic synchronization and Repair sync never restart Frigate; user-triggered Sync cameras states its possible restart before the action.
 
 # CamAdmiral v2026.11.17-00

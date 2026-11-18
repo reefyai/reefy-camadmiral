@@ -374,7 +374,11 @@ restored separately. The default generated key stays inside the data volume.
 ### Frigate background recovery
 
 Background synchronization never initiates a whole-Frigate restart. A healthy reader
-acknowledges relay/source revisions without disabling the camera. A stalled reader gets
+acknowledges relay/source revisions without disabling the camera only after a complete
+recording segment starts after that revision. Camera FPS alone cannot prove recorder
+recovery after an RTP reset. Known mismatches in video parameter sets also require
+reader recovery instead of acknowledging stale cached codec metadata. Continuous recording gets a 30-second verification window;
+quiet motion/event-only cameras wait for a retained segment without an automatic pause. A stalled reader gets
 at most two camera reconnect attempts, at least five minutes apart; this budget is
 stored with the binding and survives CamAdmiral restarts and source revision changes.
 A failed pause or resume stops automatic recovery and asks the operator to inspect

@@ -25,6 +25,27 @@ from camadmiral.media import (
 )
 
 
+
+class VideoSdpSignatureTests(unittest.TestCase):
+    def test_parameter_sets_survive_payload_numbers_and_ignore_credentials_and_audio(self):
+        from camadmiral.media import video_sdp_signatures
+        first = 'm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\na=fmtp:96 profile-level-id=42;sprop-parameter-sets=oldSPS,oldPPS\na=control:rtsp://user:secret@camera/stream\nm=audio 0 RTP/AVP 97\na=rtpmap:97 MPEG4-GENERIC/48000\n'
+        second = 'm=video 0 RTP/AVP 104\na=rtpmap:104 h264/90000\na=fmtp:104 sprop-parameter-sets=oldSPS,oldPPS;packetization-mode=1\n'
+        self.assertEqual(video_sdp_signatures(first), video_sdp_signatures(second))
+        self.assertNotIn('secret', repr(video_sdp_signatures(first)))
+        self.assertNotEqual(video_sdp_signatures(first), video_sdp_signatures(second.replace('oldSPS','newSPS')))
+
+    def test_equivalent_base64_parameter_padding_is_not_a_codec_change(self):
+        from camadmiral.media import video_sdp_signatures
+        sdp = 'm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\na=fmtp:96 sprop-parameter-sets=aGVsbG8=,d29ybGQ='
+        self.assertEqual(video_sdp_signatures(sdp), video_sdp_signatures(sdp.replace('aGVsbG8=', 'aGVsbG8').replace('d29ybGQ=', 'd29ybGQ')))
+
+    def test_unknown_and_oversized_sdp_do_not_claim_codec_metadata(self):
+        from camadmiral.media import video_sdp_signatures
+        for value in (None, {}, 'x'*65537, 'm=audio 0 RTP/AVP 96\na=rtpmap:96 PCMU/8000'):
+            self.assertEqual(set(), video_sdp_signatures(value))
+
+
 class ImmediateExecutor:
     def submit(self, function, *args, **kwargs):
         future = Future()

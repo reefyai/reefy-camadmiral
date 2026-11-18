@@ -746,3 +746,30 @@ user-triggered Sync cameras job opts in, with its possible recording interruptio
 shown before the action; import/restore keep their explicit restart confirmation.
 Tests cover repeated unconfirmed Frigate 0.17 second-camera reconciliation, Repair
 sync with that topology, and both background/user job permission boundaries.
+
+
+Passive reader recovery now verifies a complete retained recording segment whose
+start is after the observed relay/address/source revision. Positive camera FPS
+and go2rtc byte counters alone cannot acknowledge a recorder stuck on an older
+RTP timeline. Continuous recording gets a 30-second grace window before the
+existing bounded camera recovery; quiet event/motion retention does not trigger
+a pause merely because no segment was retained. Stale/future/empty metadata does
+not count. Revisions remain pending until output verifies, and successful output
+does not replenish the persisted recovery budget. The identity lab still requires
+complete fresh segments and decoded old/new playback; those assertions are unchanged.
+
+The explicit github_hosted fallback now reaches every synthetic Linux job and
+publication job, including audio, runtime pause and offline retention. All tests,
+real cgroup memory/PID enforcement, resource budgets and parallel execution are
+unchanged. This avoids BigBird's physically exhausted thin pool without deleting
+its backups or changing storage mappings. Default runner selection stays unchanged.
+
+Passive health also compares hashes of advertised video codec parameter sets from
+the active upstream with Frigate's cached relay SDP. Payload numbers, parameter
+ordering, transport addresses, credentials and equivalent base64 padding do not
+create false mismatches. A known stale SPS/PPS/VPS cannot be acknowledged merely
+because bytes and FPS remain positive. The DNS test still decodes the exact moved
+resolution, and the identity test still requires complete new recordings and real
+old/new playback. When bounded automatic recovery asks for manual action, these
+fixtures model an explicit operator restart, assert no background restart preceded
+it, and retain the original automatic readiness budgets and data assertions.

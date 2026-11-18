@@ -1,6 +1,10 @@
 name: Owned runtime-pause recovery
 on:
   workflow_call:
+    inputs:
+      github_hosted:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -10,7 +14,7 @@ jobs:
       matrix:
         frigate: ["0.17.2", "0.18.2"]
     name: Runtime pause recovery / ${{ matrix.frigate }}
-    runs-on: [self-hosted, Linux, X64, big-bird]
+    runs-on: ${{ fromJSON(inputs.github_hosted && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private

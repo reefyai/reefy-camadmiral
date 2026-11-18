@@ -279,6 +279,13 @@ class FrigateClient:
             raise FrigateApiError("invalid_response")
         return result
 
+    def recordings_since(self, camera_key: str, since: float) -> list[dict[str, Any]]:
+        query = urllib.parse.urlencode({"after": since, "before": time.time()})
+        result = self._request("GET", "/api/" + urllib.parse.quote(camera_key, safe="") + "/recordings?" + query)
+        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+            raise FrigateApiError("invalid_response")
+        return result
+
     def stats(self) -> dict[str, Any]:
         result = self._request("GET", "/api/stats")
         if not isinstance(result, dict):
