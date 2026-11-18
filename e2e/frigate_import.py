@@ -263,6 +263,12 @@ def driver(stage):
             service = frigate('/stats')['service']
             return service['last_updated'] - service['uptime'] > before + 1
         wait_for('operator restart completed', restarted, timeout=180)
+        # Native Frigate restarts can retain OFF. Model the operator enabling
+        # only this test-owned camera; background retry limits remain intact.
+        if not frigate('/config')['cameras']['authenticated_camera'].get('enabled', True):
+            from camadmiral.frigate import FrigateClient, FrigateTarget
+            FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
+                'http://frigate:5000')).set_runtime_camera_enabled('authenticated_camera', True)
         return
     if stage == 'roles':
         service = frigate('/stats')['service']
@@ -418,7 +424,7 @@ def host():
         print('Import regression stage: ' + name, flush=True)
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/frigate_import.py', name)
 
-    def source_generations():
+    def source_generations(diagnostics=False):
         code = """import json,sys
 from pathlib import Path
 sys.path.insert(0,'/opt/camadmiral')
@@ -436,8 +442,23 @@ for target in repository.frigate_targets():
   saved=row.get('relay_source_revisions') or {}
   result.update(saved=saved,live={key:live[key] for key in saved if key in live},
                 manual_restart_required=bool(row.get('reader_recovery',{}).get('blocked')))
+  if READ_DIAGNOSTICS:
+   from camadmiral.frigate import FrigateClient,FrigateTarget
+   from camadmiral.frigate_import import _running_inputs_match
+   try:
+    client=FrigateClient(FrigateTarget(target['target_id'],target['name'],target['api_url']))
+    camera=client.config().get('cameras',{}).get(row['key'],{})
+    stream=client.runtime_streams().get(row['aliases']['record'],{})
+    result['health']={'enabled':camera.get('enabled',True),
+     'fps':client.stats().get(row['key'],{}).get('camera_fps'),
+     'inputs_match':_running_inputs_match(client,row['key'],row['managed_camera']['ffmpeg']['inputs']),
+     'record_consumer':bool(stream.get('consumers')),
+     'record_bytes':any(int(p.get('bytes_recv') or 0)>0 for p in stream.get('producers',[])),
+     'resume_pending':bool(row.get('capture_resume_pending'))}
+   except Exception as exc:result['health_error']=type(exc).__name__
 print(json.dumps(result))
 """
+        code = code.replace('READ_DIAGNOSTICS', repr(diagnostics))
         return json.loads(run('exec', '-T', 'camadmiral', 'python', '-c', code))
 
     def recordings(camera='operator_camera'):
@@ -592,9 +613,11 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
                     result['role_change_manual_restart'] = True
                     deadline = time.monotonic() + 90
                 if time.monotonic() >= deadline:
+                    result['dns_source_generations_before'] = source_generations(diagnostics=True)
                     raise AssertionError('Source generations must be acknowledged before the move')
                 time.sleep(1)
                 source_before = source_generations()
+                result['dns_source_generations_before'] = source_before
         result['dns_source_generations_before'] = source_before
         run('stop', 'camera-auth')
         run('rm', '--force', 'camera-auth')

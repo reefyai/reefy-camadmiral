@@ -101,8 +101,9 @@ def driver(stage):
         fault({'mode': 'ack', 'restart_delays': [], 'runtime_delete_fault': mode})
         state['recovery_before'] = frigate('/stats')['service']['uptime']; remember()
     elif stage.startswith('recovery-verify-'):
-        expected_restarts = 1 if stage.endswith('before') else 0
-        assert fault()['restart_requests'] == expected_restarts, fault()
+        # Fresh source generations are verified by the host before this stage.
+        # Neither runtime-delete fault permits background recorder restarts.
+        assert fault()['restart_requests'] == 0, fault()
         assert frigate('/config/raw') == state['recovery_saved'], 'Reader recovery changed saved configuration'
         state['results'][stage] = {'fault': fault()}; remember()
     elif stage == 'playback':

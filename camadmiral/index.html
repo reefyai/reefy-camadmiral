@@ -3454,7 +3454,7 @@
     }
 
     function frigateSyncError(errorCode) {
-      if (errorCode === "manual_restart_required") return ["Restart Frigate manually", "Automatic recovery stopped. Check Frigate, then restart it yourself when ready; CamAdmiral will not restart the recorder."];
+      if (errorCode === "manual_restart_required") return ["Check Frigate manually", "Automatic recovery stopped. Check that this camera is enabled in Frigate, and restart Frigate yourself if needed. CamAdmiral will not restart the recorder."];
       if (errorCode === "reader_recovery_cooldown") return ["Recovery cooling down", "CamAdmiral waits five minutes between camera recovery attempts and allows at most two attempts."];
 
       const errors = {

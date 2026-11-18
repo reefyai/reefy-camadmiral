@@ -407,9 +407,18 @@ runtime source; the existing multi-channel identity lab keeps exact dimension,
 decoded video and history preservation assertions and retains selected synthetic
 recording files as evidence.
 
-Imported readers also refresh once after the control service restarts, because
-relay RTP timing can reset while downstream source URLs remain stable. An
-internal process revision prevents repeated reconnects on ordinary sync cycles.
+After a control-service or source revision changes, healthy imported readers
+acknowledge it without an OFF/ON cycle. Stalled readers have a persisted budget
+of two targeted recovery attempts, separated by a five-minute cooldown. Failed
+controls require operator action; background recovery never dispatches a shared
+Frigate restart. Owned-pause resume retries use a separate persisted bound.
+
+The real-Frigate history scenario models an explicit operator restart when
+camera controls fail and proves no automatic restart preceded it. The grouped
+source-reconnect scenarios require zero automatic restarts for both runtime
+alias deletion faults, while retaining fresh source-generation acknowledgement,
+no-loop checks, historical metadata, and decoded old/fresh recordings. Accepted
+user-initiated import/restore journals still recover without duplicate restarts.
 The identity lab keeps its repeated restart and complete-recording assertions.
 
 A relay definition update does not disconnect existing go2rtc consumers. Imported
