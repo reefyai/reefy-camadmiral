@@ -1165,9 +1165,15 @@ def _refresh_capture(repository, target, client, links, row):
         except FrigateApiError:
             if not row.get("target_restart"):
                 # A safety guard rejected global restart before dispatch.
-                client.set_runtime_camera_enabled(row["key"], True)
-                row.pop("capture_resume_pending", None)
-                store.save_link(target.target_id, row["key"], row)
+                try:
+                    client.set_runtime_camera_enabled(row["key"], True)
+                except FrigateApiError:
+                    # Keep the owned-pause journal for bounded resume retries;
+                    # a lost ON reply must not hide the required user action.
+                    pass
+                else:
+                    row.pop("capture_resume_pending", None)
+                    store.save_link(target.target_id, row["key"], row)
             raise
         return True
     error = None

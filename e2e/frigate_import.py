@@ -247,7 +247,29 @@ def driver(stage):
         for key in ('operator_camera', 'matched_camera', 'authenticated_camera'):
             assert all('127.0.0.1:8554/' in i['path'] for i in raw['cameras'][key]['ffmpeg']['inputs']), key
         return
+    if stage == 'reader-manual-recovery':
+        # The new policy surfaces failed background controls to the operator.
+        # Model that explicit action and prove no shared restart happened first.
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            fault = json.load(response)
+        assert fault['restart_requests'] == state['role_restart_requests'], fault
+        service = frigate('/stats')['service']
+        before = service['last_updated'] - service['uptime']
+        assert abs(before - state['role_service_started']) < 3, 'Background recovery restarted Frigate'
+        request = urllib.request.Request('http://camadmiral:20017/api/restart', data=b'', method='POST')
+        with urllib.request.urlopen(request, timeout=15) as response:
+            assert json.load(response)['success']
+        def restarted():
+            service = frigate('/stats')['service']
+            return service['last_updated'] - service['uptime'] > before + 1
+        wait_for('operator restart completed', restarted, timeout=180)
+        return
     if stage == 'roles':
+        service = frigate('/stats')['service']
+        state['role_service_started'] = service['last_updated'] - service['uptime']
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            state['role_restart_requests'] = json.load(response)['restart_requests']
+        STATE.write_text(json.dumps(state))
         directory = consumer_directory()['cameras']
         camera = next(c for c in directory if c['name'] == 'Original authenticated')
         sub = next(s for s in camera['streams'] if s.get('video', {}).get('width', s.get('width')) == 640)
@@ -412,7 +434,8 @@ for target in repository.frigate_targets():
  row=ImportStore(repository).links(target['target_id']).get('authenticated_camera')
  if row:
   saved=row.get('relay_source_revisions') or {}
-  result.update(saved=saved,live={key:live[key] for key in saved if key in live})
+  result.update(saved=saved,live={key:live[key] for key in saved if key in live},
+                manual_restart_required=bool(row.get('reader_recovery',{}).get('blocked')))
 print(json.dumps(result))
 """
         return json.loads(run('exec', '-T', 'camadmiral', 'python', '-c', code))
@@ -564,6 +587,10 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         if source_before['supported']:
             deadline = time.monotonic() + 90
             while not (source_before['saved'] and source_before['saved'] == source_before['live']):
+                if source_before.get('manual_restart_required') and not result.get('role_change_manual_restart'):
+                    stage('reader-manual-recovery')
+                    result['role_change_manual_restart'] = True
+                    deadline = time.monotonic() + 90
                 if time.monotonic() >= deadline:
                     raise AssertionError('Source generations must be acknowledged before the move')
                 time.sleep(1)

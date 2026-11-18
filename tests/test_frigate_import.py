@@ -172,6 +172,21 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(before, self.client.raw_config())
         self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['reader_recovery']['blocked'])
 
+    def test_failed_pause_and_resume_preserve_manual_action_and_owned_pause(self):
+        from camadmiral.frigate_import import _refresh_capture
+        self.execute(self.preview())
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        restarts = self.client.restart_calls
+        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=FrigateApiError('target_unavailable')) as enable:
+            with self.assertRaises(FrigateApiError) as error:
+                _refresh_capture(self.repo, self.target, self.client, {row['key']: row}, row)
+        self.assertEqual('manual_restart_required', error.exception.code)
+        self.assertEqual([False, True], [call.args[1] for call in enable.call_args_list])
+        saved = ImportStore(self.repo).links(self.target.target_id)[row['key']]
+        self.assertTrue(saved['capture_resume_pending'])
+        self.assertTrue(saved['reader_recovery']['blocked'])
+        self.assertEqual(restarts, self.client.restart_calls)
+
     def test_recovery_budget_survives_reload_and_enforces_cooldown_and_limit(self):
         from camadmiral.frigate_import import _refresh_capture
         self.execute(self.preview())
