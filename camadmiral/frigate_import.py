@@ -1264,11 +1264,7 @@ def _reader_video_matches(client, row, camera, revisions):
     return True
 
 
-def _recording_output_state(repository, target, client, row, epoch):
-    camera = client.config().get('cameras', {}).get(row['key'], {})
-    record = camera.get('record', {})
-    if not record.get('enabled', True):
-        return 'ready'
+def _recording_verification(repository, target, row, epoch):
     now = time.time()
     verification = row.get('reader_recording_verification')
     if not verification or verification.get('epoch') != epoch:
@@ -1276,6 +1272,16 @@ def _recording_output_state(repository, target, client, row, epoch):
                         'deadline': (verification or {}).get('deadline', now + READER_RECORDING_VERIFY_SECONDS)}
         row['reader_recording_verification'] = verification
         ImportStore(repository).save_link(target.target_id, row['key'], row)
+    return verification
+
+
+def _recording_output_state(repository, target, client, row, epoch):
+    camera = client.config().get('cameras', {}).get(row['key'], {})
+    record = camera.get('record', {})
+    if not record.get('enabled', True):
+        return 'ready'
+    now = time.time()
+    verification = _recording_verification(repository, target, row, epoch)
     # Camera FPS and go2rtc bytes can stay healthy while record FFmpeg is
     # stuck on a previous RTP timeline. Require a complete segment started
     # after the observed revision; old buffered segments cannot acknowledge it.
@@ -1444,6 +1450,15 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             revision = repository.latest_camera_address_revision(row["camera_uuid"])
             source_revision = _camera_source_revisions(client, row, camera, source_revisions)
             recording_epoch = digest([runtime_revision, revision, source_revision])
+            if (row.get('capture_resume_pending')
+                    or revision != row.get('relay_address_revision')
+                    or runtime_revision != row.get('relay_runtime_revision')
+                    or (source_revision is not None
+                        and source_revision != row.get('relay_source_revisions'))):
+                # Start at observation, including while an owned pause is
+                # pending. Output created during operator recovery is already
+                # fresh for this revision; do not discard it on the next cycle.
+                _recording_verification(repository, target, row, recording_epoch)
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
                 break
@@ -1497,7 +1512,7 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 continue
             previous_sources = row.get('relay_source_revisions')
             source_changed = (source_revision is not None and previous_sources is not None
-                              and any(previous_sources.get(stream_uuid) != value for stream_uuid, value in source_revision.items()))
+                              and source_revision != previous_sources)
             configuration_changed = ((revision is not None and revision != row.get("relay_address_revision"))
                                      or row.get("relay_runtime_revision") != runtime_revision)
             pending = row.get('source_recovery_pending')

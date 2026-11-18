@@ -228,6 +228,24 @@ class FrigateImportTests(unittest.TestCase):
         self.assertTrue(saved['reader_recovery']['blocked'])
         self.assertEqual([], self.client.operations)
 
+    def test_recording_window_starts_when_revision_is_observed_before_pending_resume(self):
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['capture_resume_pending'] = True
+        row['reader_recovery'] = {'blocked': True}
+        store.save_link(self.target.target_id, row['key'], row)
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'observed-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[{'start_time': 1005, 'end_time': 1015, 'segment_size': 1}]):
+            for now in (1000, 1020):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
+        self.assertEqual('observed-reset:initial', saved['relay_runtime_revision'])
+        self.assertNotIn('capture_resume_pending', saved)
+        self.assertEqual([], self.client.operations)
+
     def test_import_failure_diagnostics_report_phase_without_exception_secrets(self):
         import contextlib
         import io

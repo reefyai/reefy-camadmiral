@@ -17,7 +17,7 @@ STATE = Path('/state/restart-recovery.json')
 
 def driver(stage):
     import yaml
-    from scenarios import request_json, wait_for, wait_for_health, consumer_directory
+    from scenarios import request, request_json, wait_for, wait_for_health, consumer_directory, ScenarioFailure
     from frigate_identity import recording_for_playback, recording_playback_url
 
     def frigate(path):
@@ -52,10 +52,24 @@ def driver(stage):
         state['results'][stage] = {'row': row, 'fault': fault(), 'elapsed_seconds': time.monotonic() - started}; remember()
         return row
 
-    def restore_camera(key, **kwargs):
-        return request_json(base + '/import-rollback', method='POST',
-            headers={'X-CamAdmiral-Action': 'rollback-frigate-import'},
-            payload={'camera_key': key, 'allow_restart': True}, **kwargs)
+    def restore_camera(key, *, expected=200, timeout=60):
+        # Automatic reconciliation may hold the lock. A sync_busy response is
+        # rejected before restore() runs; never replay an accepted operation.
+        path = base + '/import-rollback'
+        deadline = time.monotonic() + 30
+        while True:
+            status, body, _headers = request(path, method='POST', timeout=timeout,
+                headers={'X-CamAdmiral-Action': 'rollback-frigate-import'},
+                payload={'camera_key': key, 'allow_restart': True})
+            result = json.loads(body)
+            if status == 409 and result.get('status') == 'sync_busy':
+                if time.monotonic() >= deadline:
+                    raise ScenarioFailure('Restore remained busy for 30 seconds')
+                time.sleep(0.5)
+                continue
+            if status != expected:
+                raise ScenarioFailure(f'Restore returned HTTP {status}: {result.get("status")}')
+            return result
 
     def original(key):
         saved = yaml.safe_load(state['saved'])

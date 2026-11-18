@@ -452,7 +452,7 @@ for target in repository.frigate_targets():
                 manual_restart_required=bool(selection and selection['sync_error'] in ('manual_restart_required','reader_recovery_cooldown')))
   if READ_DIAGNOSTICS:
    from camadmiral.frigate import FrigateClient,FrigateTarget
-   from camadmiral.frigate_import import _running_inputs_match
+   from camadmiral.frigate_import import _running_inputs_match, _reader_video_matches, _camera_source_revisions, _camera
    try:
     client=FrigateClient(FrigateTarget(target['target_id'],target['name'],target['api_url']))
     camera=client.config().get('cameras',{}).get(row['key'],{})
@@ -462,7 +462,13 @@ for target in repository.frigate_targets():
      'inputs_match':_running_inputs_match(client,row['key'],row['managed_camera']['ffmpeg']['inputs']),
      'record_consumer':bool(stream.get('consumers')),
      'record_bytes':any(int(p.get('bytes_recv') or 0)>0 for p in stream.get('producers',[])),
-     'resume_pending':bool(row.get('capture_resume_pending'))}
+     'resume_pending':bool(row.get('capture_resume_pending')),
+     'sync_error':selection['sync_error'] if selection else None,
+     'budget':row.get('reader_recovery'),
+     'recording_verification':row.get('reader_recording_verification'),
+     'pending':row.get('source_recovery_pending'),
+     'required_sources':_camera_source_revisions(client,row,_camera(repository,row['camera_uuid']),live),
+     'video_metadata_match':_reader_video_matches(client,row,_camera(repository,row['camera_uuid']),live)}
    except Exception as exc:result['health_error']=type(exc).__name__
 print(json.dumps(result))
 """
