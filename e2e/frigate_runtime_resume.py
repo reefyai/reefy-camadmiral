@@ -48,7 +48,7 @@ def driver(stage):
     if stage=='guard':
         client.set_runtime_camera_enabled('operator_peer',False)
         result=exercise()
-        assert result['status']=='error' and result['code']=='import_source_conflict',result
+        assert result['status']=='error' and result['code']=='manual_restart_required',result
         assert result['restart_requests']==0 and result['enabled'],result
         assert client.config()['cameras']['operator_peer']['enabled'] is False,'Operator pause was discarded'
         assert not client.config()['cameras']['saved_disabled']['enabled']
@@ -56,18 +56,18 @@ def driver(stage):
         state['results'][stage]=result;save()
         client.set_runtime_camera_enabled('operator_peer',True)
     elif stage=='recover':
-        result=exercise()
+        result=exercise(manual_restart=True)
         state['results'][stage]=result;save()
         assert result.get('off_after_restart'),'Fixture failed to preserve the runtime OFF override'
         assert result['status']=='recovered','OWNED_RUNTIME_PAUSE_NOT_RESUMED: '+json.dumps(result)
-        assert result['restart_requests']==1 and result['enabled'] and result['fps']>0,result
+        assert result.get('user_requested_restart') and result['restart_requests']==1 and result['enabled'] and result['fps']>0,result
         assert not result['capture_resume_pending'] and not result['target_restart_pending'],result
         assert result['raw_config_preserved'] and client.raw_config()==state['saved']
         assert not client.config()['cameras']['saved_disabled']['enabled']
         wait_for('all active peers resumed',running,timeout=180)
     elif stage=='interrupt':
         state['started_before_interrupt']=client.service_started_at();save()
-        try: exercise(interrupt=True)
+        try: exercise(interrupt=True, manual_restart=True)
         except Exception as exc:
             # The synthetic control process exits after the accepted native
             # restart and sticky OFF state, before its caller can resume it.

@@ -370,3 +370,15 @@ configured `secrets.master_key_file` is authoritative and must
 exist. This supports Docker Compose secrets and Reefy-managed read-only secret mounts. An
 external master key is outside the data-volume backup boundary and must be backed up and
 restored separately. The default generated key stays inside the data volume.
+
+### Frigate background recovery
+
+Background synchronization never initiates a whole-Frigate restart. A healthy reader
+acknowledges relay/source revisions without disabling the camera. A stalled reader gets
+at most two camera reconnect attempts, at least five minutes apart; this budget is
+stored with the binding and survives CamAdmiral restarts and source revision changes.
+A failed pause or resume stops automatic recovery and asks the operator to inspect and
+restart Frigate manually. CamAdmiral only retries its own pending resume, at most twice
+with the same cooldown; it never re-enables an operator's saved disable.
+Explicit import and restore operations retain their existing restart confirmation.
+Reimporting/restoring a binding resets its reconnect budget.

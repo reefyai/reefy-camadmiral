@@ -1,3 +1,10 @@
+## v2026.11.17-01
+
+- Background imported-camera recovery no longer requests whole-Frigate restarts. Explicit import/restore operations keep their existing restart confirmation.
+- Healthy readers acknowledge source and relay revisions without a camera OFF/ON cycle.
+- Camera reconnect attempts are limited to two with a five-minute cooldown, persisted across CamAdmiral restarts and source changes. Failed pause/resume recovery asks for operator action; resume-only retries are bounded too.
+- Explain manual restart requirements and cooldowns in the camera status UI.
+
 # CamAdmiral v2026.11.17-00
 
 Keep all owned Frigate relay links current when the host address changes, even

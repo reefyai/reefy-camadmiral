@@ -283,7 +283,7 @@ def driver(stage):
             if restarted and state.get('forced_fallback_pending'):
                 service = frigate('/stats')['service']
                 started = float(service['last_updated']) - float(service['uptime'])
-                assert started > state['forced_fallback_started_before'] + 2, 'Unavailable per-camera control must trigger a real verified Frigate restart'
+                assert abs(started - state['forced_fallback_started_before']) < 2, 'Background recovery must not restart Frigate when per-camera control is unavailable'
                 state['forced_fallback_pending'] = False
                 state['fallback_verified'] = True
             readers = reader_links(state['target'])
