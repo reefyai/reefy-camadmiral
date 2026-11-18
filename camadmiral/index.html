@@ -1961,6 +1961,7 @@
           addText(controls, "div", "frigate-camera-help", "Restart Frigate after syncing to apply changed dimensions.");
         }
       });
+      addText(content, "p", "integration-help", "Syncing cameras may restart Frigate to add or restore a camera, briefly interrupting recording. Background synchronization and Repair sync will not restart Frigate.");
       const actions = addText(content, "div", "frigate-camera-chooser-actions", "");
       const cancel = addText(actions, "button", "secondary-action", "Cancel");
       cancel.type = "button";

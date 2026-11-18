@@ -813,7 +813,7 @@ def full_sync_frigate(
             media_host=media_host,
             media_host_resolver=media_host_resolver,
             client_factory=lambda _target: client,
-            allow_restart=not restart_recommended,
+            allow_restart=False,
         )
     except FrigateApiError as exc:
         raise exc.with_context(stage="reconcile_current_cameras") from exc
@@ -1249,7 +1249,7 @@ def reconcile_frigate(
     media_host: str = "127.0.0.1",
     media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
-    allow_restart: bool = True,
+    allow_restart: bool = False,
     camera_uuid: str | None = None,
     verification_timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
     verification_poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,

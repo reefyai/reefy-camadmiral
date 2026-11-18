@@ -983,7 +983,8 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
         with patch("camadmiral.frigate.FRIGATE_RESTART_SETTLE_SECONDS", 0):
             result = reconcile_frigate(self.repository, self.target,
-                                       client_factory=lambda _: self.client)
+                                       client_factory=lambda _: self.client,
+                                       allow_restart=True)
         self.assertEqual(result["pending"], 0)
         restored = self.client.raw_config()["cameras"][key]
         self.assertTrue(restored["enabled"])
@@ -1300,7 +1301,23 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
 
-    def test_frigate_017_restarts_only_when_adding_second_configured_camera(self) -> None:
+    def test_frigate_017_second_camera_does_not_restart_without_permission(self):
+        self.client.current_config['cameras']['operator_camera'] = {'enabled': False}
+        self.client.drop_add_events = 1
+        for _ in range(3):
+            result = reconcile_frigate(self.repository, self.target,
+                client_factory=lambda _: self.client, verification_timeout=0)
+            self.assertEqual({'applied': 0, 'pending': 1}, result)
+        self.assertEqual(0, self.client.restart_calls)
+        self.assertIn(frigate_camera_key(self.camera_uuid), self.client.raw_config()['cameras'])
+
+    def test_repair_sync_never_restarts_for_second_camera(self):
+        self.client.current_config['cameras']['operator_camera'] = {'enabled': False}
+        full_sync_frigate(self.repository, self.target,
+            client_factory=lambda _: self.client)
+        self.assertEqual(0, self.client.restart_calls)
+
+    def test_frigate_017_restarts_for_second_camera_only_with_explicit_permission(self) -> None:
         self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
 
         with patch("camadmiral.frigate.time.sleep"):
@@ -1308,6 +1325,7 @@ class FrigateReconciliationTests(unittest.TestCase):
                 self.repository,
                 self.target,
                 client_factory=lambda _target: self.client,
+                allow_restart=True,
             )
 
         self.assertEqual(result, {"applied": 1, "pending": 0})

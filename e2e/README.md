@@ -738,3 +738,11 @@ seconds under parallel disk load. Access, trust, manifest, and disk-space errors
 still fail immediately. Builds, startup mutations, readiness, and test assertions
 execute once. Unit coverage reproduces the old deadline failure with a 150-second
 healthy acquisition, verifies one successful attempt, and bounds cumulative waits.
+
+
+Regular periodic reconciliation and Repair sync explicitly deny recorder restart
+permission. The reconciliation function defaults to denying it too. Only the
+user-triggered Sync cameras job opts in, with its possible recording interruption
+shown before the action; import/restore keep their explicit restart confirmation.
+Tests cover repeated unconfirmed Frigate 0.17 second-camera reconciliation, Repair
+sync with that topology, and both background/user job permission boundaries.

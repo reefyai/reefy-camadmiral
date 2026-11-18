@@ -723,6 +723,7 @@ def _reconcile_frigate(*, wait: bool = True) -> None:
                         repository,
                         target,
                         media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
+                        allow_restart=False,
                     )
             except FrigateApiError as exc:
                 for selected_uuid in repository.selected_frigate_camera_uuids(target.target_id):
@@ -779,6 +780,8 @@ def _sync_frigate_camera_job(target_id: str, camera_uuid: str) -> None:
                         target,
                         media_host_resolver=lambda mode: media_host_for_mode(INVENTORY, mode),
                         camera_uuid=camera_uuid,
+                        # This job is queued only by the explicit Sync cameras action.
+                        allow_restart=True,
                     )
             except FrigateApiError as exc:
                 repository.set_frigate_selection_error(target_id, camera_uuid, exc.code)

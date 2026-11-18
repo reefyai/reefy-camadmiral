@@ -382,5 +382,5 @@ Frigate. Check that the affected camera is enabled in Frigate, and restart Friga
 if needed: Frigate can retain a runtime camera disable across a native restart.
 CamAdmiral only retries its own pending resume, at most twice with the same cooldown;
 it never re-enables an operator's saved disable.
-Explicit import and restore operations retain their existing restart confirmation.
+Only explicit user operations can request a recorder restart: Sync cameras explains the possible interruption, and import/restore retain their existing restart confirmation. Periodic synchronization and Repair sync never restart Frigate.
 Reimporting/restoring a binding resets its reconnect budget.
