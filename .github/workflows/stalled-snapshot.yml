@@ -187,7 +187,7 @@ jobs:
 
   stall-recovery:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, big-bird]
+    runs-on: ${{ fromJSON(inputs.github_hosted && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     container:
       image: ghcr.io/reefyai/camadmiral-ci@sha256:b594314f18c7417ab93a25f58dcdf5a63c302ab63eedd8210beb4d0312453b67
       options: --privileged --cgroupns=private

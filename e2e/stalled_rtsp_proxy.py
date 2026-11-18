@@ -68,7 +68,9 @@ async def control(reader, writer):
                            'session_denials': session_denials, 'stalled_sessions': stalled_sessions,
                            'fail_available': fail_available, 'frozen_video_packets': frozen_video_packets, 'forwarded_audio_packets': forwarded_audio_packets,
                            'video_sessions': len(video_connections),
-                           'frozen_video_sessions': sum(v['frozen'] for v in video_connections.values())}).encode()
+                           'frozen_video_sessions': sum(v['frozen'] for v in video_connections.values()),
+                           'payload_types': [{'video': sorted(v['video']), 'audio': sorted(v['audio']),
+                                              'frozen': v['frozen']} for v in video_connections.values()]}).encode()
     writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: '
                  + str(len(body)).encode() + b'\r\n\r\n' + body)
     await writer.drain()
@@ -78,7 +80,7 @@ async def control(reader, writer):
 
 async def relay(reader, writer):
     global dropped, session_denials, fail_available, stall_available, stalled_sessions, frozen_video_packets, forwarded_audio_packets
-    connection = {'frozen': bool(os.environ.get('FREEZE_ALL_VIDEO'))}
+    connection = {'frozen': bool(os.environ.get('FREEZE_ALL_VIDEO')), 'video': set(), 'audio': set()}
     video_connections[id(writer)] = connection
     upstream = None
     task = None
@@ -153,9 +155,9 @@ async def relay(reader, writer):
             if first == b'$':
                 header = await source.readexactly(3)
                 payload = await source.readexactly(int.from_bytes(header[1:], 'big'))
-                if connection['frozen'] and len(payload)>=12 and payload[1]&127==97:
+                if connection['frozen'] and len(payload)>=12 and payload[1]&127 in connection['audio']:
                     forwarded_audio_packets+=1
-                if (connection['frozen'] and len(payload) >= 12 and payload[1] & 127 == 96):
+                if (connection['frozen'] and len(payload) >= 12 and payload[1] & 127 in connection['video']):
                     frozen_video_packets += 1
                     continue
                 if stalled or stream_name == stalled_path or time.monotonic() < delay_until or hold_media:
@@ -166,7 +168,18 @@ async def relay(reader, writer):
                 header = first + await source.readuntil(b'\r\n\r\n')
                 length = next((int(line.split(b':', 1)[1]) for line in header.split(b'\r\n')
                                if line.lower().startswith(b'content-length:')), 0)
-                data = header + await source.readexactly(length)
+                body = await source.readexactly(length)
+                if b'application/sdp' in header.lower():
+                    # Payload numbers are assigned by SDP and can be reversed
+                    # between otherwise identical synthetic FFmpeg launches.
+                    connection['video'], connection['audio'] = set(), set()
+                    for line in body.decode(errors='replace').splitlines():
+                        fields = line.split()
+                        if len(fields) >= 4 and fields[0] in ('m=video', 'm=audio'):
+                            connection[fields[0][2:]].update(
+                                int(value) for value in fields[3:]
+                                if value.isdigit() and 0 <= int(value) < 128)
+                data = header + body
             writer.write(data)
             await writer.drain()
     except (OSError, asyncio.IncompleteReadError, ConnectionError):

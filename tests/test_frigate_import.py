@@ -16,6 +16,23 @@ from camadmiral.storage import CameraRepository
 from test_frigate import FakeFrigateClient
 
 
+def stalled_reader(test):
+    """Refresh scenarios model stalled media only during background sync."""
+    from functools import wraps
+    @wraps(test)
+    def run(self):
+        from camadmiral.frigate_import import _reader_media_ready
+        original_sync = sync_imported
+        def ready(client, row):
+            return bool(row.get('source_recovery_pending')) and _reader_media_ready(client, row)
+        def stalled_sync(*args, **kwargs):
+            with patch('camadmiral.frigate_import._reader_media_ready', side_effect=ready):
+                return original_sync(*args, **kwargs)
+        with patch(__name__ + '.sync_imported', side_effect=stalled_sync):
+            return test(self)
+    return run
+
+
 class ImportClient(FakeFrigateClient):
     def __init__(self, target):
         super().__init__(target)
@@ -102,6 +119,221 @@ class FrigateImportTests(unittest.TestCase):
                 raise FrigateApiError('target_unavailable')
             return config()
         return patch.object(self.client, 'restart', side_effect=delayed_restart), patch.object(self.client, 'config', side_effect=delayed_config)
+
+    def test_healthy_reader_acknowledges_revision_without_pause_or_restart(self):
+        self.execute(self.preview())
+        self.client.operations.clear()
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'new-control-epoch'):
+            for _ in range(3):
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        self.assertEqual([], self.client.operations)
+        self.assertEqual(before, self.client.raw_config())
+        self.assertEqual(restarts, self.client.restart_calls)
+        self.assertEqual('new-control-epoch:initial', ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision'])
+
+    def test_stale_frigate_sps_is_not_healthy_even_with_camera_fps_and_record_bytes(self):
+        from camadmiral.frigate_import import _reader_video_matches, _camera
+        from camadmiral.media import SourceConnectionRevisions, video_sdp_signatures
+        self.execute(self.preview())
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        camera = _camera(self.repo, row['camera_uuid'])
+        revisions = SourceConnectionRevisions()
+        old = 'm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\na=fmtp:96 sprop-parameter-sets=oldSPS,oldPPS'
+        new = old.replace('oldSPS', 'newSPS')
+        for stream in camera['streams']:
+            revisions.video_signatures[stream['stream_uuid']] = video_sdp_signatures(new)
+        runtime = {alias: {'producers': [{'sdp': old, 'bytes_recv': 100}], 'consumers': [{}]} for alias in row['aliases'].values()}
+        with patch.object(self.client, 'runtime_streams', return_value=runtime):
+            self.assertFalse(_reader_video_matches(self.client, row, camera, revisions))
+            for stream in runtime.values():
+                stream['producers'][0]['sdp'] = new
+            self.assertTrue(_reader_video_matches(self.client, row, camera, revisions))
+
+    def test_old_recordings_cannot_acknowledge_healthy_fps_after_relay_reset(self):
+        self.execute(self.preview())
+        old = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision']
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[{'start_time': 999, 'end_time': 1002, 'segment_size': 1}]) as recordings, \
+             patch('camadmiral.frigate_import.time.time', return_value=1000):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.assertEqual(old, row['relay_runtime_revision'])
+        self.assertEqual(1000, row['reader_recording_verification']['since'])
+        self.assertEqual([], self.client.operations)
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[{'start_time': 1001, 'end_time': 1004, 'segment_size': 0}]), \
+             patch('camadmiral.frigate_import.time.time', return_value=1004):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.assertEqual('record-reset:initial', row['relay_runtime_revision'])
+        self.assertNotIn('reader_recording_verification', row)
+        self.assertEqual([], self.client.operations)
+
+    def test_stalled_recording_gets_grace_then_one_bounded_camera_refresh(self):
+        self.execute(self.preview())
+        self.client.operations.clear()
+        restarts = self.client.restart_calls
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[]):
+            for now in (1000, 1001, 1029):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+            self.assertEqual([], self.client.operations)
+            with patch('camadmiral.frigate_import.time.time', return_value=1031):
+                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.assertEqual(1, row['reader_recovery']['attempts'])
+        self.assertTrue(row['source_recovery_pending'])
+        self.assertEqual([False, True], [op[2] for op in self.client.operations if op[0] == 'set_runtime_camera_enabled'])
+        self.assertEqual(restarts, self.client.restart_calls)
+
+    def test_quiet_motion_only_recording_does_not_pause_or_acknowledge_without_output(self):
+        self.execute(self.preview())
+        self.client.current_config['cameras']['legacy_entrance']['record'] = {
+            'enabled': True, 'continuous': {'days': 0}, 'retain': {'days': 7, 'mode': 'motion'}}
+        old = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision']
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[]):
+            for now in (1000, 2000):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        self.assertEqual(old, row['relay_runtime_revision'])
+        self.assertNotIn('reader_recovery', row)
+        self.assertEqual([], self.client.operations)
+
+    def test_blocked_reader_needs_new_recording_before_clearing_error(self):
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['reader_recovery'] = {'blocked': True}
+        store.save_link(self.target.target_id, row['key'], row)
+        old = row['relay_runtime_revision']
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[]):
+            for now in (1000, 1091):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        self.assertEqual(old, store.links(self.target.target_id)[row['key']]['relay_runtime_revision'])
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'record-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[{'start_time': 1095, 'end_time': 1098, 'segment_size': 1}]), \
+             patch('camadmiral.frigate_import.time.time', return_value=1100):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
+        self.assertEqual('record-reset:initial', saved['relay_runtime_revision'])
+        self.assertTrue(saved['reader_recovery']['blocked'])
+        self.assertEqual([], self.client.operations)
+
+    def test_recording_window_starts_when_revision_is_observed_before_pending_resume(self):
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['capture_resume_pending'] = True
+        row['reader_recovery'] = {'blocked': True}
+        store.save_link(self.target.target_id, row['key'], row)
+        self.client.operations.clear()
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'observed-reset'), \
+             patch.object(self.client, 'recordings_since', return_value=[{'start_time': 1005, 'end_time': 1015, 'segment_size': 1}]):
+            for now in (1000, 1020):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
+        self.assertEqual('observed-reset:initial', saved['relay_runtime_revision'])
+        self.assertNotIn('capture_resume_pending', saved)
+        self.assertEqual([], self.client.operations)
+
+    def test_import_failure_diagnostics_report_phase_without_exception_secrets(self):
+        import contextlib
+        import io
+        job = self.preview()
+        output = io.StringIO()
+        with patch.object(self.repo, 'adoption_for_candidate', side_effect=RuntimeError('rtsp://secret:password@camera/stream')), contextlib.redirect_stdout(output):
+            result = self.execute(job)
+        self.assertEqual('import_failed', result['cameras'][0]['reason'])
+        diagnostic = output.getvalue()
+        self.assertIn('"event": "row_failed"', diagnostic)
+        self.assertIn('"phase": "checking_configuration"', diagnostic)
+        self.assertIn('"error_type": "RuntimeError"', diagnostic)
+        self.assertNotIn('secret', diagnostic)
+        self.assertNotIn('password', diagnostic)
+
+    def test_failed_pause_is_latched_and_never_restarts_shared_recorder(self):
+        from camadmiral.frigate_import import _refresh_capture
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        enable = self.client.set_runtime_camera_enabled
+        calls = []
+        def stalled(key, enabled):
+            calls.append(enabled)
+            enable(key, enabled)
+            if not enabled:
+                raise FrigateApiError('target_unavailable')
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=stalled):
+            for _ in range(3):
+                row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+                with self.assertRaises(FrigateApiError) as error:
+                    _refresh_capture(self.repo, self.target, self.client, {row['key']: row}, row)
+                self.assertEqual('manual_restart_required', error.exception.code)
+        self.assertEqual([False, True], calls)
+        self.assertTrue(self.client.config()['cameras']['legacy_entrance']['enabled'])
+        self.assertEqual(restarts, self.client.restart_calls)
+        self.assertEqual(before, self.client.raw_config())
+        self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['reader_recovery']['blocked'])
+
+    def test_failed_pause_and_resume_preserve_manual_action_and_owned_pause(self):
+        from camadmiral.frigate_import import _refresh_capture
+        self.execute(self.preview())
+        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+        restarts = self.client.restart_calls
+        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=FrigateApiError('target_unavailable')) as enable:
+            with self.assertRaises(FrigateApiError) as error:
+                _refresh_capture(self.repo, self.target, self.client, {row['key']: row}, row)
+        self.assertEqual('manual_restart_required', error.exception.code)
+        self.assertEqual([False, True], [call.args[1] for call in enable.call_args_list])
+        saved = ImportStore(self.repo).links(self.target.target_id)[row['key']]
+        self.assertTrue(saved['capture_resume_pending'])
+        self.assertTrue(saved['reader_recovery']['blocked'])
+        self.assertEqual(restarts, self.client.restart_calls)
+
+    def test_recovery_budget_survives_reload_and_enforces_cooldown_and_limit(self):
+        from camadmiral.frigate_import import _refresh_capture
+        self.execute(self.preview())
+        def attempt(now):
+            row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
+            with patch('camadmiral.frigate_import.time.time', return_value=now):
+                return _refresh_capture(self.repo, self.target, self.client, {row['key']: row}, row)
+        attempt(1000)
+        with self.assertRaises(FrigateApiError) as error: attempt(1001)
+        self.assertEqual('reader_recovery_cooldown', error.exception.code)
+        attempt(1301)
+        with self.assertRaises(FrigateApiError) as error: attempt(999999)
+        self.assertEqual('manual_restart_required', error.exception.code)
+        self.assertEqual(2, ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['reader_recovery']['attempts'])
+
+    def test_resume_retry_is_bounded_and_never_sends_off_or_restart(self):
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['capture_resume_pending'] = True
+        store.save_link(self.target.target_id, row['key'], row)
+        self.client.current_config['cameras']['legacy_entrance']['enabled'] = False
+        calls, restarts = [], self.client.restart_calls
+        def unavailable(key, enabled):
+            calls.append(enabled)
+            raise FrigateApiError('target_unavailable')
+        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=unavailable):
+            for now in (1000, 1001, 1301, 1602, 999999):
+                with patch('camadmiral.frigate_import.time.time', return_value=now):
+                    sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        self.assertEqual([True, True], calls)
+        self.assertEqual(restarts, self.client.restart_calls)
+        self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['capture_resume_pending'])
 
     def test_slow_restart_handoff_and_restoration_wait_for_new_ready_instance(self):
         clock = [0.0]
@@ -253,6 +485,7 @@ class FrigateImportTests(unittest.TestCase):
         self.client.config_writes.clear()
         return job, adopted, ids
 
+    @stalled_reader
     def test_unavailable_relay_video_defers_reader_refresh_without_acknowledging_revision(self):
         from camadmiral.media import SnapshotError
         self.capped(self.preview())
@@ -275,6 +508,7 @@ class FrigateImportTests(unittest.TestCase):
             sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
         self.assertEqual([], self.client.operations)
 
+    @stalled_reader
     def test_deferred_reader_refresh_resumes_after_source_decodes(self):
         from camadmiral.media import SnapshotError
         self.capped(self.preview())
@@ -288,6 +522,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', False), self.client.operations)
         self.assertIn(('set_runtime_camera_enabled', 'legacy_entrance', True), self.client.operations)
 
+    @stalled_reader
     def test_unavailable_source_does_not_block_a_healthy_peer(self):
         from camadmiral.media import SnapshotError
         other = copy.deepcopy(self.camera)
@@ -310,6 +545,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual({'second_camera'}, touched)
         self.assertEqual(before, self.client.raw_config())
 
+    @stalled_reader
     def test_unused_record_stream_is_not_probed_for_disabled_recording(self):
         self.source_generation_fixture()
         self.client.current_config['cameras']['legacy_entrance']['record']['enabled'] = False
@@ -321,6 +557,7 @@ class FrigateImportTests(unittest.TestCase):
             sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
         self.assertEqual([detect['stream_key']], [call.args[0] for call in snapshot.call_args_list])
 
+    @stalled_reader
     def test_restart_diagnostics_identify_the_cause_without_source_credentials(self):
         import contextlib
         import io
@@ -332,10 +569,11 @@ class FrigateImportTests(unittest.TestCase):
             sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
         log = output.getvalue()
         self.assertIn('"reason": "runtime_pause_failed"', log)
-        self.assertIn('"event": "restart_verified"', log)
+        self.assertIn('"event": "restart_blocked"', log)
         self.assertNotIn('synthetic-password', log)
         self.assertNotIn('rtsp://', log)
 
+    @stalled_reader
     def test_source_reconnect_refreshes_both_readers_and_acknowledges_post_refresh_connections(self):
         job, adopted, ids = self.source_generation_fixture()
         before = self.client.raw_config()
@@ -360,6 +598,7 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
         self.assertEqual([], self.client.operations, 'Recovery must not loop when its own pause reconnects a source')
 
+    @stalled_reader
     def test_missing_source_generation_does_not_acknowledge_or_refresh_a_reconnect(self):
         _, _, ids = self.source_generation_fixture()
         before = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance'].get('relay_source_revisions')
@@ -385,25 +624,8 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual([], self.client.operations)
         self.assertEqual('rtsp://192.0.2.99/operator-edit', self.client.raw_config()['cameras']['legacy_entrance']['ffmpeg']['inputs'][0]['path'])
 
-    def test_source_refresh_without_verified_capture_uses_guarded_restart_fallback(self):
-        _, _, ids = self.source_generation_fixture()
-        before, restarts = self.client.raw_config(), self.client.restart_calls
-        self.source_runtime.return_value = {ids['record']: 'source-record-two', ids['detect']: 'source-detect-two'}
-        clock = [0.0]
-        with patch('camadmiral.frigate_import._reader_media_ready', return_value=False), \
-             patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda: clock[0]):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
-            self.assertEqual(restarts, self.client.restart_calls)
-            self.assertTrue(ImportStore(self.repo).links(self.target.target_id)['legacy_entrance'].get('source_recovery_pending'))
-            clock[0] = 91
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(before, self.client.raw_config())
-        self.assertEqual([], self.client.config_writes)
-        self.client.operations.clear()
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
-        self.assertEqual([], self.client.operations)
 
+    @stalled_reader
     def test_pending_media_recovery_does_not_block_another_camera(self):
         other = copy.deepcopy(self.camera)
         other['ffmpeg']['inputs'][0]['path'] = 'rtsp://operator:synthetic-password@192.0.2.11/main'
@@ -912,6 +1134,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual('Operator adjusted name', actual['friendly_name'])
         self.assertNotIn('camadmiral_' + job['cameras'][0]['camera_uuid'].replace('-', '_'), self.client.raw_config()['cameras'])
 
+    @stalled_reader
     def test_known_offline_roles_defer_refresh_until_video_returns(self):
         job = self.execute(self.preview())
         uid = job["cameras"][0]["camera_uuid"]
@@ -929,36 +1152,6 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual(self.repo.latest_camera_address_revision(uid), ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
 
-    def test_sticky_runtime_pause_is_resumed_after_native_restart(self):
-        self.execute(self.preview())
-        row = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
-        self.repo.record_address_change(row['camera_uuid'], '192.0.2.10', '192.0.2.11', 'onvif_identity')
-        before, restarts = self.client.raw_config(), self.client.restart_calls
-        enable, restart = self.client.set_runtime_camera_enabled, self.client.restart
-        clock = [0.0]
-        def sleep(seconds): clock[0] += seconds
-        def set_enabled(key, enabled):
-            enable(key, enabled)
-            self.client.current_stats[key] = {'camera_fps': 5 if enabled else 0}
-            if not enabled: raise FrigateApiError('target_unavailable')
-        def sticky_restart():
-            disabled = [k for k,v in self.client.config()['cameras'].items() if not v.get('enabled', True)]
-            restart()
-            for key in disabled:
-                self.client.current_config['cameras'][key]['enabled'] = False
-                self.client.current_stats[key] = {'camera_fps': 0}
-        with patch.object(self.client, 'set_runtime_camera_enabled', side_effect=set_enabled), \
-             patch.object(self.client, 'restart', side_effect=sticky_restart), \
-             patch('camadmiral.frigate_import.time.monotonic', side_effect=lambda:clock[0]), \
-             patch('camadmiral.frigate_import.time.sleep', side_effect=sleep):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode:'192.0.2.20')
-        self.assertTrue(self.client.config()['cameras']['legacy_entrance']['enabled'])
-        self.assertGreater(self.client.stats()['legacy_entrance']['camera_fps'], 0)
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(before, self.client.raw_config())
-        saved = ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']
-        self.assertNotIn('capture_resume_pending', saved)
-        self.assertNotIn('target_restart', saved)
 
     def _pending_sticky_restart(self):
         from camadmiral.frigate_import import digest, _relay_runtime_revision
@@ -1027,92 +1220,10 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual([],self.client.operations)
         self.assertTrue(store.links(self.target.target_id)['legacy_entrance']['capture_resume_pending'])
 
-    def test_failed_targeted_pause_restarts_target_once_and_preserves_configuration(self):
-        job = self.execute(self.preview())
-        uid = job["cameras"][0]["camera_uuid"]
-        self.repo.record_address_change(uid, "192.0.2.10", "192.0.2.11", "onvif_identity")
-        before = self.client.raw_config()
-        restarts = self.client.restart_calls
-        enable = self.client.set_runtime_camera_enabled
-        def stalled(key, enabled):
-            enable(key, enabled)
-            if not enabled:
-                raise FrigateApiError("target_unavailable")
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=stalled):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(before, self.client.raw_config())
-        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
-        self.assertEqual(self.repo.latest_camera_address_revision(uid), row["relay_address_revision"])
-        self.assertNotIn("capture_resume_pending", row)
-        self.assertNotIn("target_restart", row)
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
 
-    def test_restart_fallback_accepts_frigate_default_detection_disabled(self):
-        self.execute(self.preview())
-        self.assertNotIn("enabled", self.client.raw_config()["cameras"]["legacy_entrance"]["detect"])
-        self.client.current_config["cameras"]["legacy_entrance"]["detect"]["enabled"] = False
-        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
-        self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
-        before, restarts = self.client.raw_config(), self.client.restart_calls
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=FrigateApiError("target_unavailable")):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(before, self.client.raw_config())
-        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
-        self.assertNotIn("capture_resume_pending", row)
-        self.assertNotIn("target_restart", row)
 
-    def test_restart_fallback_preserves_runtime_detection_enabled_above_default(self):
-        self.execute(self.preview())
-        self.client.current_config["cameras"]["legacy_entrance"]["detect"]["enabled"] = True
-        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
-        self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
-        before, restarts = self.client.raw_config(), self.client.restart_calls
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=FrigateApiError("target_unavailable")):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts, self.client.restart_calls)
-        self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["detect"]["enabled"])
-        self.assertEqual(before, self.client.raw_config())
 
-    def test_pending_resume_uses_restart_fallback_if_runtime_control_remains_unavailable(self):
-        self.execute(self.preview())
-        store = ImportStore(self.repo)
-        row = store.links(self.target.target_id)["legacy_entrance"]
-        row["capture_resume_pending"] = True
-        store.save_link(self.target.target_id, row["key"], row)
-        self.client.current_config["cameras"]["legacy_entrance"]["enabled"] = False
-        before, restarts = self.client.raw_config(), self.client.restart_calls
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=FrigateApiError("target_unavailable")):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertNotIn("capture_resume_pending", store.links(self.target.target_id)["legacy_entrance"])
-        self.assertEqual(before, self.client.raw_config())
 
-    def test_uncertain_restart_is_verified_without_dispatching_another_restart(self):
-        job = self.execute(self.preview())
-        uid = job["cameras"][0]["camera_uuid"]
-        self.repo.record_address_change(uid, "192.0.2.10", "192.0.2.11", "onvif_identity")
-        enable = self.client.set_runtime_camera_enabled
-        def stalled(key, enabled):
-            enable(key, enabled)
-            if not enabled:
-                raise FrigateApiError("target_unavailable")
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=stalled), \
-             patch.object(self.client, "restart", side_effect=FrigateApiError("target_unavailable")) as restart, \
-             patch("camadmiral.frigate_import.READER_RESTART_VERIFY_TIMEOUT_SECONDS", 0):
-            for _ in range(2):
-                sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-            self.assertEqual(1, restart.call_count)
-        store = ImportStore(self.repo)
-        self.assertIn("target_restart", store.links(self.target.target_id)["legacy_entrance"])
-        self.client.restart()
-        restarts = self.client.restart_calls
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts, self.client.restart_calls)
-        self.assertNotIn("target_restart", store.links(self.target.target_id)["legacy_entrance"])
-        self.assertEqual(self.repo.latest_camera_address_revision(uid), store.links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
 
     def host_change_imports(self):
         for index in range(5):
@@ -1216,6 +1327,7 @@ class FrigateImportTests(unittest.TestCase):
             sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.21')
         self.assertTrue(all('192.0.2.21' in u for v in store.links(self.target.target_id)['peer_0']['managed_streams'].values() for u in v))
 
+    @stalled_reader
     def test_recovery_rotates_past_a_repeatedly_blocking_camera(self):
         store, keys = self.host_change_imports()
         for key, row in store.links(self.target.target_id).items():
@@ -1242,77 +1354,10 @@ class FrigateImportTests(unittest.TestCase):
         refresh.assert_not_called()
         self.assertTrue(all('192.0.2.21' in u for r in store.links(self.target.target_id).values() for v in r['managed_streams'].values() for u in v))
 
-    def test_global_restart_refreshes_both_owned_channels_once(self):
-        second = copy.deepcopy(self.camera)
-        second["ffmpeg"]["inputs"][0]["path"] = "rtsp://operator:synthetic-password@192.0.2.12/main"
-        second["onvif"]["host"] = "192.0.2.12"
-        self.client.seed("second_camera", second)
-        job = self.execute(self.preview(), selected=["legacy_entrance", "second_camera"])
-        for row in job["cameras"]:
-            self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
-        before = self.client.raw_config()
-        restarts = self.client.restart_calls
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=FrigateApiError("target_unavailable")):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        links = ImportStore(self.repo).links(self.target.target_id)
-        self.assertEqual(2, len(links))
-        for row in links.values():
-            self.assertEqual(self.repo.latest_camera_address_revision(row["camera_uuid"]), row["relay_address_revision"])
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(before, self.client.raw_config())
 
-    def test_restart_fallback_does_not_wait_for_or_commit_known_offline_peers(self):
-        second = copy.deepcopy(self.camera)
-        second["ffmpeg"]["inputs"][0]["path"] = "rtsp://operator:synthetic-password@192.0.2.12/main"
-        second["onvif"]["host"] = "192.0.2.12"
-        self.client.seed("second_camera", second)
-        job = self.execute(self.preview(), selected=["legacy_entrance", "second_camera"])
-        links = ImportStore(self.repo).links(self.target.target_id)
-        offline = links["second_camera"]["camera_uuid"]
-        with self.repo.connect() as c:
-            c.execute("UPDATE managed_streams SET health_status='offline' WHERE camera_uuid=?", (offline,))
-            c.commit()
-        for row in links.values():
-            self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
-        def reader(client, row):
-            if row["camera_uuid"] == offline:
-                raise FrigateApiError("recording_verification_failed")
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=FrigateApiError("target_unavailable")), \
-             patch("camadmiral.frigate_import._wait_record_reader", side_effect=reader):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        links = ImportStore(self.repo).links(self.target.target_id)
-        self.assertNotIn("target_restart", links["legacy_entrance"])
-        self.assertEqual(self.repo.latest_camera_address_revision(links["legacy_entrance"]["camera_uuid"]), links["legacy_entrance"]["relay_address_revision"])
-        self.assertNotIn("relay_address_revision", links["second_camera"])
-        restarts = self.client.restart_calls
-        with self.repo.connect() as c:
-            c.execute("UPDATE managed_streams SET health_status='healthy',probe_status='ready' WHERE camera_uuid=?", (offline,))
-            c.commit()
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts, self.client.restart_calls)
-        row = ImportStore(self.repo).links(self.target.target_id)["second_camera"]
-        self.assertEqual(self.repo.latest_camera_address_revision(offline), row["relay_address_revision"])
 
-    def test_restart_fallback_preserves_another_camera_runtime_pause(self):
-        job = self.execute(self.preview())
-        uid = job["cameras"][0]["camera_uuid"]
-        self.repo.record_address_change(uid, "192.0.2.10", "192.0.2.11", "onvif_identity")
-        self.client.seed("operator_camera", {"enabled": True})
-        self.client.current_config["cameras"]["operator_camera"]["enabled"] = False
-        restarts = self.client.restart_calls
-        enable = self.client.set_runtime_camera_enabled
-        def stalled(key, enabled):
-            enable(key, enabled)
-            if not enabled:
-                raise FrigateApiError("target_unavailable")
-        with patch.object(self.client, "set_runtime_camera_enabled", side_effect=stalled):
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(restarts, self.client.restart_calls)
-        self.assertFalse(self.client.config()["cameras"]["operator_camera"]["enabled"])
-        self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
 
+    @stalled_reader
     def test_reader_refresh_reconnects_capture_without_persisted_configuration_changes(self):
         job = self.execute(self.preview())
         uid = job["cameras"][0]["camera_uuid"]
@@ -1342,6 +1387,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertNotIn("capture_resume_pending", row)
         self.assertEqual(self.repo.latest_camera_address_revision(uid), row["relay_address_revision"])
 
+    @stalled_reader
     def test_reader_refresh_recovers_pending_resume_before_reconnecting_again(self):
         job = self.execute(self.preview())
         uid = job["cameras"][0]["camera_uuid"]
@@ -1363,7 +1409,8 @@ class FrigateImportTests(unittest.TestCase):
         self.assertNotIn("capture_resume_pending", store.links(self.target.target_id)["legacy_entrance"])
         self.assertNotIn("relay_address_revision", store.links(self.target.target_id)["legacy_entrance"])
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(self.repo.latest_camera_address_revision(uid), store.links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
+        self.assertNotIn("relay_address_revision", store.links(self.target.target_id)["legacy_entrance"])
+        self.assertIn("reader_recovery", store.links(self.target.target_id)["legacy_entrance"])
 
     def test_reader_refresh_preserves_operator_runtime_pause(self):
         job = self.execute(self.preview())
@@ -1374,6 +1421,7 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual([], self.client.operations)
 
+    @stalled_reader
     def test_shared_relay_restart_refreshes_unchanged_peer_without_config_writes(self):
         second = copy.deepcopy(self.camera)
         second["ffmpeg"]["inputs"][0]["path"] = "rtsp://operator:synthetic-password@192.0.2.12/main"
@@ -1401,6 +1449,7 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual(operations, self.client.operations)
 
+    @stalled_reader
     def test_control_restart_refreshes_imported_readers_once_without_address_change(self):
         job = self.execute(self.preview())
         row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
@@ -1417,6 +1466,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(before, self.client.raw_config())
         self.assertTrue(all(op[0] in {"delete_runtime_stream", "set_runtime_stream", "set_runtime_camera_enabled"} for op in operations))
 
+    @stalled_reader
     def test_committed_address_change_refreshes_only_imported_readers_without_config_writes(self):
         job = self.execute(self.preview())
         camera_uuid = job["cameras"][0]["camera_uuid"]
@@ -1438,6 +1488,7 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
         self.assertEqual(operations, self.client.operations, "Unchanged address must not reconnect readers repeatedly")
 
+    @stalled_reader
     def test_reader_refresh_recreates_owned_aliases_and_preserves_configuration(self):
         self.execute(self.preview())
         store = ImportStore(self.repo)
@@ -1459,6 +1510,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(operations, self.client.operations)
         self.assertEqual(before, self.client.raw_config())
 
+    @stalled_reader
     def test_reader_replacement_failure_keeps_revision_pending_and_restores_capture(self):
         self.execute(self.preview())
         store = ImportStore(self.repo)
@@ -1477,6 +1529,7 @@ class FrigateImportTests(unittest.TestCase):
         self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
         self.assertEqual(before, self.client.raw_config())
 
+    @stalled_reader
     def test_runtime_delete_with_missing_yaml_is_acknowledged_after_observed_removal(self):
         _, _, ids = self.source_generation_fixture()
         self.source_runtime.return_value = {ids['record']: 'record-reconnected', ids['detect']: 'detect-reconnected'}
@@ -1562,25 +1615,8 @@ class FrigateImportTests(unittest.TestCase):
             self.assertEqual(operations, self.client.operations)
         self.assertEqual(before, self.client.raw_config())
 
-    def test_missing_yaml_cleanup_retry_is_bounded_then_one_restart_recovers_capture(self):
-        self.execute(self.preview())
-        store = ImportStore(self.repo)
-        row = store.links(self.target.target_id)["legacy_entrance"]
-        self.repo.record_address_change(row["camera_uuid"], "192.0.2.10", "192.0.2.11", "onvif_identity")
-        before = self.client.raw_config()
-        restarts = self.client.restart_calls
-        with patch.object(self.client, "delete_runtime_stream", side_effect=FrigateApiError(
-                "request_rejected", upstream_status=400, upstream_detail="yaml: path not exist")) as delete:
-            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(2, delete.call_count)
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertEqual(self.repo.latest_camera_address_revision(row['camera_uuid']),
-                         store.links(self.target.target_id)['legacy_entrance']['relay_address_revision'])
-        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: '192.0.2.20')
-        self.assertEqual(restarts + 1, self.client.restart_calls)
-        self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
-        self.assertEqual(before, self.client.raw_config())
 
+    @stalled_reader
     def test_address_refresh_retries_ambiguous_replacement_and_preserves_sources(self):
         job = self.execute(self.preview())
         uid = job["cameras"][0]["camera_uuid"]
@@ -1601,8 +1637,8 @@ class FrigateImportTests(unittest.TestCase):
         self.assertNotIn("relay_address_revision", store.links(self.target.target_id)["legacy_entrance"])
         self.assertEqual(before, self.client.raw_config())
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
-        self.assertEqual(self.repo.latest_camera_address_revision(uid),
-                         store.links(self.target.target_id)["legacy_entrance"]["relay_address_revision"])
+        self.assertNotIn("relay_address_revision", store.links(self.target.target_id)["legacy_entrance"])
+        self.assertIn("reader_recovery", store.links(self.target.target_id)["legacy_entrance"])
 
     def test_address_refresh_respects_operator_source_conflicts(self):
         job = self.execute(self.preview())

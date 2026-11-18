@@ -194,6 +194,7 @@ def host():
         time.sleep(12)
         fault=json.loads(run('exec','-T','stalled-camera','python','-c',
             "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stream-stats').read().decode())"))
+        result['fault'] = fault
         assert fault['forwarded_audio_packets']>0,'No audio flowed during the video stall'
         assert fault['frozen_video_packets']>0,'Video fault never activated'
         assert fault['frozen_video_sessions']>0,'Frozen sessions reconnected before watchdog recovery'
@@ -210,6 +211,7 @@ def host():
         assert before['frigate']==after['frigate'],'Frigate container restarted'
         proxy=json.loads(run('exec','-T','stalled-camera','python','-c',
             "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stream-stats').read().decode())"))
+        result['proxy_after_recovery'] = proxy
         assert proxy['frozen_video_sessions']==0,'Old stuck sessions survived recovery'
         logs=run('logs','--no-color','camadmiral')
         assert logs.count('"event": "restart_started"')==1,'Recovery reset was missing or repeated'

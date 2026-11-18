@@ -1961,6 +1961,7 @@
           addText(controls, "div", "frigate-camera-help", "Restart Frigate after syncing to apply changed dimensions.");
         }
       });
+      addText(content, "p", "integration-help", "Syncing cameras may restart Frigate to add or restore a camera, briefly interrupting recording. Background synchronization and Repair sync will not restart Frigate.");
       const actions = addText(content, "div", "frigate-camera-chooser-actions", "");
       const cancel = addText(actions, "button", "secondary-action", "Cancel");
       cancel.type = "button";
@@ -3454,6 +3455,9 @@
     }
 
     function frigateSyncError(errorCode) {
+      if (errorCode === "manual_restart_required") return ["Check Frigate manually", "Automatic recovery stopped. Check that this camera is enabled in Frigate, and restart Frigate yourself if needed. CamAdmiral will not restart the recorder."];
+      if (errorCode === "reader_recovery_cooldown") return ["Recovery cooling down", "CamAdmiral waits five minutes between camera recovery attempts and allows at most two attempts."];
+
       const errors = {
         camera_resource_conflict: ["Sync blocked: camera already exists", "A camera with this key already exists in Frigate without CamAdmiral ownership. Remove or rename the conflicting entry, including inactive placeholders, then retry."],
         stream_resource_conflict: ["Sync blocked: stream already exists", "A managed stream alias already exists in Frigate without CamAdmiral ownership. Remove or rename the conflicting alias, then retry."],

@@ -114,7 +114,7 @@ def reader_recovery_ready(readers, camera_ids, address_revisions, previous_runti
     return bool(camera_ids) and len(generations) == 1
 
 
-def driver(stage):
+def driver(stage, readiness_timeout=240, expected_start=None):
     import yaml
     from scenarios import (consumer_directory, directory_signature, request_json,
                            wait_for, wait_for_health)
@@ -148,7 +148,9 @@ def driver(stage):
                 'camera_uuid', 'relay_address_revision', 'relay_runtime_revision')}
             result[row['camera_key']].update(capture_resume_pending=bool(saved.get('capture_resume_pending')),
                                             source_recovery_pending=bool(saved.get('source_recovery_pending')),
-                                            target_restart=bool(saved.get('target_restart')))
+                                            target_restart=bool(saved.get('target_restart')),
+                                            recovery_budget=saved.get('reader_recovery'),
+                                            recording_verification=saved.get('reader_recording_verification'))
         return result
 
     if stage in {'remove-links', 'remove-primary-anchor'}:
@@ -247,6 +249,48 @@ def driver(stage):
             headers={'X-CamAdmiral-Action': 'link-camera-identity'})
         assert changed['status'] == 'identity_changed' and primary not in links()
         return
+    if stage.startswith('reader-progress'):
+        readers = reader_links(state['target'])
+        revisions = {row['camera_uuid']: row['event_uuid'] for row in sql(
+            'SELECT camera_uuid,event_uuid FROM camera_address_events ORDER BY changed_at,rowid')}
+        previous = state['reader_runtime_revisions'] if stage.endswith('-restarted') else None
+        ready = (not state.get('reader_recovery_tracking') or
+                 reader_recovery_ready(readers, state['camera_ids'], revisions, previous))
+        errors = sql('SELECT sync_error FROM frigate_camera_selections WHERE target_id=?', (state['target'],))
+        try:
+            service = frigate('/stats')['service']
+            started = float(service['last_updated']) - float(service['uptime'])
+        except (OSError, ValueError, KeyError, TypeError):
+            started, ready = None, False
+        print(json.dumps({'ready': ready, 'service_started': started,
+            'manual': any(row['sync_error'] in ('manual_restart_required','reader_recovery_cooldown') for row in errors)}))
+        return
+    if stage == 'operator-restart':
+        if '/opt/camadmiral' not in sys.path:
+            sys.path.insert(0, '/opt/camadmiral')
+        from camadmiral.frigate import FrigateClient, FrigateTarget, FrigateApiError
+        client = FrigateClient(FrigateTarget('operator-test','Synthetic operator','http://frigate:5000'))
+        before = client.service_started_at()
+        assert expected_start is not None and abs(before - expected_start) < 2, 'Recorder restarted before explicit operator action'
+        if state.get('forced_fallback_pending'):
+            assert abs(before - state['forced_fallback_started_before']) < 2, 'Unavailable controls caused automatic recorder restart'
+            state['forced_fallback_pending'] = False
+            state['fallback_verified'] = True
+        state['operator_restart_count'] = state.get('operator_restart_count', 0) + 1
+        STATE.write_text(json.dumps(state))
+        try:
+            client.restart()
+        except FrigateApiError as exc:
+            if exc.code not in ('target_unavailable','invalid_response'):
+                raise
+        wait_for('explicit operator restart completed', lambda: client.service_started_at() > before + 1,
+                 timeout=min(180, readiness_timeout))
+        raw, live = client.raw_config(), client.config()
+        for key in KEYS:
+            if raw['cameras'][key].get('enabled', True) and not live['cameras'][key].get('enabled', True):
+                client.set_runtime_camera_enabled(key, True)
+        print(json.dumps({'service_started': client.service_started_at()}))
+        return
     if stage.startswith('verify-'):
         restarted = stage.startswith('verify-restarted-')
         address = stage.removeprefix('verify-restarted-' if restarted else 'verify-')
@@ -268,7 +312,7 @@ def driver(stage):
                     and len(health) == 4 and all(row['health_status'] == 'healthy' and row['probe_status'] == 'ready' for row in health)
                     and {row['camera_uuid'] for row in periods if row['ip_address'] == address and row['onvif_identity'] == ENDPOINT}
                         == set(state['camera_ids'].values()))
-        wait_for('both logical channels recover through physical identity', recovered, timeout=240)
+        wait_for('both logical channels recover through physical identity', recovered, timeout=readiness_timeout)
         current_links = links()
         assert state['initial_identity_learned'], 'Literal-IP import did not learn stable physical identity'
         assert len(current_links) == 2 and all(link['onvif']['endpoint_reference'] == ENDPOINT for link in current_links.values())
@@ -283,7 +327,7 @@ def driver(stage):
             if restarted and state.get('forced_fallback_pending'):
                 service = frigate('/stats')['service']
                 started = float(service['last_updated']) - float(service['uptime'])
-                assert started > state['forced_fallback_started_before'] + 2, 'Unavailable per-camera control must trigger a real verified Frigate restart'
+                assert abs(started - state['forced_fallback_started_before']) < 2, 'Background recovery must not restart Frigate when per-camera control is unavailable'
                 state['forced_fallback_pending'] = False
                 state['fallback_verified'] = True
             readers = reader_links(state['target'])
@@ -326,9 +370,12 @@ def host():
         return run_logged([*compose, *args], cwd=ROOT,
                           transcript=artifacts / 'transcript.log', check=check)
 
-    def stage(name):
+    def stage(name, readiness_timeout=None, expected_start=None):
         print('Imported identity stage: ' + name, flush=True)
-        return run('run', '--rm', '--no-deps', 'test-driver', name)
+        extra = [] if readiness_timeout is None else [str(readiness_timeout)]
+        if expected_start is not None:
+            extra.append(str(expected_start))
+        return run('run', '--rm', '--no-deps', 'test-driver', name, *extra)
 
     def state():
         return json.loads(run('run', '--rm', '--no-deps', '--entrypoint', 'cat', 'test-driver', str(STATE)))
@@ -365,7 +412,31 @@ with sqlite3.connect('/config/frigate.db') as db:
         return json.loads(run('exec', '-T', 'frigate', 'python3', '-c', 'SEED=' + repr(seed) + '\n' + code))
 
     def verify(address, since, restarted=False):
-        stage(('verify-restarted-' if restarted else 'verify-') + address)
+        # Same 240-second recovery budget; an operator action is explicit and
+        # never attributed to automatic reconciliation. Playback assertions stay.
+        deadline, manual, started = time.monotonic() + 240, False, None
+        while True:
+            progress = json.loads(stage('reader-progress-restarted' if restarted else 'reader-progress'))
+            current = progress['service_started']
+            if current is not None:
+                if started is None:
+                    started = current
+                else:
+                    assert abs(current - started) < 2, 'Background reconciliation restarted Frigate'
+            if progress['ready']:
+                break
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, 'Imported readers did not verify within the original recovery budget'
+            if progress['manual'] and not manual and started is not None:
+                saved = state()
+                if saved.get('forced_fallback_pending') and not saved.get('fallback_control_restored'):
+                    run('exec', '-T', 'frigate', 'python3', '-c', FRIGATE_CONTROL_FAULT_SCRIPT, 'restore')
+                    stage('fallback-control-restored')
+                action = json.loads(stage('operator-restart', remaining, started))
+                started, manual = action['service_started'], True
+            time.sleep(2)
+        stage(('verify-restarted-' if restarted else 'verify-') + address,
+              max(0.1, deadline - time.monotonic()))
         # Only recordings started after the validated identity commit can
         # establish recovered capture, not old segments flushed during a move.
         since = max(since, time.time())
@@ -456,8 +527,9 @@ with sqlite3.connect('/config/frigate.db') as db:
                 verify('172.28.0.15', time.time(), restarted=True)
                 # Later recovery must also work through normal per-camera
                 # control, including peers reset by another camera's move.
-                run('exec', '-T', 'frigate', 'python3', '-c', FRIGATE_CONTROL_FAULT_SCRIPT, 'restore')
-                stage('fallback-control-restored')
+                if not state().get('fallback_control_restored'):
+                    run('exec', '-T', 'frigate', 'python3', '-c', FRIGATE_CONTROL_FAULT_SCRIPT, 'restore')
+                    stage('fallback-control-restored')
                 run('stop', 'camadmiral')
                 stage('remove-links')
                 run('start', 'camadmiral')
@@ -507,4 +579,4 @@ with sqlite3.connect('/config/frigate.db') as db:
 
 
 if __name__ == '__main__':
-    driver(sys.argv[1]) if len(sys.argv) > 1 else host()
+    driver(sys.argv[1], float(sys.argv[2]) if len(sys.argv)>2 else 240, float(sys.argv[3]) if len(sys.argv)>3 else None) if len(sys.argv) > 1 else host()

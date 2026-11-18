@@ -407,9 +407,18 @@ runtime source; the existing multi-channel identity lab keeps exact dimension,
 decoded video and history preservation assertions and retains selected synthetic
 recording files as evidence.
 
-Imported readers also refresh once after the control service restarts, because
-relay RTP timing can reset while downstream source URLs remain stable. An
-internal process revision prevents repeated reconnects on ordinary sync cycles.
+After a control-service or source revision changes, healthy imported readers
+acknowledge it without an OFF/ON cycle. Stalled readers have a persisted budget
+of two targeted recovery attempts, separated by a five-minute cooldown. Failed
+controls require operator action; background recovery never dispatches a shared
+Frigate restart. Owned-pause resume retries use a separate persisted bound.
+
+The real-Frigate history scenario models an explicit operator restart when
+camera controls fail and proves no automatic restart preceded it. The grouped
+source-reconnect scenarios require zero automatic restarts for both runtime
+alias deletion faults, while retaining fresh source-generation acknowledgement,
+no-loop checks, historical metadata, and decoded old/fresh recordings. Accepted
+user-initiated import/restore journals still recover without duplicate restarts.
 The identity lab keeps its repeated restart and complete-recording assertions.
 
 A relay definition update does not disconnect existing go2rtc consumers. Imported
@@ -720,3 +729,47 @@ hashes. Uncertain ON acknowledgements keep the journal for verification/retry,
 without dispatching another restart. Completion still requires the existing
 capture and record-reader checks. Runtime pause/restore diagnostics omit source
 URLs and credentials.
+
+
+Cold Docker pulls retain the existing 615-second total acquisition budget and
+six-attempt transport limit. Each attempt may use up to five minutes within that
+budget so a healthy multi-GB layer write/extraction is not canceled every 90
+seconds under parallel disk load. Access, trust, manifest, and disk-space errors
+still fail immediately. Builds, startup mutations, readiness, and test assertions
+execute once. Unit coverage reproduces the old deadline failure with a 150-second
+healthy acquisition, verifies one successful attempt, and bounds cumulative waits.
+
+
+Regular periodic reconciliation and Repair sync explicitly deny recorder restart
+permission. The reconciliation function defaults to denying it too. Only the
+user-triggered Sync cameras job opts in, with its possible recording interruption
+shown before the action; import/restore keep their explicit restart confirmation.
+Tests cover repeated unconfirmed Frigate 0.17 second-camera reconciliation, Repair
+sync with that topology, and both background/user job permission boundaries.
+
+
+Passive reader recovery now verifies a complete retained recording segment whose
+start is after the observed relay/address/source revision. Positive camera FPS
+and go2rtc byte counters alone cannot acknowledge a recorder stuck on an older
+RTP timeline. Continuous recording gets a 30-second grace window before the
+existing bounded camera recovery; quiet event/motion retention does not trigger
+a pause merely because no segment was retained. Stale/future/empty metadata does
+not count. Revisions remain pending until output verifies, and successful output
+does not replenish the persisted recovery budget. The identity lab still requires
+complete fresh segments and decoded old/new playback; those assertions are unchanged.
+
+The explicit github_hosted fallback now reaches every synthetic Linux job and
+publication job, including audio, runtime pause and offline retention. All tests,
+real cgroup memory/PID enforcement, resource budgets and parallel execution are
+unchanged. This avoids BigBird's physically exhausted thin pool without deleting
+its backups or changing storage mappings. Default runner selection stays unchanged.
+
+Passive health also compares hashes of advertised video codec parameter sets from
+the active upstream with Frigate's cached relay SDP. Payload numbers, parameter
+ordering, transport addresses, credentials and equivalent base64 padding do not
+create false mismatches. A known stale SPS/PPS/VPS cannot be acknowledged merely
+because bytes and FPS remain positive. The DNS test still decodes the exact moved
+resolution, and the identity test still requires complete new recordings and real
+old/new playback. When bounded automatic recovery asks for manual action, these
+fixtures model an explicit operator restart, assert no background restart preceded
+it, and retain the original automatic readiness budgets and data assertions.

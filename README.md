@@ -370,3 +370,21 @@ configured `secrets.master_key_file` is authoritative and must
 exist. This supports Docker Compose secrets and Reefy-managed read-only secret mounts. An
 external master key is outside the data-volume backup boundary and must be backed up and
 restored separately. The default generated key stays inside the data volume.
+
+### Frigate background recovery
+
+Background synchronization never initiates a whole-Frigate restart. A healthy reader
+acknowledges relay/source revisions without disabling the camera only after a complete
+recording segment starts after that revision. Camera FPS alone cannot prove recorder
+recovery after an RTP reset. Known mismatches in video parameter sets also require
+reader recovery instead of acknowledging stale cached codec metadata. Continuous recording gets a 30-second verification window;
+quiet motion/event-only cameras wait for a retained segment without an automatic pause. A stalled reader gets
+at most two camera reconnect attempts, at least five minutes apart; this budget is
+stored with the binding and survives CamAdmiral restarts and source revision changes.
+A failed pause or resume stops automatic recovery and asks the operator to inspect
+Frigate. Check that the affected camera is enabled in Frigate, and restart Frigate
+if needed: Frigate can retain a runtime camera disable across a native restart.
+CamAdmiral only retries its own pending resume, at most twice with the same cooldown;
+it never re-enables an operator's saved disable.
+Only explicit user operations can request a recorder restart: Sync cameras explains the possible interruption, and import/restore retain their existing restart confirmation. Periodic synchronization and Repair sync never restart Frigate.
+Reimporting/restoring a binding resets its reconnect budget.

@@ -19,7 +19,7 @@ LOCK = threading.Lock()
 STATE = {'armed': False, 'unavailable_until': 0.0, 'dropped_replies': 0,
          'unavailable_reads': 0, 'mode': 'disconnect', 'restart_delays': [12],
          'restart_requests': 0, 'restore_outage_seconds': 0, 'restore_outages': 0,
-         'runtime_delete_fault': None, 'runtime_delete_requests': 0, 'runtime_controls': False}
+         'runtime_delete_fault': None, 'runtime_delete_requests': 0, 'runtime_controls': True}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -34,8 +34,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def websocket_tunnel(self):
-        # Preserve real Frigate runtime controls in the grouped-import lab.
-        # Other recovery scenarios deliberately keep their old fallback path.
+        # Preserve real controls unless a scenario explicitly faults them.
+        # A restart-acknowledgement fault must not also break camera controls.
         self.close_connection = True
         with socket.create_connection(('frigate', 5000), timeout=30) as upstream:
             request = (self.requestline + '\r\n' + ''.join(
@@ -64,7 +64,7 @@ class Handler(BaseHTTPRequestHandler):
                     assert all(0 <= value <= 240 for value in delays)
                     delete_fault = options.get('runtime_delete_fault')
                     assert delete_fault in {None, 'before', 'after'}
-                    STATE.update(runtime_controls=options.get('runtime_controls', False), runtime_delete_fault=delete_fault, runtime_delete_requests=0, armed=bool(delays), dropped_replies=0, unavailable_reads=0, mode=mode,
+                    STATE.update(runtime_controls=options.get('runtime_controls', True), runtime_delete_fault=delete_fault, runtime_delete_requests=0, armed=bool(delays), dropped_replies=0, unavailable_reads=0, mode=mode,
                                  restart_delays=list(delays), restart_requests=0, restore_outages=0,
                                  restore_outage_seconds=options.get('restore_outage_seconds', 0))
                 status = {k: v for k, v in STATE.items() if k != 'unavailable_until'}

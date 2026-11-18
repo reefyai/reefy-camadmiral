@@ -247,7 +247,54 @@ def driver(stage):
         for key in ('operator_camera', 'matched_camera', 'authenticated_camera'):
             assert all('127.0.0.1:8554/' in i['path'] for i in raw['cameras'][key]['ffmpeg']['inputs']), key
         return
+    if stage == 'reader-manual-recovery':
+        # The new policy surfaces failed background controls to the operator.
+        # Model that explicit action and prove no shared restart happened first.
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            fault = json.load(response)
+        assert fault['restart_requests'] == state['role_restart_requests'], fault
+        service = frigate('/stats')['service']
+        before = service['last_updated'] - service['uptime']
+        assert abs(before - state['role_service_started']) < 3, 'Background recovery restarted Frigate'
+        request = urllib.request.Request('http://camadmiral:20017/api/restart', data=b'', method='POST')
+        with urllib.request.urlopen(request, timeout=15) as response:
+            assert json.load(response)['success']
+        def restarted():
+            service = frigate('/stats')['service']
+            return service['last_updated'] - service['uptime'] > before + 1
+        wait_for('operator restart completed', restarted, timeout=180)
+        # Native Frigate restarts can retain OFF for more than one managed
+        # reader. Complete the explicit operator action for these test-owned
+        # saved-enabled cameras, without changing background retry limits.
+        sys.path.insert(0, '/opt/camadmiral')
+        from camadmiral.frigate import FrigateClient, FrigateTarget
+        operator = FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
+            'http://frigate:5000'))
+        import yaml
+        saved = yaml.safe_load(frigate('/config/raw'))
+        live = frigate('/config')['cameras']
+        for key in ('operator_camera', 'matched_camera', 'authenticated_camera'):
+            if saved['cameras'][key].get('enabled', True) and not live[key].get('enabled', True):
+                operator.set_runtime_camera_enabled(key, True)
+        # Repair sync is an explicit operator action and cannot restart the
+        # recorder. It also avoids waiting an extra idle background interval
+        # to observe the manual recovery's source generation.
+        full_sync_when_idle(state['target_id'])
+        assert fault['restart_requests'] + 1 == json.load(urllib.request.urlopen(
+            'http://camadmiral:20017/__fault__/status', timeout=10))['restart_requests'], 'Repair sync restarted Frigate'
+        service = frigate('/stats')['service']
+        state['role_service_started'] = service['last_updated'] - service['uptime']
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            state['role_restart_requests'] = json.load(response)['restart_requests']
+        state['manual_recovery_count'] = state.get('manual_recovery_count', 0) + 1
+        STATE.write_text(json.dumps(state))
+        return
     if stage == 'roles':
+        service = frigate('/stats')['service']
+        state['role_service_started'] = service['last_updated'] - service['uptime']
+        with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
+            state['role_restart_requests'] = json.load(response)['restart_requests']
+        STATE.write_text(json.dumps(state))
         directory = consumer_directory()['cameras']
         camera = next(c for c in directory if c['name'] == 'Original authenticated')
         sub = next(s for s in camera['streams'] if s.get('video', {}).get('width', s.get('width')) == 640)
@@ -396,7 +443,7 @@ def host():
         print('Import regression stage: ' + name, flush=True)
         run('run', '--rm', '--entrypoint', 'python', 'test-driver', '/e2e/frigate_import.py', name)
 
-    def source_generations():
+    def source_generations(diagnostics=False):
         code = """import json,sys
 from pathlib import Path
 sys.path.insert(0,'/opt/camadmiral')
@@ -412,9 +459,33 @@ for target in repository.frigate_targets():
  row=ImportStore(repository).links(target['target_id']).get('authenticated_camera')
  if row:
   saved=row.get('relay_source_revisions') or {}
-  result.update(saved=saved,live={key:live[key] for key in saved if key in live})
+  with repository.connect() as connection:
+   selection=connection.execute('SELECT sync_error FROM frigate_camera_selections WHERE target_id=? AND camera_uuid=?',(target['target_id'],row['camera_uuid'])).fetchone()
+  result.update(saved=saved,live={key:live[key] for key in saved if key in live},
+                manual_restart_required=bool(selection and selection['sync_error'] in ('manual_restart_required','reader_recovery_cooldown')))
+  if READ_DIAGNOSTICS:
+   from camadmiral.frigate import FrigateClient,FrigateTarget
+   from camadmiral.frigate_import import _running_inputs_match, _reader_video_matches, _camera_source_revisions, _camera
+   try:
+    client=FrigateClient(FrigateTarget(target['target_id'],target['name'],target['api_url']))
+    camera=client.config().get('cameras',{}).get(row['key'],{})
+    stream=client.runtime_streams().get(row['aliases']['record'],{})
+    result['health']={'enabled':camera.get('enabled',True),
+     'fps':client.stats().get(row['key'],{}).get('camera_fps'),
+     'inputs_match':_running_inputs_match(client,row['key'],row['managed_camera']['ffmpeg']['inputs']),
+     'record_consumer':bool(stream.get('consumers')),
+     'record_bytes':any(int(p.get('bytes_recv') or 0)>0 for p in stream.get('producers',[])),
+     'resume_pending':bool(row.get('capture_resume_pending')),
+     'sync_error':selection['sync_error'] if selection else None,
+     'budget':row.get('reader_recovery'),
+     'recording_verification':row.get('reader_recording_verification'),
+     'pending':row.get('source_recovery_pending'),
+     'required_sources':_camera_source_revisions(client,row,_camera(repository,row['camera_uuid']),live),
+     'video_metadata_match':_reader_video_matches(client,row,_camera(repository,row['camera_uuid']),live)}
+   except Exception as exc:result['health_error']=type(exc).__name__
 print(json.dumps(result))
 """
+        code = code.replace('READ_DIAGNOSTICS', repr(diagnostics))
         return json.loads(run('exec', '-T', 'camadmiral', 'python', '-c', code))
 
     def recordings(camera='operator_camera'):
@@ -564,19 +635,28 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
         if source_before['supported']:
             deadline = time.monotonic() + 90
             while not (source_before['saved'] and source_before['saved'] == source_before['live']):
+                if source_before.get('manual_restart_required') and not result.get('role_change_manual_restart'):
+                    stage('reader-manual-recovery')
+                    result['role_change_manual_restart'] = True
+                    deadline = time.monotonic() + 90
                 if time.monotonic() >= deadline:
+                    result['dns_source_generations_before'] = source_generations(diagnostics=True)
                     raise AssertionError('Source generations must be acknowledged before the move')
                 time.sleep(1)
                 source_before = source_generations()
+                result['dns_source_generations_before'] = source_before
         result['dns_source_generations_before'] = source_before
         run('stop', 'camera-auth')
         run('rm', '--force', 'camera-auth')
         run('up', '-d', 'camera-auth-import-moved')
-        stage('dns-after')
         if source_before['supported']:
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 source_after = source_generations()
+                if source_after.get('manual_restart_required') and not result.get('dns_move_manual_recovery'):
+                    stage('reader-manual-recovery')
+                    result['dns_move_manual_recovery'] = True
+                    deadline = time.monotonic() + 90
                 if (source_after['saved'] and source_after['saved'] == source_after['live']
                         and source_after['saved'] != source_before['saved']):
                     break
@@ -584,6 +664,7 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
             else:
                 raise AssertionError('Recovered media did not acknowledge its new upstream connections')
             result['dns_source_generations_after'] = source_after
+        stage('dns-after')
         result['address_recovery_decoded'] = True
         switched = time.time()
         deadline = time.monotonic() + 150
@@ -668,7 +749,20 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
             page = browser.new_page(http_credentials={'username': 'admin', 'password': 'synthetic-e2e-admin-password'})
             try:
                 page.goto(base + '/settings/integrations')
-                page.get_by_role('button', name='Import from Frigate', exact=True).click()
+                # Preview is serialized behind ongoing recovery. Await this
+                # single read before querying controls that it creates; do not
+                # replay the import or relax any media-readiness assertion.
+                with page.expect_response(lambda response:
+                        response.request.method == 'GET'
+                        and '/internal/frigate-targets/' in response.url
+                        and response.url.endswith('/import'),
+                        timeout=120000) as preview_response:
+                    page.get_by_role('button', name='Import from Frigate', exact=True).click()
+                response = preview_response.value
+                assert response.status == 200, 'External-reader preview failed'
+                preview = response.json()
+                external = next(row for row in preview['cameras'] if row['key'] == 'external_camera')
+                assert external['can_import'], external
                 page.get_by_label('Import Synthetic shared source', exact=True).check()
                 page.get_by_label('Allow Frigate restart').check()
                 with page.expect_response(lambda r: r.request.method == 'POST' and '/import/' in r.url) as attempt:

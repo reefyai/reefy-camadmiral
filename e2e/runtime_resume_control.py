@@ -8,7 +8,8 @@ from fastapi import Header, HTTPException
 from fastapi.responses import JSONResponse
 from camadmiral import app as control
 from camadmiral.frigate import FrigateApiError, FrigateClient
-from camadmiral.frigate_import import ImportStore, _refresh_capture
+from camadmiral.frigate_import import (ImportStore, _refresh_capture, _restart_imported_target,
+                                      _relay_runtime_revision, digest)
 
 app = control.app
 
@@ -26,6 +27,10 @@ def exercise(options: dict, x_camadmiral_action: str | None = Header(default=Non
         store = ImportStore(repository)
         links = store.links(target.target_id)
         row = links['managed_camera']
+        # Each explicit synthetic request is a separate operator test case.
+        # Production never resets this persisted automatic recovery budget.
+        row.pop('reader_recovery', None)
+        store.save_link(target.target_id, row['key'], row)
         class FaultClient(FrigateClient):
             def set_runtime_camera_enabled(self, key, enabled):
                 result['runtime_calls'].append([key, enabled])
@@ -66,7 +71,22 @@ def exercise(options: dict, x_camadmiral_action: str | None = Header(default=Non
         client = FaultClient(target)
         before = client.raw_config()
         try:
-            _refresh_capture(repository, target, client, links, row)
+            if options.get('manual_restart'):
+                # Model a user-approved native restart, not automatic recovery.
+                FrigateClient.set_runtime_camera_enabled(client, row['key'], False)
+                row['capture_resume_pending'] = True
+                row['target_restart'] = {
+                    'started_before': client.service_started_at(), 'raw_hash': digest(before),
+                    'active_keys': [row['key'], 'healthy_peer', 'operator_peer'],
+                    'runtime_revision': _relay_runtime_revision(repository),
+                    'address_revisions': {row['camera_uuid']: repository.latest_camera_address_revision(row['camera_uuid'])},
+                }
+                store.save_link(target.target_id, row['key'], row)
+                result['user_requested_restart'] = True
+                client.restart()
+                _restart_imported_target(repository, target, client, links, row)
+            else:
+                _refresh_capture(repository, target, client, links, row)
             result['status'] = 'recovered'
         except ProcessLost:
             result['status'] = 'interrupted'

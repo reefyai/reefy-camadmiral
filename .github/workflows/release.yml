@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      github_hosted:
+        description: Use GitHub-hosted Linux when self-hosted storage is unavailable
+        type: boolean
+        default: false
       application_ref:
         description: Exact full application commit that has passed the complete release gate
         type: string
@@ -20,7 +24,7 @@ concurrency:
 jobs:
   verify-release-gate:
     name: Verify tested commit
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     permissions:
       actions: read
       contents: read
@@ -51,7 +55,7 @@ jobs:
     concurrency:
       group: camadmiral-image-publication
       cancel-in-progress: false
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
+    runs-on: ${{ fromJSON((inputs.github_hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","Linux","X64","big-bird"]') }}
     permissions:
       contents: write
       packages: write

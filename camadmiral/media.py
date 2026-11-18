@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import base64
+import binascii
 import os
 import re
 import selectors
@@ -450,6 +453,55 @@ class RelayRuntimeActivityMonitor:
         return set(stalled_camera_uuids)
 
 
+def video_sdp_signatures(sdp):
+    """Codec/extradata fingerprints only; never retain SDP URLs or credentials."""
+    if not isinstance(sdp, str) or len(sdp) > 65536:
+        return set()
+    video, codecs, parameters = False, {}, {}
+    for line in sdp.splitlines():
+        line = line.strip()
+        if line.startswith('m='):
+            video = line.startswith('m=video ')
+        if not video:
+            continue
+        match = re.match(r'a=rtpmap:(\d+)\s+([^/\s]+)', line, re.I)
+        if match:
+            name = match[2].upper()
+            codecs[match[1]] = 'H265' if name == 'HEVC' else name
+        match = re.match(r'a=fmtp:(\d+)\s+(.+)', line, re.I)
+        if match:
+            items = []
+            for item in match[2].split(';'):
+                key, separator, value = item.strip().partition('=')
+                if separator and value.strip() and (key.lower().startswith('sprop-') or key.lower() == 'config'):
+                    value = value.strip()
+                    if key.lower().startswith('sprop-'):
+                        try:
+                            value = ','.join(sorted(base64.b64decode(
+                                token.strip() + '=' * (-len(token.strip()) % 4), validate=True).hex()
+                                for token in value.split(',')))
+                        except (ValueError, binascii.Error):
+                            pass
+                    elif key.lower() == 'config':
+                        value = value.lower()
+                    items.append((key.lower(), value))
+            parameters[match[1]] = sorted(items)
+    result = set()
+    for payload, codec in codecs.items():
+        if codec in {'RTX', 'RED', 'ULPFEC', 'FLEXFEC'}:
+            continue
+        values = parameters.get(payload)
+        fingerprint = hashlib.sha256(json.dumps(values).encode()).hexdigest() if values else None
+        result.add((codec, fingerprint))
+    return result
+
+
+class SourceConnectionRevisions(dict):
+    def __init__(self):
+        super().__init__()
+        self.video_signatures = {}
+
+
 def source_connection_revisions(sources: list[dict[str, str]]) -> dict[str, str]:
     """Observe live upstream connections without opening camera connections."""
     if not sources:
@@ -460,7 +512,7 @@ def source_connection_revisions(sources: list[dict[str, str]]) -> dict[str, str]
         return {}
     if not isinstance(runtime, dict):
         return {}
-    revisions = {}
+    revisions = SourceConnectionRevisions()
     for source in sources:
         stream = runtime.get(source["stream_key"])
         if not RelayHealthMonitor._has_external_consumers(stream):
@@ -470,7 +522,14 @@ def source_connection_revisions(sources: list[dict[str, str]]) -> dict[str, str]
         except (TypeError, ValueError):
             continue
         if sample and sample[0] != "producer" and sample[1] > 0:
-            revisions[str(source["stream_uuid"])] = sample[0]
+            stream_uuid = str(source["stream_uuid"])
+            revisions[stream_uuid] = sample[0]
+            signatures = set()
+            for producer in stream.get('producers') or []:
+                if isinstance(producer, dict) and str(producer.get('id')) == sample[0]:
+                    signatures.update(video_sdp_signatures(producer.get('sdp')))
+            if signatures:
+                revisions.video_signatures[stream_uuid] = signatures
     return revisions
 
 

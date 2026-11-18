@@ -279,6 +279,13 @@ class FrigateClient:
             raise FrigateApiError("invalid_response")
         return result
 
+    def recordings_since(self, camera_key: str, since: float) -> list[dict[str, Any]]:
+        query = urllib.parse.urlencode({"after": since, "before": time.time()})
+        result = self._request("GET", "/api/" + urllib.parse.quote(camera_key, safe="") + "/recordings?" + query)
+        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+            raise FrigateApiError("invalid_response")
+        return result
+
     def stats(self) -> dict[str, Any]:
         result = self._request("GET", "/api/stats")
         if not isinstance(result, dict):
@@ -360,6 +367,13 @@ class FrigateClient:
         except (ValueError, UnicodeError) as exc:
             raise FrigateApiError("invalid_response") from exc
         except (OSError, TimeoutError, WebSocketException) as exc:
+            # Report acknowledgement stages without camera names, URLs or
+            # exception text, which can contain upstream credentials.
+            print("frigate-runtime-control: " + json.dumps({
+                "event": "acknowledgement_failed", "enabled": enabled,
+                "error_type": type(exc).__name__,
+                "missing": sorted(topic[len(camera_key) + 1:] for topic in expected),
+            }, sort_keys=True), flush=True)
             raise FrigateApiError("target_unavailable") from exc
 
     def restart(self) -> None:
@@ -806,7 +820,7 @@ def full_sync_frigate(
             media_host=media_host,
             media_host_resolver=media_host_resolver,
             client_factory=lambda _target: client,
-            allow_restart=not restart_recommended,
+            allow_restart=False,
         )
     except FrigateApiError as exc:
         raise exc.with_context(stage="reconcile_current_cameras") from exc
@@ -1242,7 +1256,7 @@ def reconcile_frigate(
     media_host: str = "127.0.0.1",
     media_host_resolver: Callable[[str], str] | None = None,
     client_factory: Callable[[FrigateTarget], FrigateClient] = FrigateClient,
-    allow_restart: bool = True,
+    allow_restart: bool = False,
     camera_uuid: str | None = None,
     verification_timeout: float = FRIGATE_VERIFY_TIMEOUT_SECONDS,
     verification_poll_interval: float = FRIGATE_VERIFY_POLL_SECONDS,

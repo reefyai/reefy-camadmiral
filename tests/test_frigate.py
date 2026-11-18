@@ -88,6 +88,9 @@ class FakeFrigateClient:
     def runtime_streams(self):
         return self.current_runtime
 
+    def recordings_since(self, key, since):
+        return [{'start_time': since, 'end_time': since + 3, 'segment_size': 1}]
+
     def stats(self):
         return self.current_stats
 
@@ -327,6 +330,21 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertIn("camadmiral_saved", config["cameras"])
         self.assertIn("camadmiral_saved_record", config["go2rtc"]["streams"])
 
+    def test_recording_metadata_query_encodes_camera_and_supplies_current_time_bounds(self):
+        client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate.example.test'))
+        rows = [{'start_time': 1000, 'end_time': 1003, 'segment_size': 1}]
+        with patch.object(client, '_request', return_value=rows) as request, \
+             patch('camadmiral.frigate.time.time', return_value=1010):
+            self.assertEqual(rows, client.recordings_since('camera/with space', 1000))
+        request.assert_called_once_with('GET', '/api/camera%2Fwith%20space/recordings?after=1000&before=1010')
+
+    def test_recording_metadata_rejects_non_list_and_non_object_rows(self):
+        client = FrigateClient(FrigateTarget('synthetic', 'Synthetic', 'http://frigate.example.test'))
+        for value in ({}, [None], ['invalid']):
+            with patch.object(client, '_request', return_value=value):
+                with self.assertRaises(FrigateApiError):
+                    client.recordings_since('synthetic', 1000)
+
     def test_service_start_identity_is_validated_for_restart_confirmation(self):
         client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
         with patch.object(client, "_request", return_value={"service": {"last_updated": 1000.5, "uptime": 50}}):
@@ -365,6 +383,22 @@ class FrigateTargetTests(unittest.TestCase):
             client.set_runtime_camera_enabled("synthetic_camera", True)
         self.assertEqual(2, connection.recv.call_count)
         self.assertEqual("ws://frigate.example.test/ws", connect.call_args.args[0])
+
+    def test_runtime_timeout_reports_only_missing_acknowledgement_stages(self):
+        import contextlib
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
+        connection = Mock()
+        connection.recv.side_effect = [json.dumps({"topic": "secret/enabled/state", "payload": "OFF"}), TimeoutError("rtsp://user:password@camera/stream")]
+        output = io.StringIO()
+        with patch("camadmiral.frigate.websocket_connect") as connect, contextlib.redirect_stdout(output):
+            connect.return_value.__enter__.return_value = connection
+            with self.assertRaises(FrigateApiError):
+                client.set_runtime_camera_enabled("secret", False)
+        diagnostic = json.loads(output.getvalue().split(": ", 1)[1])
+        self.assertEqual(["status/detect", "status/record"], diagnostic["missing"])
+        self.assertEqual("TimeoutError", diagnostic["error_type"])
+        self.assertNotIn("secret", output.getvalue())
+        self.assertNotIn("password", output.getvalue())
 
     def test_runtime_control_rejects_missing_ack_and_invalid_messages(self):
         client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
@@ -967,7 +1001,8 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.repository.select_frigate_camera(self.target.target_id, self.camera_uuid)
         with patch("camadmiral.frigate.FRIGATE_RESTART_SETTLE_SECONDS", 0):
             result = reconcile_frigate(self.repository, self.target,
-                                       client_factory=lambda _: self.client)
+                                       client_factory=lambda _: self.client,
+                                       allow_restart=True)
         self.assertEqual(result["pending"], 0)
         restored = self.client.raw_config()["cameras"][key]
         self.assertTrue(restored["enabled"])
@@ -1284,7 +1319,23 @@ class FrigateReconciliationTests(unittest.TestCase):
         self.assertEqual(binding["status"], "applied")
         self.assertEqual(binding["applied_hash"], binding["desired_hash"])
 
-    def test_frigate_017_restarts_only_when_adding_second_configured_camera(self) -> None:
+    def test_frigate_017_second_camera_does_not_restart_without_permission(self):
+        self.client.current_config['cameras']['operator_camera'] = {'enabled': False}
+        self.client.drop_add_events = 1
+        for _ in range(3):
+            result = reconcile_frigate(self.repository, self.target,
+                client_factory=lambda _: self.client, verification_timeout=0)
+            self.assertEqual({'applied': 0, 'pending': 1}, result)
+        self.assertEqual(0, self.client.restart_calls)
+        self.assertIn(frigate_camera_key(self.camera_uuid), self.client.raw_config()['cameras'])
+
+    def test_repair_sync_never_restarts_for_second_camera(self):
+        self.client.current_config['cameras']['operator_camera'] = {'enabled': False}
+        full_sync_frigate(self.repository, self.target,
+            client_factory=lambda _: self.client)
+        self.assertEqual(0, self.client.restart_calls)
+
+    def test_frigate_017_restarts_for_second_camera_only_with_explicit_permission(self) -> None:
         self.client.current_config["cameras"]["operator_camera"] = {"enabled": False}
 
         with patch("camadmiral.frigate.time.sleep"):
@@ -1292,6 +1343,7 @@ class FrigateReconciliationTests(unittest.TestCase):
                 self.repository,
                 self.target,
                 client_factory=lambda _target: self.client,
+                allow_restart=True,
             )
 
         self.assertEqual(result, {"applied": 1, "pending": 0})

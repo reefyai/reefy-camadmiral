@@ -69,8 +69,11 @@ class ReleaseMetadataTests(unittest.TestCase):
                 with self.subTest(workflow=workflow, job=job_id):
                     selector = job["runs-on"]
                     if (workflow == 'stalled-snapshot.yml' and job_id == 'stall-recovery') or (workflow == 'release-gate.yml' and job_id == 'frigate-audio'):
-                        self.assertEqual(selector, ['self-hosted', 'Linux', 'X64', 'big-bird'])
                         self.assertIn('head.repo.full_name == github.repository', job['if'])
+                        self.assertIsInstance(selector, str)
+                        self.assertIn('inputs.github_hosted', selector)
+                        self.assertIn('["ubuntu-latest"]', selector)
+                        self.assertIn('["self-hosted","Linux","X64","big-bird"]', selector)
                         continue
                     self.assertIsInstance(selector, str)
                     self.assertIn('"self-hosted","Linux","X64","big-bird"', selector)
@@ -79,6 +82,23 @@ class ReleaseMetadataTests(unittest.TestCase):
                     self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", selector)
                     self.assertIn('["ubuntu-latest"]', selector)
         self.assertNotIn('tags: ["v*"]', gate)
+
+    def test_explicit_hosted_fallback_reaches_reusable_jobs_and_publication(self):
+        workflows = ROOT / '.github' / 'workflows'
+        gate = yaml.safe_load((workflows / 'release-gate.yml').read_text())
+        for job in ('runtime-resume', 'rtsp-retention'):
+            self.assertEqual('${{ inputs.github_hosted || false }}', gate['jobs'][job]['with']['github_hosted'])
+        for filename in ('rtsp-retention.yml', 'frigate-runtime-resume.yml', 'release.yml'):
+            document = yaml.safe_load((workflows / filename).read_text())
+            triggers = document.get('on', document.get(True))
+            event = 'workflow_dispatch' if filename == 'release.yml' else 'workflow_call'
+            self.assertEqual({'type': 'boolean', 'default': False}, {
+                key: triggers[event]['inputs']['github_hosted'][key] for key in ('type','default')})
+            for job in document['jobs'].values():
+                if 'runs-on' in job:
+                    self.assertIn('inputs.github_hosted', job['runs-on'])
+                    self.assertIn('["ubuntu-latest"]', job['runs-on'])
+                    self.assertIn('["self-hosted","Linux","X64","big-bird"]', job['runs-on'])
 
     def test_standalone_media_jobs_use_general_runners(self) -> None:
         for workflow in ("memory-pressure.yml", "relay-latency.yml"):

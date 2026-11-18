@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import time
 import urllib.parse
@@ -15,7 +16,7 @@ import uuid
 
 from .crypto import decrypt_password, encrypt_password
 from .frigate import FrigateApiError, FrigateClient, media_host_for_mode
-from .media import SnapshotError, probe_source, snapshot_frame, source_connection_revisions
+from .media import SnapshotError, probe_source, snapshot_frame, source_connection_revisions, video_sdp_signatures
 from .storage import _rtsp_source_key
 
 MAX_CAMERAS = 256
@@ -23,6 +24,9 @@ MAX_SOURCES = 8
 # A relay restart can reset RTP timing without changing any saved source URL.
 RELAY_RUNTIME_REVISION = uuid.uuid4().hex
 READER_RESTART_VERIFY_TIMEOUT_SECONDS = 180
+READER_RECOVERY_COOLDOWN_SECONDS = 300
+READER_RECOVERY_MAX_ATTEMPTS = 2
+READER_RECORDING_VERIFY_SECONDS = 30
 
 
 def digest(value):
@@ -883,6 +887,8 @@ def execute(repository, target, job_id, selected, keep_existing, inventory, reco
             row.update(state='active', status='applied', reason=None, configuration_status=None, phase=None, stream_index=None, stream_total=None, relay_runtime_revision=_relay_runtime_revision(repository))
             store.save_link(target.target_id, row['key'], row)
         except Exception as exc:
+            from .frigate_batch import _failure_event
+            _failure_event('row_failed', row.get('phase'), exc, row)
             row.update(status='error', reason=exc.code if isinstance(exc, FrigateApiError) else 'import_failed')
             link = store.links(target.target_id).get(row['key'])
             if link and link.get('state') in {'releasing', 'paused', 'applying', 'restored'}:
@@ -1055,6 +1061,14 @@ def _resume_owned_capture_pauses(repository, target, client, links, pending):
             'camera_uuid': row['camera_uuid']}, sort_keys=True), flush=True)
         # Keep both journals until all capture/record readers verify. An
         # uncertain ON reply is retried without dispatching another restart.
+        budget = row.setdefault("reader_recovery", {})
+        if budget.get("resume_attempts", 0) >= READER_RECOVERY_MAX_ATTEMPTS:
+            raise FrigateApiError("manual_restart_required")
+        if time.time() < budget.get("resume_retry_after", 0):
+            raise FrigateApiError("reader_recovery_cooldown")
+        budget.update(resume_attempts=budget.get("resume_attempts", 0) + 1,
+                      resume_retry_after=time.time() + READER_RECOVERY_COOLDOWN_SECONDS)
+        ImportStore(repository).save_link(target.target_id, key, row)
         client.set_runtime_camera_enabled(key, True)
         print('frigate-reader-recovery: ' + json.dumps({
             'event': 'owned_pause_resumed', 'at_epoch': time.time(),
@@ -1062,33 +1076,21 @@ def _resume_owned_capture_pauses(repository, target, client, links, pending):
 
 
 def _restart_imported_target(repository, target, client, links, trigger, *, reason="targeted_recovery_failed"):
+    # Background reconciliation must never restart the shared recorder. An
+    # existing journal may describe a restart already accepted by an old build;
+    # keep verifying that operation, but never dispatch a new one here.
+    if not trigger.get("target_restart"):
+        trigger.setdefault("reader_recovery", {})["blocked"] = True
+        ImportStore(repository).save_link(target.target_id, trigger["key"], trigger)
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'restart_blocked', 'at_epoch': time.time(),
+            'camera_uuid': trigger['camera_uuid'], 'reason': reason,
+        }, sort_keys=True), flush=True)
+        raise FrigateApiError("manual_restart_required")
     started = time.monotonic()
     store = ImportStore(repository)
     pending = trigger.get("target_restart")
     raw = client.raw_config()
-    if pending is None:
-        _guard_restart_runtime_controls(raw, client.config(), links)
-        configured = raw.get("go2rtc", {}).get("streams", {})
-        if raw.get("cameras", {}).get(trigger["key"], {}).get("ffmpeg", {}).get("inputs") != trigger["managed_camera"].get("ffmpeg", {}).get("inputs"):
-            raise FrigateApiError("import_source_conflict")
-        if any(configured.get(alias) != values for alias, values in trigger["managed_streams"].items()):
-            raise FrigateApiError("import_source_conflict")
-        offline_keys = {key for key, row in links.items()
-                        if _known_offline_required_roles(_camera(repository, row["camera_uuid"]))}
-        pending = {"started_before": client.service_started_at(), "raw_hash": digest(raw),
-                   "active_keys": sorted({trigger["key"]} | {key for key, stats in client.stats().items()
-                                       if key not in offline_keys and float(stats.get("camera_fps") or 0) > 0}),
-                   "runtime_revision": _relay_runtime_revision(repository),
-                   "address_revisions": {r["camera_uuid"]: repository.latest_camera_address_revision(r["camera_uuid"])
-                                         for r in links.values() if r.get("state") == "active"}}
-        # Save before dispatch: an uncertain reply must never cause a restart loop.
-        trigger["target_restart"] = pending
-        store.save_link(target.target_id, trigger["key"], trigger)
-        print('frigate-reader-recovery: ' + json.dumps({
-            'event': 'restart_requested', 'at_epoch': time.time(),
-            'camera_uuid': trigger['camera_uuid'], 'reason': reason,
-            'active_camera_count': len(pending['active_keys'])}, sort_keys=True), flush=True)
-        _request_restart(client)
     if digest(raw) != pending["raw_hash"]:
         raise FrigateApiError("import_source_conflict")
     deadline = time.monotonic() + READER_RESTART_VERIFY_TIMEOUT_SECONDS
@@ -1145,6 +1147,16 @@ def _restart_imported_target(repository, target, client, links, trigger, *, reas
 
 def _refresh_capture(repository, target, client, links, row):
     store = ImportStore(repository)
+    budget = row.setdefault("reader_recovery", {})
+    now = time.time()
+    if budget.get("blocked") or budget.get("attempts", 0) >= READER_RECOVERY_MAX_ATTEMPTS:
+        raise FrigateApiError("manual_restart_required")
+    if now < budget.get("retry_after", 0):
+        raise FrigateApiError("reader_recovery_cooldown")
+    # Persist before OFF: neither process restarts nor changing source revisions
+    # replenish a failed recovery's budget.
+    budget.update(attempts=budget.get("attempts", 0) + 1,
+                  retry_after=now + READER_RECOVERY_COOLDOWN_SECONDS)
     row["capture_resume_pending"] = True
     store.save_link(target.target_id, row["key"], row)
     try:
@@ -1155,9 +1167,15 @@ def _refresh_capture(repository, target, client, links, row):
         except FrigateApiError:
             if not row.get("target_restart"):
                 # A safety guard rejected global restart before dispatch.
-                client.set_runtime_camera_enabled(row["key"], True)
-                row.pop("capture_resume_pending", None)
-                store.save_link(target.target_id, row["key"], row)
+                try:
+                    client.set_runtime_camera_enabled(row["key"], True)
+                except FrigateApiError:
+                    # Keep the owned-pause journal for bounded resume retries;
+                    # a lost ON reply must not hide the required user action.
+                    pass
+                else:
+                    row.pop("capture_resume_pending", None)
+                    store.save_link(target.target_id, row["key"], row)
             raise
         return True
     error = None
@@ -1223,6 +1241,71 @@ def _reader_media_ready(client, row):
     return True
 
 
+def _reader_video_matches(client, row, camera, revisions):
+    signatures = getattr(revisions, 'video_signatures', {})
+    if not signatures:
+        return True
+    live = client.config().get('cameras', {}).get(row['key'], {})
+    roles = {'detect', 'record'} if live.get('record', {}).get('enabled', True) else {'detect'}
+    streams = _role_streams(camera)
+    runtime = client.runtime_streams()
+    for role in roles:
+        expected = signatures.get(streams[role]['stream_uuid'], set())
+        actual = set()
+        for producer in runtime.get(row['aliases'][role], {}).get('producers') or []:
+            if isinstance(producer, dict):
+                actual.update(video_sdp_signatures(producer.get('sdp')))
+        # Missing extradata is not a mismatch. When both sides publish SPS/PPS
+        # (or VPS), stale cached codec parameters must not be called healthy.
+        if expected and actual and not any(
+                a == b and (x is None or y is None or x == y)
+                for a, x in expected for b, y in actual):
+            return False
+    return True
+
+
+def _recording_verification(repository, target, row, epoch):
+    now = time.time()
+    verification = row.get('reader_recording_verification')
+    if not verification or verification.get('epoch') != epoch:
+        verification = {'epoch': epoch, 'since': now,
+                        'deadline': (verification or {}).get('deadline', now + READER_RECORDING_VERIFY_SECONDS)}
+        row['reader_recording_verification'] = verification
+        ImportStore(repository).save_link(target.target_id, row['key'], row)
+    return verification
+
+
+def _recording_output_state(repository, target, client, row, epoch):
+    camera = client.config().get('cameras', {}).get(row['key'], {})
+    record = camera.get('record', {})
+    if not record.get('enabled', True):
+        return 'ready'
+    now = time.time()
+    verification = _recording_verification(repository, target, row, epoch)
+    # Camera FPS and go2rtc bytes can stay healthy while record FFmpeg is
+    # stuck on a previous RTP timeline. Require a complete segment started
+    # after the observed revision; old buffered segments cannot acknowledge it.
+    for segment in client.recordings_since(row['key'], verification['since']):
+        try:
+            start, end = float(segment['start_time']), float(segment['end_time'])
+            size = float(segment.get('segment_size') or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (all(math.isfinite(value) for value in (start, end, size))
+                and start >= verification['since'] and end - start >= 2
+                and end <= now + 5 and size >= 0):
+            # Frigate reports rounded MiB; a small valid segment can have size 0.
+            return 'ready'
+    continuous = (float(record.get('continuous', {}).get('days') or 0) > 0
+                  or (float(record.get('retain', {}).get('days') or 0) > 0
+                      and record.get('retain', {}).get('mode', 'all') == 'all'))
+    # Quiet motion/event-only cameras need not retain a segment. Keep the
+    # revision unacknowledged until output exists, without pausing a healthy feed.
+    if not continuous or now < verification['deadline']:
+        return 'waiting'
+    return 'stalled'
+
+
 def _ack_source_recovery(repository, client, row, camera):
     # Our own pause may close the last upstream consumer and create another
     # connection. Acknowledge only after readers have resumed on that connection.
@@ -1231,6 +1314,7 @@ def _ack_source_recovery(repository, client, row, camera):
     if revision is not None:
         row['relay_source_revisions'] = revision
     row.pop('source_recovery_pending', None)
+    row.pop('reader_recording_verification', None)
 
 
 def _relay_runtime_revision(repository):
@@ -1325,6 +1409,9 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
     client = client or FrigateClient(target)
     runtime_revision = _relay_runtime_revision(repository)
     source_revisions = source_connection_revisions(repository.managed_stream_runtime_sources())
+    def reader_ready(row, camera):
+        return (_reader_media_ready(client, row)
+                and _reader_video_matches(client, row, camera, source_revisions))
     store = ImportStore(repository)
     selected = set(repository.selected_frigate_camera_uuids(target.target_id))
     links = store.links(target.target_id)
@@ -1360,13 +1447,48 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             host = host_resolver(mode) if host_resolver else _target_host(repository, target, inventory)
             _, desired_streams = build_managed(repository, row, host, saved_target.get('audio_mode', 'preserve'))
             raw = client.raw_config()
+            revision = repository.latest_camera_address_revision(row["camera_uuid"])
+            source_revision = _camera_source_revisions(client, row, camera, source_revisions)
+            recording_epoch = digest([runtime_revision, revision, source_revision])
+            if (row.get('capture_resume_pending')
+                    or revision != row.get('relay_address_revision')
+                    or runtime_revision != row.get('relay_runtime_revision')
+                    or (source_revision is not None
+                        and source_revision != row.get('relay_source_revisions'))):
+                # Start at observation, including while an owned pause is
+                # pending. Output created during operator recovery is already
+                # fresh for this revision; do not discard it on the next cycle.
+                _recording_verification(repository, target, row, recording_epoch)
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
                 break
+            if row.get("reader_recovery", {}).get("blocked") and not row.get("capture_resume_pending"):
+                if reader_ready(row, camera):
+                    output = _recording_output_state(repository, target, client, row, recording_epoch)
+                    if output == 'waiting':
+                        continue
+                    if output != 'ready':
+                        raise FrigateApiError("manual_restart_required")
+                    _ack_source_recovery(repository, client, row, camera)
+                    row["relay_address_revision"] = revision
+                    row["relay_runtime_revision"] = runtime_revision
+                    store.save_link(target.target_id, key, row)
+                    repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
+                    continue
+                raise FrigateApiError("manual_restart_required")
             if row.get("capture_resume_pending"):
                 # Recover a crash or ambiguous reply after our own runtime pause.
                 # Resume before any new refresh, even if source ownership changed.
-                if raw.get("cameras", {}).get(key, {}).get("enabled", True):
+                if (raw.get("cameras", {}).get(key, {}).get("enabled", True)
+                        and not client.config().get("cameras", {}).get(key, {}).get("enabled", True)):
+                    budget = row.setdefault("reader_recovery", {})
+                    if budget.get("resume_attempts", 0) >= READER_RECOVERY_MAX_ATTEMPTS:
+                        raise FrigateApiError("manual_restart_required")
+                    if time.time() < budget.get("resume_retry_after", 0):
+                        raise FrigateApiError("reader_recovery_cooldown")
+                    budget.update(resume_attempts=budget.get("resume_attempts", 0) + 1,
+                                  resume_retry_after=time.time() + READER_RECOVERY_COOLDOWN_SECONDS)
+                    store.save_link(target.target_id, key, row)
                     try:
                         client.set_runtime_camera_enabled(key, True)
                     except FrigateApiError:
@@ -1388,11 +1510,9 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # failed runtime update pending instead of retrying it inline
                 # and coupling it back to reader recovery.
                 continue
-            revision = repository.latest_camera_address_revision(row["camera_uuid"])
-            source_revision = _camera_source_revisions(client, row, camera, source_revisions)
             previous_sources = row.get('relay_source_revisions')
             source_changed = (source_revision is not None and previous_sources is not None
-                              and any(previous_sources.get(stream_uuid) != value for stream_uuid, value in source_revision.items()))
+                              and source_revision != previous_sources)
             configuration_changed = ((revision is not None and revision != row.get("relay_address_revision"))
                                      or row.get("relay_runtime_revision") != runtime_revision)
             pending = row.get('source_recovery_pending')
@@ -1400,10 +1520,14 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 row.pop('source_recovery_pending', None)
                 pending = None
             if pending and not configuration_changed:
-                if _reader_media_ready(client, row):
-                    _ack_source_recovery(repository, client, row, camera)
-                    store.save_link(target.target_id, key, row)
-                    repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
+                if reader_ready(row, camera):
+                    output = _recording_output_state(repository, target, client, row, recording_epoch)
+                    if output == 'ready':
+                        _ack_source_recovery(repository, client, row, camera)
+                        store.save_link(target.target_id, key, row)
+                        repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
+                    elif output == 'stalled':
+                        _restart_imported_target(repository, target, client, links, row, reason='recording_verification_timeout')
                 elif (time.monotonic() - pending['started'] >= 90
                       and not _known_offline_required_roles(camera)
                       and _relay_video_ready(repository, client, row, camera)):
@@ -1412,6 +1536,17 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # Let healthy peers recover while this camera initializes.
                 continue
             if configuration_changed or source_changed:
+                if reader_ready(row, camera):
+                    output = _recording_output_state(repository, target, client, row, recording_epoch)
+                    if output == 'ready':
+                        _ack_source_recovery(repository, client, row, camera)
+                        row["relay_address_revision"] = revision
+                        row["relay_runtime_revision"] = runtime_revision
+                        store.save_link(target.target_id, key, row)
+                        repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
+                        continue
+                    if output == 'waiting':
+                        continue
                 if _known_offline_required_roles(camera):
                     # Known source outages are not evidence of stuck capture.
                     # Leave the revision pending until ordinary health recovers.
@@ -1424,8 +1559,10 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # Replacing go2rtc aliases alone leaves active consumers orphaned.
                 if _refresh_capture(repository, target, client, links, row):
                     break
+                row.pop('reader_recording_verification', None)
                 row['source_recovery_pending'] = {'epoch': RELAY_RUNTIME_REVISION, 'started': time.monotonic()}
-                if _reader_media_ready(client, row):
+                if (reader_ready(row, camera)
+                        and _recording_output_state(repository, target, client, row, recording_epoch) == 'ready'):
                     _ack_source_recovery(repository, client, row, camera)
                 source_revision = None
                 row["relay_address_revision"] = revision

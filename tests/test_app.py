@@ -3313,6 +3313,7 @@ class FrigateRelayRecoverySerializationTests(unittest.TestCase):
             entered.set()
             return {"name": "Synthetic", "api_url": "http://frigate.example.test"}
         def recover(*args, **kwargs):
+            self.assertTrue(kwargs['allow_restart'])
             ownership.append(media.locked())
             called.set()
         repository.frigate_target.side_effect = selected
@@ -3345,6 +3346,7 @@ class FrigateRelayRecoverySerializationTests(unittest.TestCase):
             entered.set()
             return ["synthetic-camera"]
         def recover(*args, **kwargs):
+            self.assertFalse(kwargs['allow_restart'])
             ownership.append(media.locked())
             called.set()
         repository.selected_frigate_camera_uuids.side_effect = selected
