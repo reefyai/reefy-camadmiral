@@ -562,6 +562,7 @@ def assert_mobile_settings(page: Page) -> None:
         "pending_until": {},
         "address_mode": "lan",
         "synced_modes": [],
+        "hold_initial_sync": True,
     }
 
     def synthetic_frigate_targets(route) -> None:
@@ -602,7 +603,8 @@ def assert_mobile_settings(page: Page) -> None:
             if camera_uuid in selected:
                 status = (
                     "pending"
-                    if time.monotonic() < pending_until.get(camera_uuid, 0)
+                    if (sync_state["hold_initial_sync"]
+                        or time.monotonic() < pending_until.get(camera_uuid, 0))
                     else "applied"
                 )
             adoption["frigate"] = [
@@ -737,6 +739,10 @@ def assert_mobile_settings(page: Page) -> None:
         or not str(spinner_metrics["flex"]).startswith("0 0")
     ):
         raise UiScenarioFailure(f"Sync spinner geometry is distorted: {spinner_metrics}")
+    # Keep the mocked operation pending until its progress UI is measured.
+    # A fixed two-second delay can remove the spinner between visibility and
+    # geometry reads on a loaded runner. Assertions and geometry stay exact.
+    sync_state["hold_initial_sync"] = False
     expect(modal.locator(".frigate-camera-state.applied")).to_have_text(
         "Synced", timeout=10_000
     )

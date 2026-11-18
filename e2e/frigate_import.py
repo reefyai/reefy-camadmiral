@@ -266,6 +266,7 @@ def driver(stage):
         # Native Frigate restarts can retain OFF for more than one managed
         # reader. Complete the explicit operator action for these test-owned
         # saved-enabled cameras, without changing background retry limits.
+        sys.path.insert(0, '/opt/camadmiral')
         from camadmiral.frigate import FrigateClient, FrigateTarget
         operator = FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
             'http://frigate:5000'))
