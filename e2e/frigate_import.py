@@ -263,12 +263,24 @@ def driver(stage):
             service = frigate('/stats')['service']
             return service['last_updated'] - service['uptime'] > before + 1
         wait_for('operator restart completed', restarted, timeout=180)
-        # Native Frigate restarts can retain OFF. Model the operator enabling
-        # only this test-owned camera; background retry limits remain intact.
-        if not frigate('/config')['cameras']['authenticated_camera'].get('enabled', True):
-            from camadmiral.frigate import FrigateClient, FrigateTarget
-            FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
-                'http://frigate:5000')).set_runtime_camera_enabled('authenticated_camera', True)
+        # Native Frigate restarts can retain OFF for more than one managed
+        # reader. Complete the explicit operator action for these test-owned
+        # saved-enabled cameras, without changing background retry limits.
+        from camadmiral.frigate import FrigateClient, FrigateTarget
+        operator = FrigateClient(FrigateTarget('manual-test', 'Synthetic operator recovery',
+            'http://frigate:5000'))
+        import yaml
+        saved = yaml.safe_load(frigate('/config/raw'))
+        live = frigate('/config')['cameras']
+        for key in ('operator_camera', 'matched_camera', 'authenticated_camera'):
+            if saved['cameras'][key].get('enabled', True) and not live[key].get('enabled', True):
+                operator.set_runtime_camera_enabled(key, True)
+        # Repair sync is an explicit operator action and cannot restart the
+        # recorder. It also avoids waiting an extra idle background interval
+        # to observe the manual recovery's source generation.
+        full_sync_when_idle(state['target_id'])
+        assert fault['restart_requests'] + 1 == json.load(urllib.request.urlopen(
+            'http://camadmiral:20017/__fault__/status', timeout=10))['restart_requests'], 'Repair sync restarted Frigate'
         service = frigate('/stats')['service']
         state['role_service_started'] = service['last_updated'] - service['uptime']
         with urllib.request.urlopen('http://camadmiral:20017/__fault__/status', timeout=10) as response:
