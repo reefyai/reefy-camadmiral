@@ -8,9 +8,12 @@ import subprocess
 import sys
 import time
 
-# Match the established Reefy CI policy for interrupted ISP transfers.
+# Preserve six transport attempts and the existing worst-case total budget.
+# A cold multi-GB image may need more than 90 seconds to write/extract layers;
+# canceling that work repeatedly increases disk contention in parallel labs.
 ATTEMPTS = 6
-TIMEOUT = 90
+TIMEOUT = 300
+TOTAL_TIMEOUT = 6 * 90 + sum(5 * attempt for attempt in range(1, 6))
 
 
 def transient_download_failure(detail):
@@ -29,26 +32,35 @@ def transient_download_failure(detail):
 
 
 def pull_image(docker, image):
+    command = [*docker, 'pull', image]
+    deadline = time.monotonic() + TOTAL_TIMEOUT
+    failure = None
     for attempt in range(1, ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise failure or subprocess.TimeoutExpired(command, TOTAL_TIMEOUT)
         started = time.monotonic()
         try:
-            result = subprocess.run([*docker, 'pull', image], capture_output=True, text=True, timeout=TIMEOUT)
-        except subprocess.TimeoutExpired:
-            status = 'timeout'
-            if attempt == ATTEMPTS:
-                raise
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=min(TIMEOUT, remaining))
+        except subprocess.TimeoutExpired as exc:
+            status, failure = 'timeout', exc
         else:
             print(result.stdout, end='', flush=True)
             print(result.stderr, end='', file=sys.stderr, flush=True)
-            status = 'verified' if result.returncode == 0 else 'failed'
             if result.returncode == 0:
                 return
-            if attempt == ATTEMPTS or not transient_download_failure(result.stdout + '\n' + result.stderr):
-                raise subprocess.CalledProcessError(result.returncode, result.args)
+            status = 'failed'
+            failure = subprocess.CalledProcessError(result.returncode, result.args)
+            if not transient_download_failure(result.stdout + '\n' + result.stderr):
+                raise failure
+        backoff = 5 * attempt
+        if attempt == ATTEMPTS or deadline - time.monotonic() <= backoff:
+            raise failure
         print('CI image transfer retry: ' + json.dumps({'image': image, 'attempt': attempt,
               'status': status, 'elapsed_seconds': round(time.monotonic() - started, 1),
-              'next_attempt': attempt + 1, 'backoff_seconds': 5 * attempt}), flush=True)
-        time.sleep(5 * attempt)
+              'next_attempt': attempt + 1, 'backoff_seconds': backoff}), flush=True)
+        time.sleep(backoff)
 
 
 def literal_build_images(build):

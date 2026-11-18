@@ -17,7 +17,7 @@ class ImageRetryTests(unittest.TestCase):
         run.side_effect=[self.result(1,'local error: tls: bad record MAC'),self.result()]
         pull_image(['synthetic-docker','--host','unix:///synthetic-job.sock'],'synthetic/image:1')
         self.assertEqual(run.call_count,2);sleep.assert_called_once_with(5)
-        self.assertTrue(all(c.kwargs['timeout']==90 for c in run.call_args_list))
+        self.assertTrue(all(c.kwargs['timeout']==300 for c in run.call_args_list))
 
     @patch('scripts.ci_image_retry.time.sleep')
     @patch('scripts.ci_image_retry.subprocess.run')
@@ -42,6 +42,62 @@ class ImageRetryTests(unittest.TestCase):
         run.side_effect=subprocess.TimeoutExpired(['synthetic-docker'],90)
         with self.assertRaises(subprocess.TimeoutExpired):pull_image(['synthetic-docker'],'synthetic/image:1')
         self.assertEqual(run.call_count,6)
+
+    def test_slow_healthy_layer_acquisition_reproduces_old_deadline_and_completes_once(self):
+        from scripts import ci_image_retry
+        def exercise(timeout):
+            clock = [0.0]
+            def transfer(*args, **kwargs):
+                clock[0] += min(150, kwargs['timeout'])
+                if kwargs['timeout'] < 150:
+                    raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
+                return self.result()
+            with patch.object(ci_image_retry, 'TIMEOUT', timeout), \
+                 patch.object(ci_image_retry.time, 'monotonic', side_effect=lambda: clock[0]), \
+                 patch.object(ci_image_retry.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                 patch.object(ci_image_retry.subprocess, 'run', side_effect=transfer) as run:
+                if timeout == 90:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        pull_image(['synthetic-docker'], 'synthetic/large-image:1')
+                    self.assertEqual(6, run.call_count)
+                else:
+                    pull_image(['synthetic-docker'], 'synthetic/large-image:1')
+                    self.assertEqual(1, run.call_count)
+                    self.assertEqual(150, clock[0])
+        exercise(90)
+        exercise(ci_image_retry.TIMEOUT)
+
+    def test_long_timeouts_cannot_extend_the_original_total_budget(self):
+        from scripts import ci_image_retry
+        clock = [0.0]
+        def expires(*args, **kwargs):
+            clock[0] += kwargs['timeout']
+            raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
+        with patch.object(ci_image_retry.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(ci_image_retry.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+             patch.object(ci_image_retry.subprocess, 'run', side_effect=expires) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                pull_image(['synthetic-docker'], 'synthetic/large-image:1')
+        self.assertEqual(2, run.call_count)
+        self.assertLessEqual(clock[0], 6 * 90 + 5 + 10 + 15 + 20 + 25)
+
+    def test_final_attempt_uses_only_the_remaining_acquisition_budget(self):
+        from scripts import ci_image_retry
+        clock, limits = [0.0], []
+        def transfer(*args, **kwargs):
+            limits.append(kwargs['timeout'])
+            if len(limits) == 2:
+                clock[0] += 275
+                return self.result(1, 'unexpected EOF')
+            clock[0] += kwargs['timeout']
+            raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
+        with patch.object(ci_image_retry.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(ci_image_retry.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+             patch.object(ci_image_retry.subprocess, 'run', side_effect=transfer):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                pull_image(['synthetic-docker'], 'synthetic/large-image:1')
+        self.assertEqual([300, 300, 25], limits)
+        self.assertEqual(615, clock[0])
 
     @patch('scripts.ci_image_retry.subprocess.run')
     def test_non_start_commands_are_not_replayed_or_prefetched(self, run):

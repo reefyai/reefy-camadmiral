@@ -729,3 +729,12 @@ hashes. Uncertain ON acknowledgements keep the journal for verification/retry,
 without dispatching another restart. Completion still requires the existing
 capture and record-reader checks. Runtime pause/restore diagnostics omit source
 URLs and credentials.
+
+
+Cold Docker pulls retain the existing 615-second total acquisition budget and
+six-attempt transport limit. Each attempt may use up to five minutes within that
+budget so a healthy multi-GB layer write/extraction is not canceled every 90
+seconds under parallel disk load. Access, trust, manifest, and disk-space errors
+still fail immediately. Builds, startup mutations, readiness, and test assertions
+execute once. Unit coverage reproduces the old deadline failure with a 150-second
+healthy acquisition, verifies one successful attempt, and bounds cumulative waits.
