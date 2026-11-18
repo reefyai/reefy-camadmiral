@@ -749,7 +749,20 @@ with sqlite3.connect('file:/config/frigate.db?mode=ro',uri=True) as db:
             page = browser.new_page(http_credentials={'username': 'admin', 'password': 'synthetic-e2e-admin-password'})
             try:
                 page.goto(base + '/settings/integrations')
-                page.get_by_role('button', name='Import from Frigate', exact=True).click()
+                # Preview is serialized behind ongoing recovery. Await this
+                # single read before querying controls that it creates; do not
+                # replay the import or relax any media-readiness assertion.
+                with page.expect_response(lambda response:
+                        response.request.method == 'GET'
+                        and '/internal/frigate-targets/' in response.url
+                        and response.url.endswith('/import'),
+                        timeout=120000) as preview_response:
+                    page.get_by_role('button', name='Import from Frigate', exact=True).click()
+                response = preview_response.value
+                assert response.status == 200, 'External-reader preview failed'
+                preview = response.json()
+                external = next(row for row in preview['cameras'] if row['key'] == 'external_camera')
+                assert external['can_import'], external
                 page.get_by_label('Import Synthetic shared source', exact=True).check()
                 page.get_by_label('Allow Frigate restart').check()
                 with page.expect_response(lambda r: r.request.method == 'POST' and '/import/' in r.url) as attempt:
