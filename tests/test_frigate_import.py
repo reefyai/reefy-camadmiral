@@ -132,6 +132,21 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(restarts, self.client.restart_calls)
         self.assertEqual('new-control-epoch:initial', ImportStore(self.repo).links(self.target.target_id)['legacy_entrance']['relay_runtime_revision'])
 
+    def test_import_failure_diagnostics_report_phase_without_exception_secrets(self):
+        import contextlib
+        import io
+        job = self.preview()
+        output = io.StringIO()
+        with patch.object(self.repo, 'adoption_for_candidate', side_effect=RuntimeError('rtsp://secret:password@camera/stream')), contextlib.redirect_stdout(output):
+            result = self.execute(job)
+        self.assertEqual('import_failed', result['cameras'][0]['reason'])
+        diagnostic = output.getvalue()
+        self.assertIn('"event": "row_failed"', diagnostic)
+        self.assertIn('"phase": "checking_configuration"', diagnostic)
+        self.assertIn('"error_type": "RuntimeError"', diagnostic)
+        self.assertNotIn('secret', diagnostic)
+        self.assertNotIn('password', diagnostic)
+
     def test_failed_pause_is_latched_and_never_restarts_shared_recorder(self):
         from camadmiral.frigate_import import _refresh_capture
         self.execute(self.preview())

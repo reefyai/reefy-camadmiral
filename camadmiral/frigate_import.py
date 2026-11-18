@@ -885,6 +885,8 @@ def execute(repository, target, job_id, selected, keep_existing, inventory, reco
             row.update(state='active', status='applied', reason=None, configuration_status=None, phase=None, stream_index=None, stream_total=None, relay_runtime_revision=_relay_runtime_revision(repository))
             store.save_link(target.target_id, row['key'], row)
         except Exception as exc:
+            from .frigate_batch import _failure_event
+            _failure_event('row_failed', row.get('phase'), exc, row)
             row.update(status='error', reason=exc.code if isinstance(exc, FrigateApiError) else 'import_failed')
             link = store.links(target.target_id).get(row['key'])
             if link and link.get('state') in {'releasing', 'paused', 'applying', 'restored'}:

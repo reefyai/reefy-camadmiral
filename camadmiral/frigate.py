@@ -360,6 +360,13 @@ class FrigateClient:
         except (ValueError, UnicodeError) as exc:
             raise FrigateApiError("invalid_response") from exc
         except (OSError, TimeoutError, WebSocketException) as exc:
+            # Report acknowledgement stages without camera names, URLs or
+            # exception text, which can contain upstream credentials.
+            print("frigate-runtime-control: " + json.dumps({
+                "event": "acknowledgement_failed", "enabled": enabled,
+                "error_type": type(exc).__name__,
+                "missing": sorted(topic[len(camera_key) + 1:] for topic in expected),
+            }, sort_keys=True), flush=True)
             raise FrigateApiError("target_unavailable") from exc
 
     def restart(self) -> None:

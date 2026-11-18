@@ -366,6 +366,22 @@ class FrigateTargetTests(unittest.TestCase):
         self.assertEqual(2, connection.recv.call_count)
         self.assertEqual("ws://frigate.example.test/ws", connect.call_args.args[0])
 
+    def test_runtime_timeout_reports_only_missing_acknowledgement_stages(self):
+        import contextlib
+        client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
+        connection = Mock()
+        connection.recv.side_effect = [json.dumps({"topic": "secret/enabled/state", "payload": "OFF"}), TimeoutError("rtsp://user:password@camera/stream")]
+        output = io.StringIO()
+        with patch("camadmiral.frigate.websocket_connect") as connect, contextlib.redirect_stdout(output):
+            connect.return_value.__enter__.return_value = connection
+            with self.assertRaises(FrigateApiError):
+                client.set_runtime_camera_enabled("secret", False)
+        diagnostic = json.loads(output.getvalue().split(": ", 1)[1])
+        self.assertEqual(["status/detect", "status/record"], diagnostic["missing"])
+        self.assertEqual("TimeoutError", diagnostic["error_type"])
+        self.assertNotIn("secret", output.getvalue())
+        self.assertNotIn("password", output.getvalue())
+
     def test_runtime_control_rejects_missing_ack_and_invalid_messages(self):
         client = FrigateClient(FrigateTarget("synthetic", "Synthetic", "http://frigate.example.test"))
         for response, code in ((TimeoutError(), "target_unavailable"), ("not-json", "invalid_response"), ("[]", "invalid_response")):
