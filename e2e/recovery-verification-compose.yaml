@@ -3,6 +3,7 @@ services:
     image: ${RECOVERY_TEST_IMAGE}
     entrypoint: [/bin/sh, /e2e/start-camadmiral.sh]
     environment:
+      PYTHONPATH: /opt/camadmiral
       CAMADMIRAL_GO2RTC_URL: http://127.0.0.1:1985
       CAMADMIRAL_GO2RTC_RTSP_URL: rtsp://127.0.0.1:18555
       CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
