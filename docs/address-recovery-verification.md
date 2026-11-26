@@ -47,6 +47,13 @@ period must not become the old baseline later. The corresponding component
 sequence and the final legacy-identity E2E reproduce that ordering failure on
 unchanged source `1f4c9ab084ca41f155e10911d2c700502b8a649d`.
 An owned capture resume also takes priority over recorder-epoch sampling: a temporarily unavailable statistics response must not leave a camera paused. The corresponding failure control reproduces a retained OFF state on the same unchanged source.
+The imported-identity driver's operator-aware readiness loop also requires the
+expected validated physical address, both identity owners and all enabled
+profiles before leaving that loop. A prior address or tentative profile rewrite
+cannot count as recovery. SQLite-backed checkpoint regressions reproduce the
+premature exit on unchanged source
+`47b6b2d811218493c1aa665a7cc66852a158c998`; negative identity, health and partial
+ownership controls remain mandatory. The overall 240-second budget is unchanged.
 No background recorder restart is added.
 Reader diagnostics report observation availability, codec-parameter counts,
 recording-window bounds and the segment that verified recovery, without SDP or

@@ -5,6 +5,7 @@ model DHCP after a power event; the application must discover and validate them.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import math
 import os
@@ -114,6 +115,21 @@ def reader_recovery_ready(readers, camera_ids, address_revisions, previous_runti
     return bool(camera_ids) and len(generations) == 1
 
 
+def physical_recovery_ready(address, camera_ids, sources, current, periods, health):
+    # Profile addresses are tentative until relay validation commits identity.
+    return (bool(camera_ids) and len(sources) == 4
+            and all(row['source_host'] == address for row in sources)
+            and set(current) == set(camera_ids.values())
+            and all(link.get('ip') == address
+                    and link.get('onvif', {}).get('endpoint_reference') == ENDPOINT
+                    for link in current.values())
+            and len(health) == 4
+            and all(row['health_status'] == 'healthy' and row['probe_status'] == 'ready' for row in health)
+            and {row['camera_uuid'] for row in periods
+                 if row['ip_address'] == address and row['onvif_identity'] == ENDPOINT}
+                == set(camera_ids.values()))
+
+
 def driver(stage, readiness_timeout=240, expected_start=None):
     import yaml
     from scenarios import (consumer_directory, directory_signature, request_json,
@@ -124,7 +140,7 @@ def driver(stage, readiness_timeout=240, expected_start=None):
             return json.load(response)
 
     def sql(query, parameters=()):
-        with sqlite3.connect('file:' + DATABASE + '?mode=ro', uri=True) as connection:
+        with closing(sqlite3.connect('file:' + DATABASE + '?mode=ro', uri=True)) as connection:
             connection.row_factory = sqlite3.Row
             return [dict(row) for row in connection.execute(query, parameters)]
 
@@ -251,12 +267,18 @@ def driver(stage, readiness_timeout=240, expected_start=None):
         assert changed['status'] == 'identity_changed' and primary not in links()
         return
     if stage.startswith('reader-progress'):
+        restarted = stage.startswith('reader-progress-restarted-')
+        address = stage.removeprefix('reader-progress-restarted-' if restarted else 'reader-progress-')
         readers = reader_links(state['target'])
         revisions = {row['camera_uuid']: row['event_uuid'] for row in sql(
             'SELECT camera_uuid,event_uuid FROM camera_address_events ORDER BY changed_at,rowid')}
-        previous = state['reader_runtime_revisions'] if stage.endswith('-restarted') else None
+        previous = state['reader_runtime_revisions'] if restarted else None
         ready = (not state.get('reader_recovery_tracking') or
                  reader_recovery_ready(readers, state['camera_ids'], revisions, previous))
+        ready = ready and physical_recovery_ready(address, state['camera_ids'],
+            sql('SELECT source_host FROM onvif_profiles'), links(),
+            sql('SELECT camera_uuid,ip_address,onvif_identity FROM camera_identity_periods WHERE ended_at IS NULL'),
+            sql('SELECT health_status,probe_status FROM managed_streams WHERE enabled=1'))
         errors = sql('SELECT sync_error FROM frigate_camera_selections WHERE target_id=?', (state['target'],))
         try:
             service = frigate('/stats')['service']
@@ -308,11 +330,7 @@ def driver(stage, readiness_timeout=240, expected_start=None):
                     return False
             # Source hosts are written before relay validation, and may still
             # roll back. Wait for the validated identity commit for both owners.
-            return (len(sources) == 4 and all(row['source_host'] == address for row in sources)
-                    and len(current) == 2 and all(link.get('ip') == address for link in current.values())
-                    and len(health) == 4 and all(row['health_status'] == 'healthy' and row['probe_status'] == 'ready' for row in health)
-                    and {row['camera_uuid'] for row in periods if row['ip_address'] == address and row['onvif_identity'] == ENDPOINT}
-                        == set(state['camera_ids'].values()))
+            return physical_recovery_ready(address, state['camera_ids'], sources, current, periods, health)
         wait_for('both logical channels recover through physical identity', recovered, timeout=readiness_timeout)
         current_links = links()
         assert state['initial_identity_learned'], 'Literal-IP import did not learn stable physical identity'
@@ -417,7 +435,7 @@ with sqlite3.connect('/config/frigate.db') as db:
         # never attributed to automatic reconciliation. Playback assertions stay.
         deadline, manual, started = time.monotonic() + 240, False, None
         while True:
-            progress = json.loads(stage('reader-progress-restarted' if restarted else 'reader-progress'))
+            progress = json.loads(stage(('reader-progress-restarted-' if restarted else 'reader-progress-') + address))
             current = progress['service_started']
             if current is not None:
                 if started is None:
