@@ -1255,11 +1255,16 @@ def _reader_video_matches(client, row, camera, revisions):
         for producer in runtime.get(row['aliases'][role], {}).get('producers') or []:
             if isinstance(producer, dict):
                 actual.update(video_sdp_signatures(producer.get('sdp')))
+        matches = any(a == b and (x is None or y is None or x == y)
+                      for a, x in expected for b, y in actual) if expected and actual else None
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'reader_video_parameters', 'camera_uuid': row['camera_uuid'],
+            'role': role, 'expected_count': len(expected), 'actual_count': len(actual),
+            'matches': matches,
+        }, sort_keys=True), flush=True)
         # Missing extradata is not a mismatch. When both sides publish SPS/PPS
         # (or VPS), stale cached codec parameters must not be called healthy.
-        if expected and actual and not any(
-                a == b and (x is None or y is None or x == y)
-                for a, x in expected for b, y in actual):
+        if matches is False:
             return False
     return True
 
@@ -1267,12 +1272,69 @@ def _reader_video_matches(client, row, camera, revisions):
 def _recording_verification(repository, target, row, epoch):
     now = time.time()
     verification = row.get('reader_recording_verification')
+    if (verification and not row.get('capture_resume_pending')
+            and not row.get('source_recovery_pending') and not row.get('reader_recovery')
+            and verification.get('epoch') == digest([
+                row.get('relay_runtime_revision'), row.get('relay_address_revision'),
+                row.get('relay_source_revisions')])):
+        # An older build opened this window while learning its first producer,
+        # then acknowledged that same producer without clearing the window.
+        # It is an already-acknowledged baseline, not an active recovery budget.
+        verification = None
     if not verification or verification.get('epoch') != epoch:
         verification = {'epoch': epoch, 'since': now,
                         'deadline': (verification or {}).get('deadline', now + READER_RECORDING_VERIFY_SECONDS)}
         row['reader_recording_verification'] = verification
         ImportStore(repository).save_link(target.target_id, row['key'], row)
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'recording_window_observed', 'camera_uuid': row['camera_uuid'],
+            'since': verification['since'], 'deadline': verification['deadline'],
+        }, sort_keys=True), flush=True)
     return verification
+
+
+def _recording_epoch(camera, runtime_revision, address_revision):
+    # Recovery itself can reconnect a producer. That transport identity must
+    # not move the recording floor past already-fresh output on every cycle.
+    # A real relay/address or observed format change still invalidates old media.
+    formats = [(stream['stream_uuid'], stream.get('video_codec') or stream.get('encoding'),
+                stream.get('probed_width') or stream.get('width'),
+                stream.get('probed_height') or stream.get('height'))
+               for stream in sorted(camera['streams'], key=lambda item: item['stream_uuid'])
+               if stream.get('roles')]
+    return digest([runtime_revision, address_revision, formats])
+
+
+def _address_capture_ready(repository, target, client, row, revision):
+    if revision is None or revision == row.get('relay_address_revision'):
+        return True
+    observed = row.get('address_capture_verification')
+    if not observed or observed.get('revision') != revision:
+        # Keep this recorder epoch across control-process replacements, format
+        # observations and exhausted retry budgets. Only a real recorder restart
+        # can prove that it has recreated capture without our targeted refresh.
+        row['address_capture_verification'] = {
+            'revision': revision, 'started_before': client.service_started_at()}
+        ImportStore(repository).save_link(target.target_id, row['key'], row)
+        return False
+    if client.service_started_at() <= observed['started_before'] + 2:
+        return False
+    changed = False
+    if 'restart_observed_at' not in observed:
+        observed['restart_observed_at'] = time.time()
+        changed = True
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'address_capture_restart_observed', 'camera_uuid': row['camera_uuid'],
+        }, sort_keys=True), flush=True)
+    verification = row.get('reader_recording_verification')
+    if verification and verification['since'] < observed['restart_observed_at']:
+        # Require output after observing the new recorder, never an old-format
+        # segment from before the operator action. Preserve the original budget.
+        verification['since'] = observed['restart_observed_at']
+        changed = True
+    if changed:
+        ImportStore(repository).save_link(target.target_id, row['key'], row)
+    return True
 
 
 def _recording_output_state(repository, target, client, row, epoch):
@@ -1295,6 +1357,10 @@ def _recording_output_state(repository, target, client, row, epoch):
                 and start >= verification['since'] and end - start >= 2
                 and end <= now + 5 and size >= 0):
             # Frigate reports rounded MiB; a small valid segment can have size 0.
+            print('frigate-reader-recovery: ' + json.dumps({
+                'event': 'recording_verified', 'camera_uuid': row['camera_uuid'],
+                'since': verification['since'], 'segment_start': start, 'segment_end': end,
+            }, sort_keys=True), flush=True)
             return 'ready'
     continuous = (float(record.get('continuous', {}).get('days') or 0) > 0
                   or (float(record.get('retain', {}).get('days') or 0) > 0
@@ -1315,6 +1381,7 @@ def _ack_source_recovery(repository, client, row, camera):
         row['relay_source_revisions'] = revision
     row.pop('source_recovery_pending', None)
     row.pop('reader_recording_verification', None)
+    row.pop('address_capture_verification', None)
 
 
 def _relay_runtime_revision(repository):
@@ -1410,8 +1477,17 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
     runtime_revision = _relay_runtime_revision(repository)
     source_revisions = source_connection_revisions(repository.managed_stream_runtime_sources())
     def reader_ready(row, camera):
-        return (_reader_media_ready(client, row)
-                and _reader_video_matches(client, row, camera, source_revisions))
+        media_ready = _reader_media_ready(client, row)
+        source_observed = _camera_source_revisions(client, row, camera, source_revisions) is not None
+        video_matches = (_reader_video_matches(client, row, camera, source_revisions)
+                         if media_ready and source_observed else None)
+        if not (media_ready and source_observed and video_matches):
+            print('frigate-reader-recovery: ' + json.dumps({
+                'event': 'reader_verification_pending', 'camera_uuid': row['camera_uuid'],
+                'media_ready': media_ready, 'source_observed': source_observed,
+                'video_matches': video_matches,
+            }, sort_keys=True), flush=True)
+        return bool(media_ready and source_observed and video_matches)
     store = ImportStore(repository)
     selected = set(repository.selected_frigate_camera_uuids(target.target_id))
     links = store.links(target.target_id)
@@ -1449,21 +1525,41 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             raw = client.raw_config()
             revision = repository.latest_camera_address_revision(row["camera_uuid"])
             source_revision = _camera_source_revisions(client, row, camera, source_revisions)
-            recording_epoch = digest([runtime_revision, revision, source_revision])
+            recording_epoch = _recording_epoch(camera, runtime_revision, revision)
+            # Journal the recorder before waiting for upstream observations.
+            # An operator can restart it during that grace period, prompted by
+            # another camera; a later sample must not adopt the new epoch as old.
+            # Owned resumes and already-accepted restarts must finish even if
+            # recorder statistics are not ready to supply an epoch yet.
+            address_capture_ready = (True if row.get("target_restart") or row.get("capture_resume_pending") else
+                _address_capture_ready(repository, target, client, row, revision))
             if (row.get('capture_resume_pending')
                     or revision != row.get('relay_address_revision')
                     or runtime_revision != row.get('relay_runtime_revision')
                     or (source_revision is not None
+                        and row.get('relay_source_revisions') is not None
                         and source_revision != row.get('relay_source_revisions'))):
                 # Start at observation, including while an owned pause is
                 # pending. Output created during operator recovery is already
                 # fresh for this revision; do not discard it on the next cycle.
-                _recording_verification(repository, target, row, recording_epoch)
+                verification = _recording_verification(repository, target, row, recording_epoch)
+                if (source_revision is None and not row.get('capture_resume_pending')
+                        and not row.get('target_restart')
+                        and not row.get('reader_recovery', {}).get('blocked')
+                        and time.time() < verification['deadline']):
+                    # A brief observation gap is not proof that capture is
+                    # stuck. Allow the existing verification window for new
+                    # upstream consumers to appear before pausing any reader.
+                    print('frigate-reader-recovery: ' + json.dumps({
+                        'event': 'source_observation_waiting', 'camera_uuid': row['camera_uuid'],
+                        'deadline': verification['deadline'],
+                    }, sort_keys=True), flush=True)
+                    continue
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
                 break
             if row.get("reader_recovery", {}).get("blocked") and not row.get("capture_resume_pending"):
-                if reader_ready(row, camera):
+                if address_capture_ready and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
                     if output == 'waiting':
                         continue
@@ -1513,7 +1609,8 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             previous_sources = row.get('relay_source_revisions')
             source_changed = (source_revision is not None and previous_sources is not None
                               and source_revision != previous_sources)
-            configuration_changed = ((revision is not None and revision != row.get("relay_address_revision"))
+            address_changed = revision is not None and revision != row.get("relay_address_revision")
+            configuration_changed = (address_changed
                                      or row.get("relay_runtime_revision") != runtime_revision)
             pending = row.get('source_recovery_pending')
             if pending and pending.get('epoch') != RELAY_RUNTIME_REVISION:
@@ -1536,7 +1633,11 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # Let healthy peers recover while this camera initializes.
                 continue
             if configuration_changed or source_changed:
-                if reader_ready(row, camera):
+                # New relay SDP and fresh segment timestamps do not prove that
+                # an existing record FFmpeg discarded its old codec metadata.
+                # Recreate capture once for a committed physical address move.
+                # A plain transport/control reconnect retains the healthy path.
+                if address_capture_ready and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
                     if output == 'ready':
                         _ack_source_recovery(repository, client, row, camera)
@@ -1557,6 +1658,10 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                     continue
                 # Runtime pause stops both record and detect FFmpeg consumers.
                 # Replacing go2rtc aliases alone leaves active consumers orphaned.
+                if address_changed:
+                    print('frigate-reader-recovery: ' + json.dumps({
+                        'event': 'address_capture_refresh', 'camera_uuid': row['camera_uuid'],
+                    }, sort_keys=True), flush=True)
                 if _refresh_capture(repository, target, client, links, row):
                     break
                 row.pop('reader_recording_verification', None)
@@ -1570,6 +1675,10 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 store.save_link(target.target_id, key, row)
             if source_revision is not None and source_revision != row.get('relay_source_revisions'):
                 row['relay_source_revisions'] = source_revision
+                if previous_sources is None and not configuration_changed and not pending:
+                    # Learning the first connection is a baseline, not a failed
+                    # recovery whose deadline should constrain a future move.
+                    row.pop('reader_recording_verification', None)
                 store.save_link(target.target_id, key, row)
             repository.set_frigate_selection_error(target.target_id, row['camera_uuid'], None)
         except FrigateApiError as exc:

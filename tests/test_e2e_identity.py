@@ -6,13 +6,14 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "e2e"))
 
 from e2e import run as e2e_run
+from e2e import frigate_identity
 from e2e import faults
 from e2e import scenarios
 from e2e.frigate_identity import decoded_frame_hash, recording_clip_interval, recording_for_playback, recording_playback_interval, reader_recovery_ready, FRIGATE_CONTROL_FAULT_SCRIPT
@@ -131,6 +132,85 @@ class FrigateReaderReadinessTests(unittest.TestCase):
         self.assertFalse(reader_recovery_ready(self.rows, self.ids, {}))
         self.rows["first"].pop("relay_runtime_revision")
         self.assertFalse(reader_recovery_ready(self.rows, self.ids, self.revisions))
+
+
+class IdentityAddressCheckpointTests(unittest.TestCase):
+    def checkpoint(self, *, source_address="172.28.0.17", committed_address="172.28.0.17",
+                   endpoint=frigate_identity.ENDPOINT, healthy=True, missing_owner=False, journals=None, acknowledged=()):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "synthetic.db"
+            state = Path(directory) / "state.json"
+            ids = {"first": "synthetic-first", "second": "synthetic-second"}
+            state.write_text(json.dumps({"target": "synthetic-target", "camera_ids": ids}))
+            with closing(sqlite3.connect(database)) as db, db:
+                db.executescript("""
+                    CREATE TABLE frigate_import_links (target_id TEXT, camera_key TEXT, payload TEXT);
+                    CREATE TABLE camera_address_events (camera_uuid TEXT, event_uuid TEXT, changed_at TEXT);
+                    CREATE TABLE frigate_camera_selections (target_id TEXT, sync_error TEXT);
+                    CREATE TABLE onvif_profiles (source_host TEXT);
+                    CREATE TABLE camera_identity_links (camera_uuid TEXT, payload TEXT);
+                    CREATE TABLE camera_identity_periods (camera_uuid TEXT, ip_address TEXT, onvif_identity TEXT, ended_at TEXT);
+                    CREATE TABLE managed_streams (health_status TEXT, probe_status TEXT, enabled INTEGER);
+                """)
+                db.executemany("INSERT INTO onvif_profiles VALUES (?)", [(source_address,)] * 4)
+                db.executemany("INSERT INTO managed_streams VALUES (?,?,1)",
+                               [("healthy" if healthy else "offline", "ready")] * 4)
+                for uid in list(ids.values())[:1 if missing_owner else 2]:
+                    db.execute("INSERT INTO camera_identity_links VALUES (?,?)",
+                               (uid, json.dumps({"ip": committed_address, "onvif": {"endpoint_reference": endpoint}})))
+                    db.execute("INSERT INTO camera_identity_periods VALUES (?,?,?,NULL)",
+                               (uid, committed_address, endpoint))
+            if journals is not None:
+                from camadmiral.crypto import encrypt_password
+                with closing(sqlite3.connect(database)) as db, db:
+                    db.execute("INSERT INTO frigate_camera_selections VALUES (?,?)",
+                               ("synthetic-target", "manual_restart_required"))
+                    for key, uid in ids.items():
+                        db.execute("INSERT INTO camera_address_events VALUES (?,?,?)", (uid, "new-address", "synthetic-time"))
+                        row = {"camera_uuid": uid, "relay_address_revision": "new-address" if key in acknowledged else "old-address",
+                               "relay_runtime_revision": "runtime", "address_capture_verification": journals.get(key)}
+                        payload = encrypt_password(json.dumps(row), "synthetic-target:" + key, b"x" * 32)
+                        db.execute("INSERT INTO frigate_import_links VALUES (?,?,?)", ("synthetic-target", key, payload))
+            response = io.BytesIO(json.dumps({"service": {"last_updated": 200, "uptime": 100}}).encode())
+            output = io.StringIO()
+            with patch.dict(sys.modules, {"scenarios": scenarios}), \
+                 patch.object(frigate_identity, "DATABASE", str(database)), \
+                 patch.object(frigate_identity, "STATE", state), \
+                 patch.object(scenarios, "wait_for_health"), \
+                 patch.object(scenarios, "wait_for"), \
+                 patch("camadmiral.crypto.load_master_key", return_value=b"x" * 32), \
+                 patch.object(frigate_identity.urllib.request, "urlopen", return_value=response), \
+                 redirect_stdout(output):
+                frigate_identity.driver("reader-progress-172.28.0.17")
+            return json.loads(output.getvalue())
+
+    def test_previous_address_cannot_exit_operator_aware_recovery_loop(self):
+        self.assertFalse(self.checkpoint(source_address="172.28.0.15", committed_address="172.28.0.15")["ready"])
+
+    def test_tentative_source_change_cannot_exit_before_validated_commit(self):
+        self.assertFalse(self.checkpoint(committed_address="172.28.0.15")["ready"])
+
+    def test_expected_address_requires_both_owners_identity_and_healthy_profiles(self):
+        for changes in ({"endpoint": "urn:uuid:synthetic-unrelated"}, {"healthy": False}, {"missing_owner": True}):
+            with self.subTest(changes=changes):
+                self.assertFalse(self.checkpoint(**changes)["ready"])
+
+    def test_validated_expected_address_can_finish_recovery_loop(self):
+        self.assertTrue(self.checkpoint()["ready"])
+
+
+    def test_old_warning_cannot_restart_before_each_current_address_is_observed(self):
+        current = {"revision": "new-address", "started_before": 100}
+        for journals in ({}, {"first": current}, {"first": current, "second": {"revision": "old-address", "started_before": 100}},
+                         {"first": current, "second": {"revision": "new-address"}}):
+            with self.subTest(journals=journals):
+                self.assertFalse(self.checkpoint(journals=journals)["manual"])
+
+    def test_current_warning_allows_one_operator_restart_after_validated_commit(self):
+        journals = {key: {"revision": "new-address", "started_before": 100} for key in ("first", "second")}
+        self.assertTrue(self.checkpoint(journals=journals)["manual"])
+        self.assertTrue(self.checkpoint(journals={"second": journals["second"]}, acknowledged=("first",))["manual"])
+        self.assertFalse(self.checkpoint(journals=journals, committed_address="172.28.0.15")["manual"])
 
 
 class IdentityConsumerTelemetryTests(unittest.TestCase):
