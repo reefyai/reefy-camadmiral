@@ -1,0 +1,12 @@
+api:
+  listen: ":1984"
+rtsp:
+  listen: ":8554"
+  username: operator
+  password: synthetic-different-secret
+webrtc:
+  listen: ""
+streams:
+  main: "ffmpeg:virtual?video=&size=1280x720&rate=15#video=h264"
+  sub: "ffmpeg:virtual?video=&size=640x360&rate=8#video=h264"
+  spare: "ffmpeg:virtual?video=&size=960x540&rate=8#video=h264"

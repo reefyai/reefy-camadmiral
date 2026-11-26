@@ -2729,78 +2729,136 @@ class CameraRepository:
     def record_probe_results(self, results: dict[str, ProbeResult]) -> None:
         timestamp = _now()
         with self.connect() as connection:
-            affected_cameras: set[str] = set()
-            for stream_uuid, result in results.items():
-                current = connection.execute(
-                    "SELECT camera_uuid, consecutive_failures, health_status "
-                    "FROM managed_streams WHERE stream_uuid = ?",
-                    (stream_uuid,),
-                ).fetchone()
-                if current is None:
-                    continue
-                if result.status == "auth_failed":
-                    connection.execute(
-                        "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) VALUES (?, ?)",
-                        (stream_uuid, time.time() + 60),
-                    )
-                elif result.status == "ready":
-                    connection.execute("DELETE FROM stream_auth_retries WHERE stream_uuid=?", (stream_uuid,))
-                affected_cameras.add(str(current["camera_uuid"]))
-                failures = 0 if result.status in {"ready", "idle"} else int(current["consecutive_failures"]) + 1
-                if result.status == "ready":
-                    health_status = "healthy"
-                elif result.status == "idle":
-                    health_status = "unknown"
-                elif result.status == "auth_failed":
-                    health_status = "auth_failed"
-                elif failures >= 3:
-                    health_status = "offline"
-                elif failures >= 2:
-                    health_status = "degraded"
-                else:
-                    health_status = (
-                        "healthy" if current["health_status"] == "healthy" else "unknown"
-                    )
+            self._record_probe_results(connection, results, timestamp)
+            connection.commit()
+
+    def _record_probe_results(self, connection: sqlite3.Connection,
+                              results: dict[str, ProbeResult], timestamp: str) -> None:
+        affected_cameras: set[str] = set()
+        for stream_uuid, result in results.items():
+            current = connection.execute(
+                "SELECT camera_uuid, consecutive_failures, health_status "
+                "FROM managed_streams WHERE stream_uuid = ?",
+                (stream_uuid,),
+            ).fetchone()
+            if current is None:
+                continue
+            if result.status == "auth_failed":
                 connection.execute(
-                    "UPDATE managed_streams SET probe_status=?, probed_at=?, probe_latency_ms=?, "
-                    "health_status=?, consecutive_failures=?, "
-                    "last_ready_at=CASE WHEN ?='ready' THEN ? ELSE last_ready_at END, "
-                    "last_failure_at=CASE WHEN ?='ready' THEN last_failure_at ELSE ? END "
-                    "WHERE stream_uuid=?",
+                    "INSERT OR IGNORE INTO stream_auth_retries(stream_uuid, next_attempt) VALUES (?, ?)",
+                    (stream_uuid, time.time() + 60),
+                )
+            elif result.status == "ready":
+                connection.execute("DELETE FROM stream_auth_retries WHERE stream_uuid=?", (stream_uuid,))
+            affected_cameras.add(str(current["camera_uuid"]))
+            failures = 0 if result.status in {"ready", "idle"} else int(current["consecutive_failures"]) + 1
+            if result.status == "ready":
+                health_status = "healthy"
+            elif result.status == "idle":
+                health_status = "unknown"
+            elif result.status == "auth_failed":
+                health_status = "auth_failed"
+            elif failures >= 3:
+                health_status = "offline"
+            elif failures >= 2:
+                health_status = "degraded"
+            else:
+                health_status = (
+                    "healthy" if current["health_status"] == "healthy" else "unknown"
+                )
+            connection.execute(
+                "UPDATE managed_streams SET probe_status=?, probed_at=?, probe_latency_ms=?, "
+                "health_status=?, consecutive_failures=?, "
+                "last_ready_at=CASE WHEN ?='ready' THEN ? ELSE last_ready_at END, "
+                "last_failure_at=CASE WHEN ?='ready' THEN last_failure_at ELSE ? END "
+                "WHERE stream_uuid=?",
+                (
+                    result.status,
+                    timestamp,
+                    result.latency_ms,
+                    health_status,
+                    failures,
+                    result.status,
+                    timestamp,
+                    result.status,
+                    timestamp,
+                    stream_uuid,
+                ),
+            )
+            if result.status == "ready":
+                connection.execute(
+                    "UPDATE managed_streams SET video_codec=COALESCE(?, video_codec), "
+                    "audio_codec=COALESCE(?, audio_codec), "
+                    "probed_width=CASE WHEN ?>0 THEN ? ELSE probed_width END, "
+                    "probed_height=CASE WHEN ?>0 THEN ? ELSE probed_height END, "
+                    "probed_fps=CASE WHEN ?>0 THEN ? ELSE probed_fps END WHERE stream_uuid=?",
                     (
-                        result.status,
-                        timestamp,
-                        result.latency_ms,
-                        health_status,
-                        failures,
-                        result.status,
-                        timestamp,
-                        result.status,
-                        timestamp,
+                        result.video_codec,
+                        result.audio_codec,
+                        result.width,
+                        result.width,
+                        result.height,
+                        result.height,
+                        result.fps,
+                        result.fps,
                         stream_uuid,
                     ),
                 )
-                if result.status == "ready":
-                    connection.execute(
-                        "UPDATE managed_streams SET video_codec=COALESCE(?, video_codec), "
-                        "audio_codec=COALESCE(?, audio_codec), "
-                        "probed_width=CASE WHEN ?>0 THEN ? ELSE probed_width END, "
-                        "probed_height=CASE WHEN ?>0 THEN ? ELSE probed_height END, "
-                        "probed_fps=CASE WHEN ?>0 THEN ? ELSE probed_fps END WHERE stream_uuid=?",
-                        (
-                            result.video_codec,
-                            result.audio_codec,
-                            result.width,
-                            result.width,
-                            result.height,
-                            result.height,
-                            result.fps,
-                            result.fps,
-                            stream_uuid,
-                        ),
-                    )
-            for camera_uuid in affected_cameras:
-                self._record_camera_health_transition(connection, camera_uuid, timestamp)
+        for camera_uuid in affected_cameras:
+            self._record_camera_health_transition(connection, camera_uuid, timestamp)
+
+    def complete_address_recovery(self, incident_ids: list[str],
+                                   results: dict[str, ProbeResult]) -> None:
+        """Commit verified health and one recovery notice per moved camera.
+
+        Incident histories remain independent. The outbox coalescing is atomic
+        with both resolutions, so a concurrent sender cannot send the generic
+        health recovery between the health update and address resolution.
+        """
+        if not results or any(result.status != "ready" for result in results.values()):
+            raise ValueError("Address recovery requires ready results for every enabled stream")
+        timestamp = _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            incidents = []
+            for incident_id in incident_ids:
+                row = connection.execute(
+                    "SELECT incident_uuid,camera_uuid,resolved_at FROM camera_incidents "
+                    "WHERE incident_uuid=? AND kind='camera_address_changed'", (incident_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("Address recovery incident is missing")
+                incidents.append(row)
+            if incidents and all(row["resolved_at"] is not None for row in incidents):
+                return
+            if not incidents or any(row["resolved_at"] is not None for row in incidents):
+                raise ValueError("Address recovery incidents changed")
+            expected = set()
+            health_incidents = []
+            for incident in incidents:
+                camera_uuid = incident["camera_uuid"]
+                expected.update(row[0] for row in connection.execute(
+                    "SELECT stream_uuid FROM managed_streams WHERE camera_uuid=? AND enabled=1",
+                    (camera_uuid,)))
+                health_incidents.extend(row[0] for row in connection.execute(
+                    "SELECT incident_uuid FROM camera_incidents WHERE camera_uuid=? "
+                    "AND resolved_at IS NULL AND kind IN ('media_offline','authentication_failed')",
+                    (camera_uuid,)))
+            if set(results) != expected:
+                raise ValueError("Address recovery results do not cover every enabled stream")
+            self._record_probe_results(connection, results, timestamp)
+            for incident in incidents:
+                self._resolve_incident(connection, incident["incident_uuid"], timestamp, "stream_recovered")
+                notified = connection.execute(
+                    "SELECT 1 FROM notification_outbox WHERE idempotency_key=?",
+                    (incident["incident_uuid"] + ":incident_resolved",),).fetchone()
+                if notified:
+                    for health_incident in health_incidents:
+                        connection.execute(
+                            "DELETE FROM notification_outbox WHERE incident_uuid=? "
+                            "AND event_type='incident_resolved' AND status IN ('pending','retry') "
+                            "AND incident_uuid IN (SELECT incident_uuid FROM camera_incidents WHERE camera_uuid=?)",
+                            (health_incident, incident["camera_uuid"]),)
             connection.commit()
 
     def record_camera_auth_failure(self, camera_uuid: str, result: ProbeResult) -> None:

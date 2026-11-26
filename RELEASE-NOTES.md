@@ -1,3 +1,10 @@
+## v2026.11.26-00
+
+- Retry transient verification failures after camera address cutover without another shared relay restart. Every enabled stream still has to pass; persistent failures roll back and authentication failures fail immediately.
+- Log each upstream and relay probe with generated camera/stream identifiers, stage, attempt and latency. Source URLs, profile tokens, credentials and exception messages are excluded.
+- Commit verified camera health and address-incident resolution together, sending one address-recovery notification while retaining both incident histories. No API fields, incident types or configuration settings change.
+- Add an Actions container regression that reproduces premature rollback on the unchanged source, then verifies delayed RTSP recovery, permanent failure, credential rejection, real decoded video and retained data on the fixed source.
+
 ## v2026.11.17-01
 
 - Background imported-camera recovery no longer requests whole-Frigate restarts. Explicit import/restore operations keep their existing restart confirmation.

@@ -56,6 +56,160 @@ class RecoveryTests(unittest.TestCase):
             update_offset=7,
         )
 
+    def _recovery_fixture(self, *, profiles=1):
+        adoption = self.repository.adopt(
+            {"candidate_uuid": "candidate-verification", "display_name": "Synthetic entrance"},
+            "operator", "synthetic-secret",
+            [{"token": f"profile-{i}", "name": f"Profile {i}",
+              "uri": f"rtsp://192.0.2.10/stream-{i}?password=synthetic-query-secret",
+              "width": 640, "height": 360, "encoding": "H264", "fps": 10,
+              "bitrate_kbps": 0, "source_kind": "manual_rtsp"} for i in range(profiles)],
+            {"record": "profile-0", "detect": "profile-0"})
+        inventory = self._inventory({"candidate_uuid": "candidate-verification",
+            "ip": "192.0.2.20", "mac": "02:00:00:00:20:01", "status": "online"})
+        return adoption, inventory
+
+    @patch("camadmiral.recovery.time.sleep")
+    @patch("camadmiral.recovery.replace_streams")
+    @patch("camadmiral.recovery.probe_source", return_value=ProbeResult("ready", 10))
+    def test_transient_relay_verification_retries_without_another_restart(self, _source, replace, sleep):
+        before, inventory = self._recovery_fixture(profiles=3)
+        calls = []
+        failing = before["streams"][-1]["stream_uuid"]
+        def probe(sources, *_args):
+            calls.append({s["stream_uuid"] for s in sources})
+            return {s["stream_uuid"]: ProbeResult(
+                "timeout" if len(calls) == 1 and s["stream_uuid"] == failing else "ready", 10)
+                for s in sources}
+        self.probe_streams.side_effect = probe
+        result = recover_inventory_addresses(self.repository, inventory)
+        self.assertEqual(result[0].status, "recovered")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], {failing})
+        replace.assert_called_once()
+        self.assertEqual(sleep.call_count, 1)
+        after = self.repository.adoption_for_candidate("candidate-verification")
+        self.assertEqual([s["stream_uuid"] for s in before["streams"]],
+                         [s["stream_uuid"] for s in after["streams"]])
+        self.assertTrue(all("192.0.2.20" in s["uri"] for s in after["streams"]))
+
+    @patch("camadmiral.recovery.time.sleep")
+    @patch("camadmiral.recovery.replace_streams")
+    @patch("camadmiral.recovery.probe_source", return_value=ProbeResult("ready", 10))
+    def test_unused_enabled_profile_remains_required_and_retries_are_bounded(self, _source, replace, sleep):
+        before, inventory = self._recovery_fixture(profiles=3)
+        failing = before["streams"][-1]["stream_uuid"]
+        def probe(sources, *_args):
+            return {s["stream_uuid"]: ProbeResult(
+                "timeout" if s["stream_uuid"] == failing else "ready", 10) for s in sources}
+        self.probe_streams.side_effect = probe
+        result = recover_inventory_addresses(self.repository, inventory)
+        self.assertEqual(result[0].status, "runtime_failed")
+        self.assertEqual(self.probe_streams.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(replace.call_count, 2)
+        after = self.repository.adoption_for_candidate("candidate-verification")
+        self.assertEqual([s["uri"] for s in before["streams"]], [s["uri"] for s in after["streams"]])
+        self.assertEqual(self.repository.incidents(status="open")["open_count"], 1)
+
+    @patch("camadmiral.recovery.time.sleep")
+    @patch("camadmiral.recovery.replace_streams")
+    @patch("camadmiral.recovery.probe_source", return_value=ProbeResult("ready", 10))
+    def test_relay_auth_failure_is_not_retried(self, _source, replace, sleep):
+        _before, inventory = self._recovery_fixture()
+        self.probe_streams.side_effect = lambda sources, *_args: {
+            s["stream_uuid"]: ProbeResult("auth_failed", 10) for s in sources}
+        self.assertEqual(recover_inventory_addresses(self.repository, inventory)[0].status, "runtime_failed")
+        self.probe_streams.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(replace.call_count, 2)
+
+    def _pending_address_recovery(self):
+        self._enable_notifications()
+        before, _inventory = self._recovery_fixture(profiles=3)
+        for _ in range(3):
+            self.repository.record_probe_results({s["stream_uuid"]: ProbeResult("unavailable", 10)
+                                                 for s in before["streams"]})
+        incident = self.repository.open_camera_address_incident(
+            before["camera_uuid"], "192.0.2.10", "192.0.2.20", "unique-mac")
+        ready = {s["stream_uuid"]: ProbeResult("ready", 10) for s in before["streams"]}
+        return before, incident, ready
+
+    def test_recovery_notice_is_atomic_for_a_concurrent_outbox_reader_and_idempotent(self):
+        from concurrent.futures import ThreadPoolExecutor
+        _before, incident, ready = self._pending_address_recovery()
+        original = self.repository._record_probe_results
+        intermediate = []
+        def record(connection, results, timestamp):
+            original(connection, results, timestamp)
+            with ThreadPoolExecutor(max_workers=1) as sender:
+                intermediate.extend(sender.submit(self.repository.due_notifications).result(timeout=2))
+        with patch.object(self.repository, '_record_probe_results', side_effect=record):
+            self.repository.complete_address_recovery([incident], ready)
+        self.assertFalse(any(n['event_type']=='incident_resolved' for n in intermediate))
+        self.repository.complete_address_recovery([incident], ready)
+        resolved = [n for n in self.repository.due_notifications() if n['event_type']=='incident_resolved']
+        self.assertEqual([n['payload']['kind'] for n in resolved], ['camera_address_changed'])
+        self.assertEqual(self.repository.incidents(status='open')['open_count'], 0)
+
+    def test_failed_completion_rolls_back_health_and_notifications(self):
+        before, incident, ready = self._pending_address_recovery()
+        resolve = self.repository._resolve_incident
+        def fail_address(connection, incident_uuid, timestamp, reason):
+            if incident_uuid == incident:
+                raise RuntimeError('synthetic commit failure')
+            return resolve(connection, incident_uuid, timestamp, reason)
+        with patch.object(self.repository, '_resolve_incident', side_effect=fail_address):
+            with self.assertRaises(RuntimeError):
+                self.repository.complete_address_recovery([incident], ready)
+        self.assertEqual(self.repository.incidents(status='open')['open_count'], 2)
+        self.assertFalse(any(n['event_type']=='incident_resolved' for n in self.repository.due_notifications()))
+        self.assertEqual({s['probe_status'] for s in self.repository.adoption_for_candidate(
+            'candidate-verification')['streams']}, {'unavailable'})
+        self.assertEqual(before['camera_uuid'], self.repository.adoption_for_candidate(
+            'candidate-verification')['camera_uuid'])
+
+    def test_incomplete_completion_never_drops_an_enabled_unused_profile(self):
+        _before, incident, ready = self._pending_address_recovery()
+        ready.pop(next(iter(ready)))
+        with self.assertRaises(ValueError):self.repository.complete_address_recovery([incident], ready)
+        self.assertEqual(self.repository.incidents(status='open')['open_count'], 2)
+        self.assertFalse(any(n['event_type']=='incident_resolved' for n in self.repository.due_notifications()))
+
+    @patch("camadmiral.recovery.replace_streams")
+    @patch("camadmiral.recovery.probe_source")
+    def test_upstream_diagnostics_cover_every_profile_without_source_secrets(self, probe, replace):
+        before, inventory = self._recovery_fixture(profiles=3)
+        probe.side_effect = [ProbeResult("timeout", 8000), ProbeResult("auth_failed", 12),
+                             RuntimeError("rtsp://operator:synthetic-secret@192.0.2.20/private")]
+        with patch("builtins.print") as log:
+            self.assertEqual(recover_inventory_addresses(self.repository, inventory)[0].status in
+                             {"timeout", "auth_failed", "error"}, True)
+        lines = [str(call.args[0]) for call in log.call_args_list
+                 if str(call.args[0]).startswith("media-recovery: ")]
+        events = [json.loads(line.split(": ", 1)[1]) for line in lines]
+        profiles = [e for e in events if e.get("stage") == "upstream" and e.get("event") == "probe"]
+        self.assertEqual({e["stream_uuid"] for e in profiles}, {s["stream_uuid"] for s in before["streams"]})
+        self.assertEqual({e["status"] for e in profiles}, {"timeout", "auth_failed", "error"})
+        text = "\n".join(lines)
+        for secret in ("synthetic-secret", "synthetic-query-secret", "rtsp://", "profile-0", "operator"):
+            self.assertNotIn(secret, text)
+        replace.assert_not_called()
+
+    @patch("camadmiral.recovery.replace_streams")
+    @patch("camadmiral.recovery.probe_source", return_value=ProbeResult("ready", 10))
+    def test_address_recovery_emits_one_resolved_notice_preserving_both_incidents(self, _source, _replace):
+        self._enable_notifications()
+        before, inventory = self._recovery_fixture()
+        stream = before["streams"][0]["stream_uuid"]
+        for _ in range(3):self.repository.record_probe_results({stream: ProbeResult("unavailable", 10)})
+        self.assertEqual(recover_inventory_addresses(self.repository, inventory)[0].status, "recovered")
+        events = [x for x in self.repository.due_notifications() if x["event_type"] == "incident_resolved"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["kind"], "camera_address_changed")
+        self.assertEqual({x["kind"] for x in self.repository.incidents(status="resolved")["incidents"]},
+                         {"media_offline", "camera_address_changed"})
+
     @patch("camadmiral.recovery.probe_source")
     def test_replacement_sources_are_validated_in_parallel(self, probe_source) -> None:
         barrier = threading.Barrier(3)
@@ -524,7 +678,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result[0].status, "runtime_failed")
         self.assertEqual(after["streams"][0]["uri"], "rtsp://192.0.2.20/live")
         self.assertEqual(replace_streams.call_count, 2)
-        self.probe_streams.assert_called_once()
+        self.assertEqual(self.probe_streams.call_count, 3)
         opened = self.repository.incidents(status="open")
         self.assertEqual(opened["open_count"], 1)
         self.assertEqual(opened["incidents"][0]["kind"], "camera_address_changed")

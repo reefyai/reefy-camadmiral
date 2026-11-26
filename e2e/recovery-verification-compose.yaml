@@ -1,0 +1,63 @@
+services:
+  camadmiral:
+    image: ${RECOVERY_TEST_IMAGE}
+    entrypoint: [/bin/sh, /e2e/start-camadmiral.sh]
+    environment:
+      CAMADMIRAL_GO2RTC_URL: http://127.0.0.1:1985
+      CAMADMIRAL_GO2RTC_RTSP_URL: rtsp://127.0.0.1:18555
+      CAMADMIRAL_RUNTIME_RECONCILE_INTERVAL: "2"
+      CAMADMIRAL_HEALTH_INTERVAL: "120"
+    # No real provider is contacted; delivery remains in the synthetic outbox.
+    extra_hosts: ["api.telegram.org:127.0.0.1"]
+    volumes:
+      - data:/var/lib/camadmiral
+      - .:/e2e:ro
+      - ./fixtures/api-token:/run/secrets/camadmiral_api_token:ro
+      - ./fixtures/admin-password:/run/secrets/camadmiral_admin_password:ro
+      - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
+    networks: {lab: {ipv4_address: 172.27.5.20}}
+    ports: ["127.0.0.1::18080"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 192
+    mem_limit: 1g
+    memswap_limit: 1g
+    tmpfs:
+      - /run/camadmiral:rw,noexec,nosuid,size=4m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+  relay-proxy:
+    image: ${RECOVERY_TEST_IMAGE}
+    entrypoint: [python, /e2e/recovery_relay_proxy.py]
+    network_mode: service:camadmiral
+    volumes: [".:/e2e:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck: {disable: true}
+  camera-old:
+    image: ${RECOVERY_TEST_IMAGE}
+    entrypoint: [/usr/local/bin/go2rtc, -config, /e2e/fixtures/camera-recovery-verification.yaml]
+    volumes: [".:/e2e:ro"]
+    networks: {lab: {ipv4_address: 172.27.5.10}}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    healthcheck: {disable: true}
+  camera-new:
+    image: ${RECOVERY_TEST_IMAGE}
+    entrypoint: [/usr/local/bin/go2rtc, -config, "${RECOVERY_NEW_CAMERA_CONFIG:-/e2e/fixtures/camera-recovery-verification.yaml}"]
+    volumes: [".:/e2e:ro"]
+    networks: {lab: {ipv4_address: 172.27.5.12}}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    healthcheck: {disable: true}
+networks:
+  lab:
+    internal: true
+    ipam: {config: [{subnet: 172.27.5.0/24}]}
+volumes:
+  data:
