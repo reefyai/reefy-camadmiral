@@ -34,6 +34,14 @@ metadata. The existing imported-identity E2E catches this by decoding retained
 recordings and checking their dimensions. The ordinary address-refresh component
 case also runs with healthy FPS, bytes and segments; it reproduces the skipped
 refresh on unmodified source `d0165d134f2b6bb672a3b057626b7ebfb941c2bb`.
+An internal address-verification journal keeps the recorder start epoch across
+control-process changes and exhausted attempts. A later confirmed operator
+restart can complete recovery after fresh output is observed; it cannot grant
+more automatic pause attempts or accept a pre-restart recording. Exhausted and
+blocked recovery component cases reproduce both failure modes on unchanged
+source `09fffff324435aecb1b4430da111cfd01ea3edae`. The existing identity E2E also
+reproduced the exhausted-budget case after verifying earlier physical moves and
+old/new recording dimensions. No background recorder restart is added.
 Reader diagnostics report observation availability, codec-parameter counts,
 recording-window bounds and the segment that verified recovery, without SDP or
 source details. Background recovery still cannot restart Frigate.

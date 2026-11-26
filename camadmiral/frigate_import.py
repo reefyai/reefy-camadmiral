@@ -1305,6 +1305,38 @@ def _recording_epoch(camera, runtime_revision, address_revision):
     return digest([runtime_revision, address_revision, formats])
 
 
+def _address_capture_ready(repository, target, client, row, revision):
+    if revision is None or revision == row.get('relay_address_revision'):
+        return True
+    observed = row.get('address_capture_verification')
+    if not observed or observed.get('revision') != revision:
+        # Keep this recorder epoch across control-process replacements, format
+        # observations and exhausted retry budgets. Only a real recorder restart
+        # can prove that it has recreated capture without our targeted refresh.
+        row['address_capture_verification'] = {
+            'revision': revision, 'started_before': client.service_started_at()}
+        ImportStore(repository).save_link(target.target_id, row['key'], row)
+        return False
+    if client.service_started_at() <= observed['started_before'] + 2:
+        return False
+    changed = False
+    if 'restart_observed_at' not in observed:
+        observed['restart_observed_at'] = time.time()
+        changed = True
+        print('frigate-reader-recovery: ' + json.dumps({
+            'event': 'address_capture_restart_observed', 'camera_uuid': row['camera_uuid'],
+        }, sort_keys=True), flush=True)
+    verification = row.get('reader_recording_verification')
+    if verification and verification['since'] < observed['restart_observed_at']:
+        # Require output after observing the new recorder, never an old-format
+        # segment from before the operator action. Preserve the original budget.
+        verification['since'] = observed['restart_observed_at']
+        changed = True
+    if changed:
+        ImportStore(repository).save_link(target.target_id, row['key'], row)
+    return True
+
+
 def _recording_output_state(repository, target, client, row, epoch):
     camera = client.config().get('cameras', {}).get(row['key'], {})
     record = camera.get('record', {})
@@ -1349,6 +1381,7 @@ def _ack_source_recovery(repository, client, row, camera):
         row['relay_source_revisions'] = revision
     row.pop('source_recovery_pending', None)
     row.pop('reader_recording_verification', None)
+    row.pop('address_capture_verification', None)
 
 
 def _relay_runtime_revision(repository):
@@ -1518,8 +1551,9 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
                 break
+            address_capture_ready = _address_capture_ready(repository, target, client, row, revision)
             if row.get("reader_recovery", {}).get("blocked") and not row.get("capture_resume_pending"):
-                if reader_ready(row, camera):
+                if address_capture_ready and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
                     if output == 'waiting':
                         continue
@@ -1597,7 +1631,7 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # an existing record FFmpeg discarded its old codec metadata.
                 # Recreate capture once for a committed physical address move.
                 # A plain transport/control reconnect retains the healthy path.
-                if not address_changed and reader_ready(row, camera):
+                if address_capture_ready and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
                     if output == 'ready':
                         _ack_source_recovery(repository, client, row, camera)

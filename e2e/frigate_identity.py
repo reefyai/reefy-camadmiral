@@ -150,6 +150,7 @@ def driver(stage, readiness_timeout=240, expected_start=None):
                                             source_recovery_pending=bool(saved.get('source_recovery_pending')),
                                             target_restart=bool(saved.get('target_restart')),
                                             recovery_budget=saved.get('reader_recovery'),
+                                            address_capture_verification=saved.get('address_capture_verification'),
                                             recording_verification=saved.get('reader_recording_verification'))
         return result
 

@@ -379,6 +379,64 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(before,self.client.raw_config())
         self.assertEqual(restarts,self.client.restart_calls)
 
+    def _check_operator_restart_with_exhausted_recovery(self, blocked):
+        from camadmiral.frigate_import import READER_RECOVERY_MAX_ATTEMPTS
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        budget = {'attempts': READER_RECOVERY_MAX_ATTEMPTS, 'retry_after': 3000}
+        if blocked:
+            budget['blocked'] = True
+        row['reader_recovery'] = copy.deepcopy(budget)
+        store.save_link(self.target.target_id, row['key'], row)
+        self.repo.record_address_change(row['camera_uuid'], '192.0.2.10', '192.0.2.11', 'unique-mac')
+        revision = self.repo.latest_camera_address_revision(row['camera_uuid'])
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        self.client.operations.clear()
+        for now in (1000, 1040):
+            with patch('camadmiral.frigate_import.time.time', return_value=now):
+                sync_imported(self.repo, self.target, client=self.client,
+                              host_resolver=lambda _: '192.0.2.20')
+            saved = store.links(self.target.target_id)[row['key']]
+            self.assertNotEqual(revision, saved.get('relay_address_revision'))
+            self.assertEqual(budget, saved['reader_recovery'])
+        self.assertEqual([], self.client.operations)
+        # A control-process replacement cannot stand in for a recorder
+        # restart or replenish the exhausted recovery budget.
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'new-control'), \
+             patch('camadmiral.frigate_import.time.time', return_value=1050):
+            sync_imported(self.repo, self.target, client=self.client,
+                          host_resolver=lambda _: '192.0.2.20')
+        self.assertNotEqual(revision, store.links(self.target.target_id)[row['key']].get('relay_address_revision'))
+        self.assertEqual([], self.client.operations)
+        self.assertEqual(restarts, self.client.restart_calls)
+        self.client.restart()  # Explicit synthetic operator action.
+        operations = list(self.client.operations)
+        with patch('camadmiral.frigate_import.time.time', return_value=1100), \
+             patch.object(self.client, 'recordings_since', return_value=[
+                 {'start_time': 1060, 'end_time': 1070, 'segment_size': 1}]):
+            sync_imported(self.repo, self.target, client=self.client,
+                          host_resolver=lambda _: '192.0.2.20')
+        self.assertNotEqual(revision, store.links(self.target.target_id)[row['key']].get('relay_address_revision'))
+        with patch('camadmiral.frigate_import.time.time', return_value=1120), \
+             patch.object(self.client, 'recordings_since', return_value=[
+                 {'start_time': 1105, 'end_time': 1115, 'segment_size': 1}]):
+            sync_imported(self.repo, self.target, client=self.client,
+                          host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
+        self.assertEqual(revision, saved.get('relay_address_revision'))
+        self.assertNotIn('reader_recording_verification', saved)
+        self.assertEqual(budget, saved['reader_recovery'])
+        self.assertEqual(operations, self.client.operations)
+        self.assertEqual(restarts + 1, self.client.restart_calls)
+        self.assertEqual(before, self.client.raw_config())
+
+    def test_operator_restart_verifies_address_with_exhausted_attempts(self):
+        self._check_operator_restart_with_exhausted_recovery(False)
+
+    def test_blocked_address_requires_capture_restart_and_fresh_output(self):
+        self._check_operator_restart_with_exhausted_recovery(True)
+
     def test_import_failure_diagnostics_report_phase_without_exception_secrets(self):
         import contextlib
         import io
@@ -1525,15 +1583,21 @@ class FrigateImportTests(unittest.TestCase):
         self.assertTrue(row["reader_recovery"]["blocked"])
         self.assertEqual([False, True], [op[2] for op in self.client.operations
                                        if op[0] == "set_runtime_camera_enabled"])
-        # The ambiguous OFF did take effect and the owned ON restored capture.
-        # A subsequent current observation and fresh recording can verify it,
-        # without granting another pause attempt or restarting the recorder.
+        # Resume the owned pause, but an ambiguous OFF is not proof that alias
+        # replacement and capture recreation both completed. Keep operator
+        # action required until a confirmed recorder restart and fresh output.
         operations, restarts = list(self.client.operations), self.client.restart_calls
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: "192.0.2.20")
         row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
-        self.assertEqual(self.repo.latest_camera_address_revision(uid), row["relay_address_revision"])
+        self.assertNotEqual(self.repo.latest_camera_address_revision(uid), row.get("relay_address_revision"))
         self.assertEqual(operations, self.client.operations)
         self.assertEqual(restarts, self.client.restart_calls)
+        self.client.restart()  # Explicit synthetic operator action.
+        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: "192.0.2.20")
+        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
+        self.assertEqual(self.repo.latest_camera_address_revision(uid), row["relay_address_revision"])
+        self.assertEqual(operations + [("restart",)], self.client.operations)
+        self.assertEqual(restarts + 1, self.client.restart_calls)
 
     @stalled_reader
     def test_reader_refresh_recovers_pending_resume_before_reconnecting_again(self):
