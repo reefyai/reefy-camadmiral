@@ -53,7 +53,14 @@ profiles before leaving that loop. A prior address or tentative profile rewrite
 cannot count as recovery. SQLite-backed checkpoint regressions reproduce the
 premature exit on unchanged source
 `47b6b2d811218493c1aa665a7cc66852a158c998`; negative identity, health and partial
-ownership controls remain mandatory. The overall 240-second budget is unchanged.
+ownership controls remain mandatory. The driver also waits until every reader has observed the current committed
+address before acting on a manual-restart warning. A warning from a previous
+move cannot trigger an operator restart before the new recorder epoch is
+journaled. SQLite-backed negative cases reproduce that stale-warning race on
+unchanged source `b46e337f687f32a2bd77beb62e3b018296f3c5dc`, including a partially
+observed pair and a tentative identity. Both checkpoint corrections preserve
+the application's conservative capture-recreation proof. The overall
+240-second budget is unchanged.
 No background recorder restart is added.
 Reader diagnostics report observation availability, codec-parameter counts,
 recording-window bounds and the segment that verified recovery, without SDP or

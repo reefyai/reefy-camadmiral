@@ -136,7 +136,7 @@ class FrigateReaderReadinessTests(unittest.TestCase):
 
 class IdentityAddressCheckpointTests(unittest.TestCase):
     def checkpoint(self, *, source_address="172.28.0.17", committed_address="172.28.0.17",
-                   endpoint=frigate_identity.ENDPOINT, healthy=True, missing_owner=False):
+                   endpoint=frigate_identity.ENDPOINT, healthy=True, missing_owner=False, journals=None, acknowledged=()):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "synthetic.db"
             state = Path(directory) / "state.json"
@@ -160,6 +160,17 @@ class IdentityAddressCheckpointTests(unittest.TestCase):
                                (uid, json.dumps({"ip": committed_address, "onvif": {"endpoint_reference": endpoint}})))
                     db.execute("INSERT INTO camera_identity_periods VALUES (?,?,?,NULL)",
                                (uid, committed_address, endpoint))
+            if journals is not None:
+                from camadmiral.crypto import encrypt_password
+                with closing(sqlite3.connect(database)) as db, db:
+                    db.execute("INSERT INTO frigate_camera_selections VALUES (?,?)",
+                               ("synthetic-target", "manual_restart_required"))
+                    for key, uid in ids.items():
+                        db.execute("INSERT INTO camera_address_events VALUES (?,?,?)", (uid, "new-address", "synthetic-time"))
+                        row = {"camera_uuid": uid, "relay_address_revision": "new-address" if key in acknowledged else "old-address",
+                               "relay_runtime_revision": "runtime", "address_capture_verification": journals.get(key)}
+                        payload = encrypt_password(json.dumps(row), "synthetic-target:" + key, b"x" * 32)
+                        db.execute("INSERT INTO frigate_import_links VALUES (?,?,?)", ("synthetic-target", key, payload))
             response = io.BytesIO(json.dumps({"service": {"last_updated": 200, "uptime": 100}}).encode())
             output = io.StringIO()
             with patch.dict(sys.modules, {"scenarios": scenarios}), \
@@ -186,6 +197,20 @@ class IdentityAddressCheckpointTests(unittest.TestCase):
 
     def test_validated_expected_address_can_finish_recovery_loop(self):
         self.assertTrue(self.checkpoint()["ready"])
+
+
+    def test_old_warning_cannot_restart_before_each_current_address_is_observed(self):
+        current = {"revision": "new-address", "started_before": 100}
+        for journals in ({}, {"first": current}, {"first": current, "second": {"revision": "old-address", "started_before": 100}},
+                         {"first": current, "second": {"revision": "new-address"}}):
+            with self.subTest(journals=journals):
+                self.assertFalse(self.checkpoint(journals=journals)["manual"])
+
+    def test_current_warning_allows_one_operator_restart_after_validated_commit(self):
+        journals = {key: {"revision": "new-address", "started_before": 100} for key in ("first", "second")}
+        self.assertTrue(self.checkpoint(journals=journals)["manual"])
+        self.assertTrue(self.checkpoint(journals={"second": journals["second"]}, acknowledged=("first",))["manual"])
+        self.assertFalse(self.checkpoint(journals=journals, committed_address="172.28.0.15")["manual"])
 
 
 class IdentityConsumerTelemetryTests(unittest.TestCase):

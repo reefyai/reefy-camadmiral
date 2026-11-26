@@ -115,6 +115,20 @@ def reader_recovery_ready(readers, camera_ids, address_revisions, previous_runti
     return bool(camera_ids) and len(generations) == 1
 
 
+def reader_recovery_observed(readers, camera_ids, address_revisions):
+    # An old manual-restart warning cannot authorize the synthetic operator
+    # action before every affected reader has observed this committed move.
+    for key, uid in camera_ids.items():
+        row = readers.get(key, {})
+        revision = address_revisions.get(uid)
+        journal = row.get('address_capture_verification') or {}
+        if (row.get('camera_uuid') != uid or not revision
+                or (row.get('relay_address_revision') != revision
+                    and (journal.get('revision') != revision or journal.get('started_before') is None))):
+            return False
+    return bool(camera_ids)
+
+
 def physical_recovery_ready(address, camera_ids, sources, current, periods, health):
     # Profile addresses are tentative until relay validation commits identity.
     return (bool(camera_ids) and len(sources) == 4
@@ -275,10 +289,11 @@ def driver(stage, readiness_timeout=240, expected_start=None):
         previous = state['reader_runtime_revisions'] if restarted else None
         ready = (not state.get('reader_recovery_tracking') or
                  reader_recovery_ready(readers, state['camera_ids'], revisions, previous))
-        ready = ready and physical_recovery_ready(address, state['camera_ids'],
+        physical_ready = physical_recovery_ready(address, state['camera_ids'],
             sql('SELECT source_host FROM onvif_profiles'), links(),
             sql('SELECT camera_uuid,ip_address,onvif_identity FROM camera_identity_periods WHERE ended_at IS NULL'),
             sql('SELECT health_status,probe_status FROM managed_streams WHERE enabled=1'))
+        ready = ready and physical_ready
         errors = sql('SELECT sync_error FROM frigate_camera_selections WHERE target_id=?', (state['target'],))
         try:
             service = frigate('/stats')['service']
@@ -286,7 +301,8 @@ def driver(stage, readiness_timeout=240, expected_start=None):
         except (OSError, ValueError, KeyError, TypeError):
             started, ready = None, False
         print(json.dumps({'ready': ready, 'service_started': started,
-            'manual': any(row['sync_error'] in ('manual_restart_required','reader_recovery_cooldown') for row in errors)}))
+            'manual': (physical_ready and reader_recovery_observed(readers, state['camera_ids'], revisions)
+                       and any(row['sync_error'] in ('manual_restart_required','reader_recovery_cooldown') for row in errors))}))
         return
     if stage == 'operator-restart':
         if '/opt/camadmiral' not in sys.path:
