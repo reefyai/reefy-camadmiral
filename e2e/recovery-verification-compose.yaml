@@ -16,7 +16,6 @@ services:
       - ./fixtures/admin-password:/run/secrets/camadmiral_admin_password:ro
       - ./fixtures/camadmiral.yaml:/etc/camadmiral/config.yaml:ro
     networks: {lab: {ipv4_address: 172.27.5.20}}
-    ports: ["127.0.0.1::18080"]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

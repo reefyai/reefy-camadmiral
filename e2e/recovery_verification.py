@@ -168,10 +168,11 @@ def host():
                 try:
                     run('up','-d','camera-old','camera-new','camadmiral','relay-proxy')
                     deadline=time.monotonic()+90
-                    port=run('port','camadmiral','18080').stdout.strip().splitlines()[0].rsplit(':',1)[1]
                     while True:
                         try:
-                            if get('http://127.0.0.1:'+port+'/healthz').get('status')=='healthy':break
+                            readiness=run('exec','-T','camadmiral','python','-c',
+                                'import json,urllib.request;print(json.load(urllib.request.urlopen("http://127.0.0.1:18080/healthz",timeout=5))["status"])',check=False)
+                            if readiness.returncode==0 and readiness.stdout.strip()=='healthy':break
                         except Exception:pass
                         if time.monotonic()>=deadline:raise RuntimeError('CamAdmiral did not become healthy')
                         time.sleep(.5)

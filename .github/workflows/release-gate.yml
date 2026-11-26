@@ -55,7 +55,9 @@ jobs:
       - name: Bootstrap job container
         run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify prepared CI inputs
         run: python3 scripts/ci_tools.py
       - name: Start private Docker lab
