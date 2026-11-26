@@ -19,6 +19,18 @@ is removed; the offline/authentication and address incident histories remain.
 Ordinary health recovery outside address cutover retains its existing message.
 There are no new API fields, incident types, settings or migration requirements.
 
+Imported Frigate readers must also have current observations for every required
+upstream producer before recovery is acknowledged. An observation gap waits
+within the existing recording-verification window before any camera pause.
+That window follows the relay/address generation and observed video format;
+reconnecting a transport cannot repeatedly push its start past fresh recordings
+while leaving its original deadline behind. Learning the first producer is a
+baseline, and does not open a recovery deadline. Upgrade handling discards only
+an already-acknowledged legacy baseline window; owned recovery budgets remain.
+Reader diagnostics report observation availability, codec-parameter counts,
+recording-window bounds and the segment that verified recovery, without SDP or
+source details. Background recovery still cannot restart Frigate.
+
 The existing self-hosted release gate runs `e2e/recovery_verification.py` in its
 private Docker guest. It builds both immutable baseline
 `ac7403dbc3ec8e7f5c3611e57e70eb0267799e45` and the exact candidate source. Both use
@@ -37,6 +49,20 @@ route; outbox behavior is exercised without contacting a real operator.
 Component regressions additionally cover selective retries, bounded attempts,
 secret-free diagnostics for every profile, a concurrent outbox reader,
 transaction rollback, idempotency and rejection of incomplete profile results.
+
+The existing imported-identity E2E reproduced reader verification failures on
+source `4f453ff0c12f7039c1ce63ed03b3ca40b2c603e2` in release-gate run
+`45864137283` and its failed-job retry. Its physical-source dimensions, decoded
+old/new recordings, retained history and 240-second recovery budget remain
+mandatory. Six additional reader-window component cases run against that
+unmodified application source: five fail at the intended assertions, while the
+owned-budget negative control passes. They cover transport churn, format
+changes, absent observations, first-observation baselines and legacy-state
+compatibility. Run them with the existing suite:
+
+```sh
+PYTHONPATH=tests python -m unittest test_frigate_import
+```
 
 Run the normal full gate, retaining its default parallel jobs:
 
