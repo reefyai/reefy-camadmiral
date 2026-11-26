@@ -97,8 +97,13 @@ def stage(name,case):
             fault=get('http://127.0.0.1:1986/')
             moved=all('172.27.5.12' in s['uri'] for s in after['streams'])
             failed=any(r['status']=='failed' for r in revisions)
-            if case=='transient' and (moved and addresses or failed):break
-            if case=='persistent' and failed:break
+            # A failed revision precedes per-profile source restoration and
+            # the rollback restart. Observe the completed rollback, rather
+            # than asserting against that legitimate intermediate state.
+            rolled_back=(failed and fault['restarts']==2
+                         and [s['uri'] for s in after['streams']]==state['source_uris'])
+            if case=='transient' and (moved and addresses or rolled_back):break
+            if case=='persistent' and rolled_back:break
             if case=='auth' and time.monotonic()>deadline-50:break
             time.sleep(.25)
         observed={'case':case,'revisions':revisions,'addresses':addresses,'fault':fault,
