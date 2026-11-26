@@ -41,7 +41,13 @@ more automatic pause attempts or accept a pre-restart recording. Exhausted and
 blocked recovery component cases reproduce both failure modes on unchanged
 source `09fffff324435aecb1b4430da111cfd01ea3edae`. The existing identity E2E also
 reproduced the exhausted-budget case after verifying earlier physical moves and
-old/new recording dimensions. No background recorder restart is added.
+old/new recording dimensions. The recorder epoch is journaled when the address revision is first observed,
+before waiting for upstream producers. An operator restart during that grace
+period must not become the old baseline later. The corresponding component
+sequence and the final legacy-identity E2E reproduce that ordering failure on
+unchanged source `1f4c9ab084ca41f155e10911d2c700502b8a649d`.
+An owned capture resume also takes priority over recorder-epoch sampling: a temporarily unavailable statistics response must not leave a camera paused. The corresponding failure control reproduces a retained OFF state on the same unchanged source.
+No background recorder restart is added.
 Reader diagnostics report observation availability, codec-parameter counts,
 recording-window bounds and the segment that verified recovery, without SDP or
 source details. Background recovery still cannot restart Frigate.

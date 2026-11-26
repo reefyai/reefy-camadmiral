@@ -437,6 +437,65 @@ class FrigateImportTests(unittest.TestCase):
     def test_blocked_address_requires_capture_restart_and_fresh_output(self):
         self._check_operator_restart_with_exhausted_recovery(True)
 
+    def test_restart_during_missing_source_grace_verifies_after_fresh_output(self):
+        from camadmiral.frigate_import import READER_RECOVERY_MAX_ATTEMPTS
+        self.source_generation_fixture()
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        budget = {'attempts': READER_RECOVERY_MAX_ATTEMPTS, 'retry_after': 3000}
+        row['reader_recovery'] = copy.deepcopy(budget)
+        store.save_link(self.target.target_id, row['key'], row)
+        self.repo.record_address_change(row['camera_uuid'], '192.0.2.10', '192.0.2.11', 'unique-mac')
+        revision = self.repo.latest_camera_address_revision(row['camera_uuid'])
+        before, restarts = self.client.raw_config(), self.client.restart_calls
+        self.source_runtime.return_value = {}
+        with patch('camadmiral.frigate_import.time.time', return_value=1000):
+            sync_imported(self.repo, self.target, client=self.client,
+                          host_resolver=lambda _: '192.0.2.20')
+        self.assertEqual([], self.client.operations)
+        self.assertNotEqual(revision, store.links(self.target.target_id)[row['key']].get('relay_address_revision'))
+        self.client.restart()  # Operator acts while upstream observations wait.
+        operations = list(self.client.operations)
+        self.source_runtime.return_value = {uid: 'current-producer' for uid in row['relay_source_revisions']}
+        with patch('camadmiral.frigate_import.RELAY_RUNTIME_REVISION', 'next-control'):
+            with patch('camadmiral.frigate_import.time.time', return_value=1010), \
+                 patch.object(self.client, 'recordings_since', return_value=[
+                     {'start_time': 1001, 'end_time': 1005, 'segment_size': 1}]):
+                sync_imported(self.repo, self.target, client=self.client,
+                              host_resolver=lambda _: '192.0.2.20')
+            self.assertNotEqual(revision, store.links(self.target.target_id)[row['key']].get('relay_address_revision'))
+            with patch('camadmiral.frigate_import.time.time', return_value=1025), \
+                 patch.object(self.client, 'recordings_since', return_value=[
+                     {'start_time': 1015, 'end_time': 1020, 'segment_size': 1}]):
+                sync_imported(self.repo, self.target, client=self.client,
+                              host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
+        self.assertEqual(revision, saved.get('relay_address_revision'))
+        self.assertEqual(budget, saved['reader_recovery'])
+        self.assertNotIn('reader_recording_verification', saved)
+        self.assertEqual(operations, self.client.operations)
+        self.assertEqual(restarts + 1, self.client.restart_calls)
+        self.assertEqual(before, self.client.raw_config())
+
+    def test_owned_resume_does_not_wait_for_recorder_epoch_sampling(self):
+        self.execute(self.preview())
+        store = ImportStore(self.repo)
+        row = store.links(self.target.target_id)['legacy_entrance']
+        row['capture_resume_pending'] = True
+        store.save_link(self.target.target_id, row['key'], row)
+        self.repo.record_address_change(row['camera_uuid'], '192.0.2.10', '192.0.2.11', 'unique-mac')
+        self.client.current_config['cameras'][row['key']]['enabled'] = False
+        before = self.client.raw_config()
+        self.client.operations.clear()
+        with patch.object(self.client, 'service_started_at',
+                          side_effect=FrigateApiError('invalid_response')):
+            sync_imported(self.repo, self.target, client=self.client,
+                          host_resolver=lambda _: '192.0.2.20')
+        self.assertTrue(self.client.config()['cameras'][row['key']]['enabled'])
+        self.assertNotIn('capture_resume_pending', store.links(self.target.target_id)[row['key']])
+        self.assertEqual([('set_runtime_camera_enabled', row['key'], True)], self.client.operations)
+        self.assertEqual(before, self.client.raw_config())
+
     def test_import_failure_diagnostics_report_phase_without_exception_secrets(self):
         import contextlib
         import io

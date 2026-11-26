@@ -1526,6 +1526,13 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             revision = repository.latest_camera_address_revision(row["camera_uuid"])
             source_revision = _camera_source_revisions(client, row, camera, source_revisions)
             recording_epoch = _recording_epoch(camera, runtime_revision, revision)
+            # Journal the recorder before waiting for upstream observations.
+            # An operator can restart it during that grace period, prompted by
+            # another camera; a later sample must not adopt the new epoch as old.
+            # Owned resumes and already-accepted restarts must finish even if
+            # recorder statistics are not ready to supply an epoch yet.
+            address_capture_ready = (True if row.get("target_restart") or row.get("capture_resume_pending") else
+                _address_capture_ready(repository, target, client, row, revision))
             if (row.get('capture_resume_pending')
                     or revision != row.get('relay_address_revision')
                     or runtime_revision != row.get('relay_runtime_revision')
@@ -1551,7 +1558,6 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             if row.get("target_restart"):
                 _restart_imported_target(repository, target, client, links, row)
                 break
-            address_capture_ready = _address_capture_ready(repository, target, client, row, revision)
             if row.get("reader_recovery", {}).get("blocked") and not row.get("capture_resume_pending"):
                 if address_capture_ready and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
