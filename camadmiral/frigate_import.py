@@ -1569,7 +1569,8 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
             previous_sources = row.get('relay_source_revisions')
             source_changed = (source_revision is not None and previous_sources is not None
                               and source_revision != previous_sources)
-            configuration_changed = ((revision is not None and revision != row.get("relay_address_revision"))
+            address_changed = revision is not None and revision != row.get("relay_address_revision")
+            configuration_changed = (address_changed
                                      or row.get("relay_runtime_revision") != runtime_revision)
             pending = row.get('source_recovery_pending')
             if pending and pending.get('epoch') != RELAY_RUNTIME_REVISION:
@@ -1592,7 +1593,11 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                 # Let healthy peers recover while this camera initializes.
                 continue
             if configuration_changed or source_changed:
-                if reader_ready(row, camera):
+                # New relay SDP and fresh segment timestamps do not prove that
+                # an existing record FFmpeg discarded its old codec metadata.
+                # Recreate capture once for a committed physical address move.
+                # A plain transport/control reconnect retains the healthy path.
+                if not address_changed and reader_ready(row, camera):
                     output = _recording_output_state(repository, target, client, row, recording_epoch)
                     if output == 'ready':
                         _ack_source_recovery(repository, client, row, camera)
@@ -1613,6 +1618,10 @@ def sync_imported(repository, target, inventory=None, client=None, host_resolver
                     continue
                 # Runtime pause stops both record and detect FFmpeg consumers.
                 # Replacing go2rtc aliases alone leaves active consumers orphaned.
+                if address_changed:
+                    print('frigate-reader-recovery: ' + json.dumps({
+                        'event': 'address_capture_refresh', 'camera_uuid': row['camera_uuid'],
+                    }, sort_keys=True), flush=True)
                 if _refresh_capture(repository, target, client, links, row):
                     break
                 row.pop('reader_recording_verification', None)

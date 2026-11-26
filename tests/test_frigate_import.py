@@ -362,9 +362,20 @@ class FrigateImportTests(unittest.TestCase):
              patch.object(self.client,'recordings_since',return_value=[{'start_time':1005,'end_time':1015,'segment_size':1}]):
             sync_imported(self.repo,self.target,client=self.client,host_resolver=lambda _:'192.0.2.20')
         saved=store.links(self.target.target_id)[row['key']]
+        self.assertTrue(saved['source_recovery_pending'])
+        self.assertEqual(1020, saved['reader_recording_verification']['since'])
+        self.assertEqual([False, True], [op[2] for op in self.client.operations
+                                       if op[0] == 'set_runtime_camera_enabled'])
+        with patch('camadmiral.frigate_import.time.time', return_value=1040), \
+             patch.object(self.client, 'recordings_since', return_value=[
+                 {'start_time': 1025, 'end_time': 1035, 'segment_size': 1}]):
+            sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: '192.0.2.20')
+        saved = store.links(self.target.target_id)[row['key']]
         self.assertEqual(self.repo.latest_camera_address_revision(row['camera_uuid']),saved.get('relay_address_revision'))
         self.assertNotIn('reader_recording_verification',saved)
-        self.assertEqual([],self.client.operations)
+        self.assertNotIn('source_recovery_pending', saved)
+        self.assertEqual([False, True], [op[2] for op in self.client.operations
+                                       if op[0] == 'set_runtime_camera_enabled'])
         self.assertEqual(before,self.client.raw_config())
         self.assertEqual(restarts,self.client.restart_calls)
 
@@ -1510,7 +1521,19 @@ class FrigateImportTests(unittest.TestCase):
         self.assertTrue(self.client.config()["cameras"]["legacy_entrance"]["enabled"])
         row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
         self.assertNotIn("capture_resume_pending", row)
+        self.assertNotEqual(self.repo.latest_camera_address_revision(uid), row.get("relay_address_revision"))
+        self.assertTrue(row["reader_recovery"]["blocked"])
+        self.assertEqual([False, True], [op[2] for op in self.client.operations
+                                       if op[0] == "set_runtime_camera_enabled"])
+        # The ambiguous OFF did take effect and the owned ON restored capture.
+        # A subsequent current observation and fresh recording can verify it,
+        # without granting another pause attempt or restarting the recorder.
+        operations, restarts = list(self.client.operations), self.client.restart_calls
+        sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda _: "192.0.2.20")
+        row = ImportStore(self.repo).links(self.target.target_id)["legacy_entrance"]
         self.assertEqual(self.repo.latest_camera_address_revision(uid), row["relay_address_revision"])
+        self.assertEqual(operations, self.client.operations)
+        self.assertEqual(restarts, self.client.restart_calls)
 
     @stalled_reader
     def test_reader_refresh_recovers_pending_resume_before_reconnecting_again(self):
@@ -1591,7 +1614,6 @@ class FrigateImportTests(unittest.TestCase):
         self.assertEqual(before, self.client.raw_config())
         self.assertTrue(all(op[0] in {"delete_runtime_stream", "set_runtime_stream", "set_runtime_camera_enabled"} for op in operations))
 
-    @stalled_reader
     def test_committed_address_change_refreshes_only_imported_readers_without_config_writes(self):
         job = self.execute(self.preview())
         camera_uuid = job["cameras"][0]["camera_uuid"]
@@ -1606,6 +1628,8 @@ class FrigateImportTests(unittest.TestCase):
         sync_imported(self.repo, self.target, client=self.client, host_resolver=lambda mode: "192.0.2.20")
 
         self.assertEqual(aliases, [alias for alias, _ in self.client.runtime_writes])
+        self.assertEqual([False, True], [op[2] for op in self.client.operations
+                                       if op[0] == "set_runtime_camera_enabled"])
         self.assertEqual({a: row["managed_streams"][a][0] for a in aliases}, dict(self.client.runtime_writes))
         self.assertEqual(before, self.client.raw_config())
         self.assertTrue(all(op[0] in {"delete_runtime_stream", "set_runtime_stream", "set_runtime_camera_enabled"} for op in self.client.operations))

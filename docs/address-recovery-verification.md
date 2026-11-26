@@ -27,6 +27,13 @@ reconnecting a transport cannot repeatedly push its start past fresh recordings
 while leaving its original deadline behind. Learning the first producer is a
 baseline, and does not open a recovery deadline. Upgrade handling discards only
 an already-acknowledged legacy baseline window; owned recovery budgets remain.
+A committed physical address change always refreshes that camera's capture
+once before acknowledgement. Current relay SDP and new segment timestamps do
+not prove that an already-running recording process discarded old MP4 codec
+metadata. The existing imported-identity E2E catches this by decoding retained
+recordings and checking their dimensions. The ordinary address-refresh component
+case also runs with healthy FPS, bytes and segments; it reproduces the skipped
+refresh on unmodified source `d0165d134f2b6bb672a3b057626b7ebfb941c2bb`.
 Reader diagnostics report observation availability, codec-parameter counts,
 recording-window bounds and the segment that verified recovery, without SDP or
 source details. Background recovery still cannot restart Frigate.
